@@ -12,10 +12,6 @@ name = "backtest"
 path = "src/bin/backtest.rs"
 
 [[bin]]
-name = "chart"
-path = "src/bin/chart.rs"
-
-[[bin]]
 name = "collector"
 path = "src/bin/collector.rs"
 

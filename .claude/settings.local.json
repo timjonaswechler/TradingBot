@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:github.com)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(gh issue:*)",
+      "Bash(__NEW_LINE_a829fd5dfab50ab2__ gh:*)",
+      "Bash(cargo run:*)"
     ]
   }
 }
