@@ -1,0 +1,41 @@
+[paper_trading]
+starting_capital  = 1_000_000  # in Cent (= 100 €)
+position_size_pct = 20      # max. 20 % des Cashs pro Trade (hier: 20 €)
+currency = "EUR"
+
+[costs]
+commission_type = "flat"       # "flat" | "percent"
+commission_amount = 100        # in Cent bei flat (= 1,00 €) | Basispunkte bei percent
+
+[tax]
+country = "DE"
+freistellungsauftrag = 100_000 # in Cent (= 1.000 €)
+kirchensteuer = false
+
+[assets]
+watchlist = ["AAPL", "MSFT", "SPY"]
+
+[strategy]
+name = "sma_crossover"
+short_period = 7
+long_period  = 12
+# RSI (aktiv wenn name = "rsi")
+# rsi_period     = 14
+# rsi_oversold   = 30.0
+# rsi_overbought = 70.0
+# MACD (aktiv wenn name = "macd")
+# macd_fast   = 12
+# macd_slow   = 26
+# macd_signal = 9
+# Bollinger Bands (aktiv wenn name = "bollinger")
+# bb_period = 20
+# bb_k      = 2.0
+
+[data]
+# Erstes Intervall = primär (Strategie + Backtest)
+# Intraday-Intervalle (1h, 30m, ...) sind nur ~60 Tage historisch verfügbar
+intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
+range     = "max"   # Erstabzug: "1y" | "2y" | "5y" | "max"
+
+[db]
+path = "data/market.duckdb"
