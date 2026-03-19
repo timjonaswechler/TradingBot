@@ -28,22 +28,27 @@ pub async fn run(cfg: &Config, db: &Db, http: &reqwest::Client) -> Result<usize>
         db.ensure_asset_table(asset)?;
 
         for interval in &cfg.data.intervals {
-            // Intraday nur bei offenem Markt sinnvoll
-            if is_intraday(interval) && !market_open {
-                log::debug!("{asset}/{interval}: Markt geschlossen, überspringe");
+            let last_ts = db.get_last_timestamp(asset, interval)?;
+
+            // Intraday bei geschlossenem Markt nur überspringen wenn Daten
+            // bereits vorhanden sind (inkrementelles Update sinnlos).
+            // Beim Erstabzug (last_ts == None) immer laden — historische Daten
+            // existieren unabhängig vom aktuellen Marktstatus.
+            if is_intraday(interval) && !market_open && last_ts.is_some() {
+                log::debug!("{asset}/{interval}: Markt geschlossen, überspringe inkrementelles Update");
                 continue;
             }
 
-            let n = match db.get_last_timestamp(asset, interval)? {
-                Some(last_ts) => {
-                    log::info!("{asset}/{interval}: inkrementelles Update seit {last_ts}");
-                    match market_data::fetch_since(http, asset, interval, last_ts).await {
+            let n = match last_ts {
+                Some(ts) => {
+                    log::info!("{asset}/{interval}: inkrementelles Update seit {ts}");
+                    match market_data::fetch_since(http, asset, interval, ts).await {
                         Ok(candles) => db.upsert_candles(asset, &candles, interval)?,
                         Err(e) => { log::warn!("{asset}/{interval}: fetch fehlgeschlagen – {e}"); 0 }
                     }
                 }
                 None => {
-                    log::info!("{asset}/{interval}: Erstabzug (range={})", cfg.data.range);
+                    log::info!("{asset}/{interval}: Erstabzug");
                     match market_data::fetch_history(http, asset, interval, &cfg.data.range).await {
                         Ok(candles) => db.upsert_candles(asset, &candles, interval)?,
                         Err(e) => { log::warn!("{asset}/{interval}: Erstabzug fehlgeschlagen – {e}"); 0 }

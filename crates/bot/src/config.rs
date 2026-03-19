@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -35,7 +35,11 @@ pub struct TaxConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct AssetsConfig {
+    /// Inline-Liste (fallback wenn watchlist_file nicht gesetzt)
+    #[serde(default)]
     pub watchlist: Vec<String>,
+    /// Pfad zu einer Textdatei: ein Ticker pro Zeile, # = Kommentar
+    pub watchlist_file: Option<String>,
 }
 
 /// Konfiguration für die Datenbeschaffung (Yahoo Finance).
@@ -99,6 +103,23 @@ pub struct DbConfig {
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&content)?)
+        let mut cfg: Config = toml::from_str(&content)?;
+
+        if let Some(ref wl_file) = cfg.assets.watchlist_file.clone() {
+            let base = path.parent().unwrap_or(Path::new("."));
+            let wl_path = base.join(wl_file);
+            let text = std::fs::read_to_string(&wl_path)
+                .with_context(|| format!("watchlist_file '{}' nicht gefunden", wl_path.display()))?;
+            cfg.assets.watchlist = text
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(|l| l.split('#').next().unwrap_or(l).trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            log::info!("Watchlist: {} Symbole aus '{}'", cfg.assets.watchlist.len(), wl_file);
+        }
+
+        Ok(cfg)
     }
 }

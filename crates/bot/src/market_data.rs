@@ -58,39 +58,34 @@ struct YfQuote {
     volume: Vec<Option<f64>>,
 }
 
-/// Maximale unterstützte Range je Intervall (Yahoo Finance Limitation).
-fn max_range_for_interval(interval: &str) -> &'static str {
+/// Liefert den frühesten sinnvollen Unix-Timestamp für ein Intervall.
+/// Intraday-Intervalle haben bei Yahoo Finance ein hartes History-Limit.
+fn period1_for_interval(interval: &str) -> i64 {
+    let now = chrono::Utc::now().timestamp();
     match interval {
-        "1m"              => "7d",
-        "2m" | "5m"       => "60d",
-        "15m" | "30m"     => "60d",
-        "60m" | "90m" | "1h" => "730d",
-        _                 => "max", // 1d, 5d, 1wk, 1mo, 3mo
+        "1m"                  => now - 7   * 86_400,
+        "2m" | "5m"           => now - 60  * 86_400,
+        "15m" | "30m"         => now - 60  * 86_400,
+        "60m" | "1h"           => now - 730 * 86_400,
+        "90m"                  => now - 60  * 86_400,
+        _                     => 0, // EOD: Epoch = komplette verfügbare History
     }
 }
 
 /// Vollständiger Erstabzug: holt historische OHLCV-Daten von Yahoo Finance.
-/// Die Range wird automatisch auf das Intervall-Maximum begrenzt.
+/// Für EOD-Intervalle (1d, 1wk, …) wird period1=0 gesetzt um die komplette
+/// verfügbare History zu laden — `range=max` liefert Yahoo nur ~167 Punkte.
 pub async fn fetch_history(
     client: &reqwest::Client,
     symbol: &str,
     interval: &str,
-    range: &str,
+    _range: &str, // wird ignoriert, period1/period2 ist zuverlässiger
 ) -> Result<Vec<Candle>> {
-    // Intraday-Intervalle haben begrenzte History bei Yahoo Finance
-    let effective_range = {
-        let max = max_range_for_interval(interval);
-        // Nehme das restriktivere von config-range und yahoo-max
-        // Für Intraday immer das Yahoo-Max verwenden
-        if interval.ends_with('m') || interval == "1h" || interval == "90m" {
-            max
-        } else {
-            range
-        }
-    };
+    let period1 = period1_for_interval(interval);
+    let period2 = chrono::Utc::now().timestamp();
     let url = format!(
-        "https://query1.finance.yahoo.com/v8/finance/chart/{}?interval={}&range={}",
-        symbol, interval, effective_range
+        "https://query1.finance.yahoo.com/v8/finance/chart/{}?interval={}&period1={}&period2={}",
+        symbol, interval, period1, period2
     );
     fetch_url(client, &url).await
 }

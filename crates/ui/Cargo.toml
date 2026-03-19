@@ -8,9 +8,7 @@ name = "ui"
 path = "src/main.rs"
 
 [dependencies]
-eframe    = "0.29"
-egui_plot = "0.29"
-rusqlite  = "0.32"
-chrono    = "0.4"
-anyhow    = "1"
-bot       = { path = "../bot" }
+gpui                   = "0.2.2"
+gpui-component         = "0.5.1"
+anyhow                 = "1"
+rust-embed             = { version = "8.7.2", features = ["interpolate-folder-path", "include-exclude"] }

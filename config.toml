@@ -13,23 +13,14 @@ freistellungsauftrag = 100_000 # in Cent (= 1.000 €)
 kirchensteuer = false
 
 [assets]
-watchlist = ["AAPL", "MSFT", "SPY"]
+# Aktive Watchlist aus Datei laden (ein Ticker pro Zeile, # = Kommentar).
+# Alternativ: watchlist = ["AAPL", "MSFT"] für eine Inline-Liste.
+watchlist_file = "data/watchlist.txt"
+# Vollständige Regionslisten:
+#   data/watchlists/eu.txt   (~120 STOXX 600)
+#   data/watchlists/us.txt   (~150 S&P 500)
+#   data/watchlists/asia.txt (~60 Asien/China)
 
-[strategy]
-name = "sma_crossover"
-short_period = 7
-long_period  = 12
-# RSI (aktiv wenn name = "rsi")
-# rsi_period     = 14
-# rsi_oversold   = 30.0
-# rsi_overbought = 70.0
-# MACD (aktiv wenn name = "macd")
-# macd_fast   = 12
-# macd_slow   = 26
-# macd_signal = 9
-# Bollinger Bands (aktiv wenn name = "bollinger")
-# bb_period = 20
-# bb_k      = 2.0
 
 [data]
 # Erstes Intervall = primär (Strategie + Backtest)
