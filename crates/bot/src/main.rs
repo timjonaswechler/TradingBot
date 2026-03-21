@@ -23,21 +23,22 @@ async fn main() -> Result<()> {
     let strategy = strategy::from_config(&cfg.strategy)?;
     log::info!("Strategie: {}", strategy.name());
 
-    let cash                = db.load_cash(cfg.paper_trading.starting_capital)?;
-    let exemption_remaining = db.load_exemption_remaining(cfg.tax.freistellungsauftrag)?;
-    let positions           = db.load_positions()?;
+    let cash = db.load_cash(cfg.paper_trading.starting_capital)?;
+    let positions = db.load_positions()?;
 
     let mut engine = paper_trading::PaperTradingEngine::new(
-        cash,
-        exemption_remaining,
-        positions,
-        cfg.costs.clone(),
-        cfg.tax.clone(),
-        cfg.paper_trading.position_size_pct,
+        paper_trading::TradingConfig::from_app_config(&cfg),
     );
+    // Restore cash from DB
+    engine.cash_cents = cash;
+    // Restore positions from DB
+    for p in positions {
+        engine.positions.insert(p.symbol.clone(), p);
+    }
+
     log::info!(
         "Portfolio: {:.2}€ Cash, {} Positionen",
-        engine.cash as f64 / 100.0,
+        engine.cash_cents as f64 / 100.0,
         engine.positions.len()
     );
 
@@ -53,18 +54,21 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        let signal = strategy.signal(&history);
-        log::info!("{asset}: Signal = {:?}", signal);
+        let strat_signal = strategy.signal(&history);
+        log::info!("{asset}: Signal = {:?}", strat_signal);
 
-        let current_price = history[0].close;
-        if let Some(trade) = engine.execute(&signal, asset, current_price, strategy.name())? {
-            db.save_trade(&trade)?;
+        let candle = &history[0]; // newest candle
+        let pt_signal = paper_trading::Signal::from(strat_signal);
+        let trade_count_before = engine.trades.len();
+        engine.execute(&pt_signal, asset, candle);
+        if engine.trades.len() > trade_count_before {
+            let trade = engine.trades.last().unwrap();
+            db.save_trade(trade)?;
         }
     }
 
     // ── 3. State persistieren ─────────────────────────────────────────────────
-    db.save_cash(engine.cash)?;
-    db.save_exemption_remaining(engine.exemption_remaining)?;
+    db.save_cash(engine.cash_cents)?;
     db.save_positions(&engine.positions)?;
 
     // ── 4. Zusammenfassung ────────────────────────────────────────────────────
@@ -76,14 +80,17 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    let total = engine.total_value(&prices);
+    let pos_value: i64 = engine.positions.iter()
+        .map(|(sym, pos)| prices.get(sym).copied().unwrap_or(0) * pos.quantity)
+        .sum();
+    let total = engine.cash_cents + pos_value;
+
     log::info!("══════════════════════════════════════════════");
-    log::info!("Cash:                  {:.2}€", engine.cash as f64 / 100.0);
+    log::info!("Cash:                  {:.2}€", engine.cash_cents as f64 / 100.0);
     log::info!("Gesamtwert:            {:.2}€", total as f64 / 100.0);
     log::info!("G/L:                   {:.2}€", (total - cfg.paper_trading.starting_capital) as f64 / 100.0);
     log::info!("Offene Positionen:     {}", engine.positions.len());
     log::info!("Trades diese Session:  {}", engine.trades.len());
-    log::info!("Freistellungsauftrag:  {:.2}€ verbleibend", engine.exemption_remaining as f64 / 100.0);
 
     Ok(())
 }

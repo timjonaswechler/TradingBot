@@ -5,7 +5,7 @@ use rand::Rng;
 use crate::config::{CostsConfig, FitnessWeights, PaperTradingConfig, TaxConfig};
 use crate::market_data::Candle;
 use crate::metrics::Metrics;
-use crate::paper_trading::PaperTradingEngine;
+use crate::paper_trading::{self, PaperTradingEngine, TradingConfig};
 
 use super::fitness;
 use super::genome::Genome;
@@ -74,14 +74,19 @@ pub fn evaluate<G: Genome>(
     let extra     = if max_extra > 0 { rng.gen_range(0..=max_extra) } else { 0 };
     let window    = &all_candles[start..start + min_size + extra];
 
-    let mut engine = PaperTradingEngine::new(
-        paper_cfg.starting_capital,
-        tax_cfg.freistellungsauftrag,
-        vec![],
-        costs_cfg.clone(),
-        tax_cfg.clone(),
-        paper_cfg.position_size_pct,
-    );
+    let trading_cfg = TradingConfig {
+        starting_capital_cents: paper_cfg.starting_capital,
+        commission_type: paper_trading::CommissionType::Flat,
+        commission_amount: costs_cfg.commission_amount,
+        position_size_pct: paper_cfg.position_size_pct as f64 / 100.0,
+        max_short_size_pct: 0.5,
+        tax: paper_trading::TaxConfig {
+            freistellungsauftrag_cents: tax_cfg.freistellungsauftrag,
+            kirchensteuer: tax_cfg.kirchensteuer,
+            kirchensteuer_rate: 0.09,
+        },
+    };
+    let mut engine = PaperTradingEngine::new(trading_cfg);
 
     let mut equity_curve: Vec<i64> = Vec::with_capacity(window.len());
 
@@ -92,14 +97,14 @@ pub fn evaluate<G: Genome>(
             .cloned()
             .collect();
 
-        let current_price = window[t].close;
-        let signal = strategy.signal(&slice);
-        let _ = engine.execute(&signal, asset, current_price, strategy.name());
+        let candle = &window[t];
+        let pt_signal = paper_trading::Signal::from(strategy.signal(&slice));
+        engine.execute(&pt_signal, asset, candle);
 
-        let pos_value: i64 = engine.positions.iter()
-            .map(|p| p.quantity * current_price)
+        let pos_value: i64 = engine.positions.values()
+            .map(|p| p.quantity * candle.close)
             .sum();
-        equity_curve.push(engine.cash + pos_value);
+        equity_curve.push(engine.cash_cents + pos_value);
     }
 
     if equity_curve.is_empty() {

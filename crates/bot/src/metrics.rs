@@ -1,4 +1,4 @@
-use crate::paper_trading::{Trade, TradeSide};
+use crate::paper_trading::engine::{Trade, TradeSide};
 
 /// Alle Performance-Metriken eines Backtests.
 pub struct Metrics {
@@ -29,7 +29,6 @@ pub struct Metrics {
 
     // Kosten
     pub total_fees: i64, // Cent
-    pub total_tax:  i64, // Cent
 }
 
 impl Metrics {
@@ -75,15 +74,15 @@ impl Metrics {
         // ── Max Drawdown ──────────────────────────────────────────────────────
         let max_drawdown_pct = max_drawdown(equity_curve);
 
-        // ── Trade-Statistiken (nur SELL-Trades haben G/L) ────────────────────
-        let sell_trades: Vec<&Trade> = trades
+        // ── Trade-Statistiken (nur SELL/COVER-Trades haben PnL) ──────────────
+        let closed_trades: Vec<&Trade> = trades
             .iter()
-            .filter(|t| t.side == TradeSide::Sell)
+            .filter(|t| t.side == TradeSide::Sell || t.side == TradeSide::Cover)
             .collect();
 
-        let total_trades   = sell_trades.len();
-        let winning_trades = sell_trades.iter().filter(|t| t.gain_loss.unwrap_or(0) > 0).count();
-        let losing_trades  = sell_trades.iter().filter(|t| t.gain_loss.unwrap_or(0) < 0).count();
+        let total_trades   = closed_trades.len();
+        let winning_trades = closed_trades.iter().filter(|t| t.pnl_cents > 0).count();
+        let losing_trades  = closed_trades.iter().filter(|t| t.pnl_cents < 0).count();
 
         let win_rate_pct = if total_trades > 0 {
             winning_trades as f64 / total_trades as f64 * 100.0
@@ -91,8 +90,8 @@ impl Metrics {
             0.0
         };
 
-        let gross_profit: i64 = sell_trades.iter().filter_map(|t| t.gain_loss).filter(|&g| g > 0).sum();
-        let gross_loss:   i64 = sell_trades.iter().filter_map(|t| t.gain_loss).filter(|&g| g < 0).map(|g| g.abs()).sum();
+        let gross_profit: i64 = closed_trades.iter().filter(|t| t.pnl_cents > 0).map(|t| t.pnl_cents).sum();
+        let gross_loss:   i64 = closed_trades.iter().filter(|t| t.pnl_cents < 0).map(|t| t.pnl_cents.abs()).sum();
 
         let profit_factor = if gross_loss > 0 {
             gross_profit as f64 / gross_loss as f64
@@ -103,20 +102,20 @@ impl Metrics {
         };
 
         // ── Prozentuale Trade-Metriken (asset-unabhängig) ─────────────────────
-        let win_pcts: Vec<f64> = sell_trades.iter()
-            .filter_map(|t| t.gain_loss_pct)
-            .filter(|&p| p > 0.0)
+        // Compute pnl as % of trade value (price * quantity) for each closed trade
+        let trade_pcts: Vec<f64> = closed_trades.iter()
+            .filter_map(|t| {
+                let trade_value = t.price_cents * t.quantity;
+                if trade_value > 0 {
+                    Some(t.pnl_cents as f64 / trade_value as f64 * 100.0)
+                } else {
+                    None
+                }
+            })
             .collect();
 
-        let loss_pcts: Vec<f64> = sell_trades.iter()
-            .filter_map(|t| t.gain_loss_pct)
-            .filter(|&p| p < 0.0)
-            .map(|p| p.abs())
-            .collect();
-
-        let all_pcts: Vec<f64> = sell_trades.iter()
-            .filter_map(|t| t.gain_loss_pct)
-            .collect();
+        let win_pcts:  Vec<f64> = trade_pcts.iter().cloned().filter(|&p| p > 0.0).collect();
+        let loss_pcts: Vec<f64> = trade_pcts.iter().cloned().filter(|&p| p < 0.0).map(|p| p.abs()).collect();
 
         let avg_win_pct = if win_pcts.is_empty() { 0.0 } else {
             win_pcts.iter().sum::<f64>() / win_pcts.len() as f64
@@ -124,15 +123,14 @@ impl Metrics {
         let avg_loss_pct = if loss_pcts.is_empty() { 0.0 } else {
             loss_pcts.iter().sum::<f64>() / loss_pcts.len() as f64
         };
-        let best_trade_pct  = all_pcts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let worst_trade_pct = all_pcts.iter().cloned().fold(f64::INFINITY,     f64::min);
+        let best_trade_pct  = trade_pcts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let worst_trade_pct = trade_pcts.iter().cloned().fold(f64::INFINITY,     f64::min);
 
         let loss_rate = 1.0 - win_rate_pct / 100.0;
         let expectancy_pct = win_rate_pct / 100.0 * avg_win_pct - loss_rate * avg_loss_pct;
 
         // ── Kosten ────────────────────────────────────────────────────────────
-        let total_fees: i64 = trades.iter().map(|t| t.fee).sum();
-        let total_tax:  i64 = trades.iter().filter_map(|t| t.tax).sum();
+        let total_fees: i64 = trades.iter().map(|t| t.commission_cents).sum();
 
         Self {
             total_return_pct,
@@ -152,7 +150,6 @@ impl Metrics {
             worst_trade_pct: if worst_trade_pct == f64::INFINITY     { 0.0 } else { worst_trade_pct },
             expectancy_pct,
             total_fees,
-            total_tax,
         }
     }
 
@@ -191,7 +188,6 @@ impl Metrics {
         println!();
         println!("── Kosten & Steuern ────────────────────────────────────────────────────");
         println!("  Gebühren:         {:.2} €", self.total_fees as f64 / 100.0);
-        println!("  Steuern:          {:.2} €", self.total_tax  as f64 / 100.0);
         println!("════════════════════════════════════════════════════════════════════════");
     }
 }

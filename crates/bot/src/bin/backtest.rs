@@ -1,4 +1,4 @@
-use bot::{config, db, metrics::Metrics, paper_trading::PaperTradingEngine, strategy};
+use bot::{config, db, metrics::Metrics, paper_trading, strategy};
 
 use anyhow::Result;
 use std::path::Path;
@@ -43,6 +43,8 @@ fn main() -> Result<()> {
     }
     let mut results: Vec<AssetResult> = Vec::new();
 
+    let trading_cfg = paper_trading::TradingConfig::from_app_config(&cfg);
+
     for asset in &assets {
         let candles = db.get_all_candles_asc(asset, cfg.data.primary_interval())?;
         let h = strategy.required_history();
@@ -62,14 +64,7 @@ fn main() -> Result<()> {
             candles.last().unwrap().timestamp.format("%Y-%m-%d"),
         );
 
-        let mut engine = PaperTradingEngine::new(
-            cfg.paper_trading.starting_capital,
-            cfg.tax.freistellungsauftrag,
-            vec![],
-            cfg.costs.clone(),
-            cfg.tax.clone(),
-            cfg.paper_trading.position_size_pct,
-        );
+        let mut engine = paper_trading::PaperTradingEngine::new(trading_cfg.clone());
 
         let mut equity_curve: Vec<i64> = Vec::with_capacity(candles.len() - h + 1);
 
@@ -80,17 +75,16 @@ fn main() -> Result<()> {
                 .cloned()
                 .collect();
 
-            let current_price = candles[t].close;
-            let signal = strategy.signal(&window);
-            engine.execute(&signal, asset, current_price, strategy.name())?;
+            let candle = &candles[t];
+            let pt_signal = paper_trading::Signal::from(strategy.signal(&window));
+            engine.execute(&pt_signal, asset, candle);
 
             let pos_value: i64 = engine
                 .positions
-                .iter()
-                .filter(|p| p.asset == *asset)
-                .map(|p| p.quantity * current_price)
+                .values()
+                .map(|p| p.quantity * candle.close)
                 .sum();
-            equity_curve.push(engine.cash + pos_value);
+            equity_curve.push(engine.cash_cents + pos_value);
         }
 
         let start_ts = candles[h - 1].timestamp;

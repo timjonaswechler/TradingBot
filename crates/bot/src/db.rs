@@ -3,7 +3,7 @@ use chrono::DateTime;
 use rusqlite::{params, Connection};
 
 use crate::market_data::Candle;
-use crate::paper_trading::{Position, Trade, TradeSide};
+use crate::paper_trading::engine::{Position, Trade, TradeSide};
 
 pub struct Db {
     conn: Connection,
@@ -194,22 +194,20 @@ impl Db {
             );
 
             CREATE TABLE IF NOT EXISTS trades (
-                asset          VARCHAR NOT NULL,
-                side           VARCHAR NOT NULL,
-                quantity       BIGINT  NOT NULL,
-                price          BIGINT  NOT NULL,
-                fee            BIGINT  NOT NULL,
-                timestamp      BIGINT  NOT NULL,
-                strategy       VARCHAR NOT NULL,
-                gain_loss      BIGINT,
-                gain_loss_pct  REAL,
-                tax            BIGINT
+                symbol           VARCHAR NOT NULL,
+                side             VARCHAR NOT NULL,
+                quantity         BIGINT  NOT NULL,
+                price_cents      BIGINT  NOT NULL,
+                timestamp        BIGINT  NOT NULL,
+                pnl_cents        BIGINT  NOT NULL,
+                commission_cents BIGINT  NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS positions (
-                asset         VARCHAR PRIMARY KEY,
-                quantity      BIGINT NOT NULL,
-                avg_buy_price BIGINT NOT NULL
+                symbol          VARCHAR PRIMARY KEY,
+                quantity        BIGINT  NOT NULL,
+                avg_cost_cents  BIGINT  NOT NULL,
+                entry_timestamp BIGINT  NOT NULL
             );",
         )?;
         Ok(())
@@ -225,18 +223,6 @@ impl Db {
         Ok(cash.unwrap_or(starting_capital))
     }
 
-    pub fn load_exemption_remaining(&self, freistellungsauftrag: i64) -> Result<i64> {
-        let val: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT value FROM state WHERE key = 'exemption_remaining'",
-                [],
-                |r| r.get(0),
-            )
-            .ok();
-        Ok(val.unwrap_or(freistellungsauftrag))
-    }
-
     pub fn save_cash(&self, cash: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO state (key, value) VALUES ('cash', ?)
@@ -246,38 +232,39 @@ impl Db {
         Ok(())
     }
 
-    pub fn save_exemption_remaining(&self, remaining: i64) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO state (key, value) VALUES ('exemption_remaining', ?)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            params![remaining],
-        )?;
-        Ok(())
-    }
-
     pub fn load_positions(&self) -> Result<Vec<Position>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT asset, quantity, avg_buy_price FROM positions")?;
+            .prepare("SELECT symbol, quantity, avg_cost_cents, entry_timestamp FROM positions")?;
         let positions = stmt
             .query_map([], |row| {
-                Ok(Position {
-                    asset:         row.get(0)?,
-                    quantity:      row.get(1)?,
-                    avg_buy_price: row.get(2)?,
-                })
+                let ts: i64 = row.get(3)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    ts,
+                ))
             })?
             .filter_map(|r| r.ok())
+            .filter_map(|(symbol, quantity, avg_cost_cents, ts)| {
+                Some(Position {
+                    symbol: symbol.clone(),
+                    quantity,
+                    avg_cost_cents,
+                    entry_timestamp: DateTime::from_timestamp(ts, 0)?,
+                })
+            })
             .collect();
         Ok(positions)
     }
 
-    pub fn save_positions(&self, positions: &[Position]) -> Result<()> {
+    pub fn save_positions(&self, positions: &std::collections::HashMap<String, Position>) -> Result<()> {
         self.conn.execute("DELETE FROM positions", [])?;
-        for p in positions {
+        for p in positions.values() {
             self.conn.execute(
-                "INSERT INTO positions (asset, quantity, avg_buy_price) VALUES (?, ?, ?)",
-                params![p.asset, p.quantity, p.avg_buy_price],
+                "INSERT INTO positions (symbol, quantity, avg_cost_cents, entry_timestamp) VALUES (?, ?, ?, ?)",
+                params![p.symbol, p.quantity, p.avg_cost_cents, p.entry_timestamp.timestamp()],
             )?;
         }
         Ok(())
@@ -285,54 +272,26 @@ impl Db {
 
     pub fn save_trade(&self, trade: &Trade) -> Result<()> {
         let side = match trade.side {
-            TradeSide::Buy  => "buy",
-            TradeSide::Sell => "sell",
+            TradeSide::Buy   => "buy",
+            TradeSide::Sell  => "sell",
+            TradeSide::Short => "short",
+            TradeSide::Cover => "cover",
         };
         self.conn.execute(
             "INSERT INTO trades
-                 (asset, side, quantity, price, fee, timestamp, strategy, gain_loss, gain_loss_pct, tax)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (symbol, side, quantity, price_cents, timestamp, pnl_cents, commission_cents)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
-                trade.asset,
+                trade.symbol,
                 side,
                 trade.quantity,
-                trade.price,
-                trade.fee,
-                trade.timestamp,
-                trade.strategy,
-                trade.gain_loss,
-                trade.gain_loss_pct,
-                trade.tax
+                trade.price_cents,
+                trade.timestamp.timestamp(),
+                trade.pnl_cents,
+                trade.commission_cents,
             ],
         )?;
         Ok(())
-    }
-
-    pub fn load_trades(&self) -> Result<Vec<Trade>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT asset, side, quantity, price, fee, timestamp, strategy, gain_loss, gain_loss_pct, tax
-             FROM trades ORDER BY timestamp ASC",
-        )?;
-        let trades = stmt
-            .query_map([], |row| {
-                let side_str: String = row.get(1)?;
-                let side = if side_str == "buy" { TradeSide::Buy } else { TradeSide::Sell };
-                Ok(Trade {
-                    asset:         row.get(0)?,
-                    side,
-                    quantity:      row.get(2)?,
-                    price:         row.get(3)?,
-                    fee:           row.get(4)?,
-                    timestamp:     row.get(5)?,
-                    strategy:      row.get(6)?,
-                    gain_loss:     row.get(7)?,
-                    gain_loss_pct: row.get(8)?,
-                    tax:           row.get(9)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(trades)
     }
 }
 
