@@ -1,6 +1,10 @@
+use chrono::{DateTime, Utc};
+
 use crate::paper_trading::{Trade, TradeSide};
+use crate::paper_trading::engine::Trade as EngineTrade;
 
 /// Alle Performance-Metriken eines Backtests.
+#[derive(Debug, Clone, Default)]
 pub struct Metrics {
     // Rendite
     pub total_return_pct: f64, // z.B. 12.4  (= +12,4 %)
@@ -213,6 +217,35 @@ fn sharpe_ratio(daily_returns: &[f64]) -> f64 {
     } else {
         mean / std * 252.0_f64.sqrt()
     }
+}
+
+// ── Optimizer-facing API ──────────────────────────────────────────────────────
+
+/// Trade record produced by the optimizer's paper-trading engine.
+#[derive(Debug, Clone)]
+pub struct TradeRecord {
+    pub timestamp:         DateTime<Utc>,
+    pub pnl_cents:         i64,
+    pub entry_price_cents: i64,
+    pub exit_price_cents:  i64,
+    pub quantity:          i64,
+    pub commission_cents:  i64,
+}
+
+/// Compute metrics from a `(timestamp, equity_cents)` curve.
+/// STUB — returns `Metrics::default()`. Replace when merging.
+pub fn compute(
+    _equity_curve: &[(DateTime<Utc>, i64)],
+    _trades:       &[TradeRecord],
+    _capital:      i64,
+) -> Metrics {
+    Metrics::default()
+}
+
+/// Convert engine trades to `TradeRecord`s.
+/// STUB — returns empty vec. Replace when merging.
+pub fn from_engine_trades(_trades: &[EngineTrade]) -> Vec<TradeRecord> {
+    vec![]
 }
 
 /// Größter prozentualer Verlust von Hochpunkt zu Tiefpunkt (negativ).

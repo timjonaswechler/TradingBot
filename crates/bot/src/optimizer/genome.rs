@@ -1,292 +1,247 @@
 use rand::Rng;
 
-use crate::strategy::Strategy;
-use crate::strategy::macd_enhanced::{MacdEnhanced, MacdEnhancedParams};
+use crate::strategy::dual_macd::{DualMacdParams, DualMacdStrategy};
 
-/// Trait den jedes Strategie-Genom implementieren muss.
-pub trait Genome: Clone + Send + Sync + std::fmt::Debug {
-    /// Eindeutiger Strategiename (für Logging und Dateinamen).
-    fn strategy_name(&self) -> &'static str;
+/// Allowed candle intervals for primary / secondary timeframes.
+const ALLOWED_INTERVALS: &[&str] = &["1d", "1wk", "1h", "30m", "15m"];
 
-    /// Erzeugt eine zufällige Variante (feste Kernparameter bleiben erhalten).
-    fn random_like(&self, rng: &mut impl Rng) -> Self;
-
-    /// Gibt eine leicht mutierte Kopie zurück.
-    /// `magnitude` ∈ [0.0, 1.0]: 0 = unverändert, 1 = vollständig zufällig.
-    fn mutate(&self, magnitude: f64, rng: &mut impl Rng) -> Self;
-
-    /// Konvertiert das Genom in eine ausführbare Strategie.
-    fn to_strategy(&self) -> Box<dyn Strategy>;
-
-    /// Serialisiert die tunable Parameter als TOML-String.
-    fn to_toml(&self) -> String;
+/// Genome encoding for the DualMacd strategy.
+/// Every field is tunable by the genetic algorithm.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DualMacdGenome {
+    pub params:             DualMacdParams,
+    pub primary_interval:   String, // e.g. "1d"
+    pub secondary_interval: String, // e.g. "1h"
 }
 
-// ── MacdEnhancedGenome ────────────────────────────────────────────────────────
-
-/// Wrapper um MacdEnhancedParams der das Genome-Trait implementiert.
-/// fast/slow/signal_period sind fest und werden bei Mutation nicht verändert.
-#[derive(Clone, Debug)]
-pub struct MacdEnhancedGenome(pub MacdEnhancedParams);
-
-impl MacdEnhancedGenome {
-    /// Lädt die beiden Gewinner aus einer vorherigen Optimierung.
-    /// Gibt `None` zurück wenn die Datei nicht existiert oder nicht parsebar ist.
-    pub fn load_prev_winners(path: &str) -> Option<(Self, Self)> {
-        let content = std::fs::read_to_string(path).ok()?;
-        let doc: toml::Value = content.parse().ok()?;
-
-        let a = doc.get("winner_a")?.as_table()?;
-        let b = doc.get("winner_b")?.as_table()?;
-
-        let params_a: MacdEnhancedParams = toml::Value::Table(a.clone()).try_into().ok()?;
-        let params_b: MacdEnhancedParams = toml::Value::Table(b.clone()).try_into().ok()?;
-
-        Some((Self(params_a), Self(params_b)))
-    }
-
-    /// Erstellt ein Genom mit zufälligen tunable Parametern.
-    /// fast/slow/signal bleiben aus `base` erhalten.
-    pub fn new_random(base: &MacdEnhancedParams, rng: &mut impl Rng) -> Self {
-        Self(MacdEnhancedParams {
-            fast_period:   base.fast_period,
-            slow_period:   base.slow_period,
-            signal_period: base.signal_period,
-            crossover_weight:           rng.gen_range(0.0_f64..3.0),
-            zero_line_weight:           rng.gen_range(0.0_f64..3.0),
-            zero_line_deadband:         rng.gen_range(0.0_f64..0.01),
-            histogram_strength_weight:  rng.gen_range(0.0_f64..3.0),
-            histogram_min_threshold:    rng.gen_range(0.0_f64..0.005),
-            histogram_momentum_weight:  rng.gen_range(0.0_f64..3.0),
-            histogram_lookback:         rng.gen_range(1_usize..=5),
-            histogram_reversal_weight:  rng.gen_range(0.0_f64..3.0),
-            reversal_confirm_bars:      rng.gen_range(1_usize..=3),
-            macd_slope_weight:          rng.gen_range(0.0_f64..3.0),
-            slope_lookback:             rng.gen_range(1_usize..=10),
-            ema_fast_slope_weight:      rng.gen_range(0.0_f64..3.0),
-            ema_slow_slope_weight:      rng.gen_range(0.0_f64..3.0),
-            trend_filter_weight:        rng.gen_range(0.0_f64..3.0),
-            trend_filter_min_slope:     rng.gen_range(0.0_f64..0.005),
-            ema_separation_weight:      rng.gen_range(0.0_f64..3.0),
-            regime_period:              rng.gen_range(20_usize..=200),
-            regime_weight:              rng.gen_range(0.0_f64..5.0),
-            regime_deadband:            rng.gen_range(0.0_f64..0.05),
-            exit_fast_period:           rng.gen_range(2_usize..=10),
-            exit_slow_period:           rng.gen_range(5_usize..=20),
-            exit_signal_period:         rng.gen_range(2_usize..=6),
-            exit_weight:                rng.gen_range(0.0_f64..5.0),
-            buy_threshold:              rng.gen_range(0.1_f64..5.0),
-            sell_threshold:             rng.gen_range(0.1_f64..5.0),
-        })
-    }
-}
-
-impl Genome for MacdEnhancedGenome {
-    fn strategy_name(&self) -> &'static str { "macd_enhanced" }
-
-    fn random_like(&self, rng: &mut impl Rng) -> Self {
-        Self::new_random(&self.0, rng)
-    }
-
-    fn mutate(&self, magnitude: f64, rng: &mut impl Rng) -> Self {
-        let p = &self.0;
-        Self(MacdEnhancedParams {
-            // Fest — unveränderlich
-            fast_period:   p.fast_period,
-            slow_period:   p.slow_period,
-            signal_period: p.signal_period,
-            // Tunable — werden mutiert
-            crossover_weight:           mf(p.crossover_weight,          magnitude, 0.0, 3.0,   rng),
-            zero_line_weight:           mf(p.zero_line_weight,           magnitude, 0.0, 3.0,   rng),
-            zero_line_deadband:         mf(p.zero_line_deadband,         magnitude, 0.0, 0.01,  rng),
-            histogram_strength_weight:  mf(p.histogram_strength_weight,  magnitude, 0.0, 3.0,   rng),
-            histogram_min_threshold:    mf(p.histogram_min_threshold,    magnitude, 0.0, 0.005, rng),
-            histogram_momentum_weight:  mf(p.histogram_momentum_weight,  magnitude, 0.0, 3.0,   rng),
-            histogram_lookback:         mi(p.histogram_lookback,         magnitude, 1,   5,     rng),
-            histogram_reversal_weight:  mf(p.histogram_reversal_weight,  magnitude, 0.0, 3.0,   rng),
-            reversal_confirm_bars:      mi(p.reversal_confirm_bars,      magnitude, 1,   3,     rng),
-            macd_slope_weight:          mf(p.macd_slope_weight,          magnitude, 0.0, 3.0,   rng),
-            slope_lookback:             mi(p.slope_lookback,             magnitude, 1,   10,    rng),
-            ema_fast_slope_weight:      mf(p.ema_fast_slope_weight,      magnitude, 0.0, 3.0,   rng),
-            ema_slow_slope_weight:      mf(p.ema_slow_slope_weight,      magnitude, 0.0, 3.0,   rng),
-            trend_filter_weight:        mf(p.trend_filter_weight,        magnitude, 0.0, 3.0,   rng),
-            trend_filter_min_slope:     mf(p.trend_filter_min_slope,     magnitude, 0.0, 0.005, rng),
-            ema_separation_weight:      mf(p.ema_separation_weight,      magnitude, 0.0, 3.0,    rng),
-            regime_period:              mi(p.regime_period,              magnitude, 20,  200,    rng),
-            regime_weight:              mf(p.regime_weight,              magnitude, 0.0, 5.0,    rng),
-            regime_deadband:            mf(p.regime_deadband,            magnitude, 0.0, 0.05,   rng),
-            exit_fast_period:           mi(p.exit_fast_period,           magnitude, 2,   10,     rng),
-            exit_slow_period:           mi(p.exit_slow_period,           magnitude, 5,   20,     rng),
-            exit_signal_period:         mi(p.exit_signal_period,         magnitude, 2,   6,      rng),
-            exit_weight:                mf(p.exit_weight,                magnitude, 0.0, 5.0,    rng),
-            buy_threshold:              mf(p.buy_threshold,              magnitude, 0.1, 5.0,    rng),
-            sell_threshold:             mf(p.sell_threshold,             magnitude, 0.1, 5.0,    rng),
-        })
-    }
-
-    fn to_strategy(&self) -> Box<dyn Strategy> {
-        Box::new(MacdEnhanced::new(self.0.clone()))
-    }
-
-    fn to_toml(&self) -> String {
-        let p = &self.0;
-        format!(
-            "# Feste Parameter (nicht vom Optimizer geändert)\n\
-             fast_period   = {}\n\
-             slow_period   = {}\n\
-             signal_period = {}\n\n\
-             # K1: Kreuzung\n\
-             crossover_weight          = {:.4}\n\n\
-             # K2: Nulllinien-Lage\n\
-             zero_line_weight          = {:.4}\n\
-             zero_line_deadband        = {:.6}\n\n\
-             # K3: Histogramm-Stärke\n\
-             histogram_strength_weight = {:.4}\n\
-             histogram_min_threshold   = {:.6}\n\n\
-             # K4: Histogramm-Momentum\n\
-             histogram_momentum_weight = {:.4}\n\
-             histogram_lookback        = {}\n\n\
-             # K5: Histogramm-Wendepunkt\n\
-             histogram_reversal_weight = {:.4}\n\
-             reversal_confirm_bars     = {}\n\n\
-             # K6: MACD-Steigung\n\
-             macd_slope_weight         = {:.4}\n\
-             slope_lookback            = {}\n\n\
-             # K7: EMA-Fast Steigung\n\
-             ema_fast_slope_weight     = {:.4}\n\n\
-             # K8: EMA-Slow Steigung\n\
-             ema_slow_slope_weight     = {:.4}\n\n\
-             # K9: Gleichlauf-Filter\n\
-             trend_filter_weight       = {:.4}\n\
-             trend_filter_min_slope    = {:.6}\n\n\
-             # K10: EMA-Abstand\n\
-             ema_separation_weight     = {:.4}\n\n\
-             # K11: Trend-Regime (langer EMA)\n\
-             regime_period             = {}\n\
-             regime_weight             = {:.4}\n\
-             regime_deadband           = {:.6}\n\n\
-             # Exit-MACD (schneller MACD für frühzeitigen Exit)\n\
-             exit_fast_period          = {}\n\
-             exit_slow_period          = {}\n\
-             exit_signal_period        = {}\n\
-             exit_weight               = {:.4}\n\n\
-             # Entscheidungs-Schwellen\n\
-             buy_threshold             = {:.4}\n\
-             sell_threshold            = {:.4}\n",
-            p.fast_period, p.slow_period, p.signal_period,
-            p.crossover_weight,
-            p.zero_line_weight, p.zero_line_deadband,
-            p.histogram_strength_weight, p.histogram_min_threshold,
-            p.histogram_momentum_weight, p.histogram_lookback,
-            p.histogram_reversal_weight, p.reversal_confirm_bars,
-            p.macd_slope_weight, p.slope_lookback,
-            p.ema_fast_slope_weight,
-            p.ema_slow_slope_weight,
-            p.trend_filter_weight, p.trend_filter_min_slope,
-            p.ema_separation_weight,
-            p.regime_period, p.regime_weight, p.regime_deadband,
-            p.exit_fast_period, p.exit_slow_period, p.exit_signal_period, p.exit_weight,
-            p.buy_threshold, p.sell_threshold,
-        )
-    }
-}
-
-// ── RsiGenome (Stub für spätere Implementierung) ──────────────────────────────
-
-/// Platzhalter — wird implementiert wenn RSI-Optimierung benötigt wird.
-/// Struktur analog zu MacdEnhancedGenome.
-#[derive(Clone, Debug)]
-pub struct RsiGenome {
-    pub period:               usize,
-    pub oversold_threshold:   f64,
-    pub overbought_threshold: f64,
-    pub slope_weight:         f64,
-    pub slope_lookback:       usize,
-    pub zone_filter_weight:   f64,
-    pub buy_threshold:        f64,
-    pub sell_threshold:       f64,
-}
-
-impl RsiGenome {
-    pub fn new_random(period: usize, rng: &mut impl Rng) -> Self {
+impl DualMacdGenome {
+    /// Create a genome with default params and sensible default intervals.
+    pub fn default_genome() -> Self {
         Self {
-            period,
-            oversold_threshold:   rng.gen_range(15.0_f64..40.0),
-            overbought_threshold: rng.gen_range(60.0_f64..85.0),
-            slope_weight:         rng.gen_range(0.0_f64..2.0),
-            slope_lookback:       rng.gen_range(1_usize..=8),
-            zone_filter_weight:   rng.gen_range(0.0_f64..2.0),
-            buy_threshold:        rng.gen_range(0.1_f64..3.0),
-            sell_threshold:       rng.gen_range(0.1_f64..3.0),
-        }
-    }
-}
-
-impl Genome for RsiGenome {
-    fn strategy_name(&self) -> &'static str { "rsi" }
-
-    fn random_like(&self, rng: &mut impl Rng) -> Self {
-        Self::new_random(self.period, rng)
-    }
-
-    fn mutate(&self, magnitude: f64, rng: &mut impl Rng) -> Self {
-        Self {
-            period:               self.period, // fest
-            oversold_threshold:   mf(self.oversold_threshold,   magnitude, 15.0, 45.0, rng),
-            overbought_threshold: mf(self.overbought_threshold,  magnitude, 55.0, 85.0, rng),
-            slope_weight:         mf(self.slope_weight,          magnitude,  0.0,  2.0, rng),
-            slope_lookback:       mi(self.slope_lookback,        magnitude,    1,    8, rng),
-            zone_filter_weight:   mf(self.zone_filter_weight,    magnitude,  0.0,  2.0, rng),
-            buy_threshold:        mf(self.buy_threshold,         magnitude,  0.1,  3.0, rng),
-            sell_threshold:       mf(self.sell_threshold,        magnitude,  0.1,  3.0, rng),
+            params:             DualMacdParams::default(),
+            primary_interval:   "1d".to_string(),
+            secondary_interval: "1h".to_string(),
         }
     }
 
-    fn to_strategy(&self) -> Box<dyn Strategy> {
-        // RSI Enhanced noch nicht implementiert — fällt auf Standard-RSI zurück
-        Box::new(crate::strategy::rsi::Rsi {
-            period:     self.period,
-            oversold:   self.oversold_threshold,
-            overbought: self.overbought_threshold,
-        })
+    /// Create a genome with fully randomised params.
+    pub fn random(rng: &mut impl Rng) -> Self {
+        let params = DualMacdParams {
+            fast:                    rng.gen_range(5_usize..=19),
+            slow:                    rng.gen_range(15_usize..=49),
+            signal:                  rng.gen_range(5_usize..=14),
+            primary_crossover_weight:  rng.gen_range(0.0_f64..3.0),
+            primary_histogram_weight:  rng.gen_range(0.0_f64..3.0),
+            primary_slope_weight:      rng.gen_range(0.0_f64..3.0),
+            primary_slope_lookback:    rng.gen_range(1_usize..=9),
+            secondary_drop_threshold:  rng.gen_range(0.0005_f64..0.05),
+            secondary_drop_weight:     rng.gen_range(0.0_f64..3.0),
+            secondary_slope_lookback:  rng.gen_range(1_usize..=4),
+            month_start_boost:         rng.gen_range(0.0_f64..1.0),
+            month_start_days:          rng.gen_range(1_usize..=4),
+            month_end_caution:         rng.gen_range(-1.0_f64..0.0),
+            month_end_days:            rng.gen_range(1_usize..=4),
+            quarter_end_caution:       rng.gen_range(-0.5_f64..0.0),
+            year_end_boost:            rng.gen_range(0.0_f64..0.5),
+            crash_atr_multiplier:      rng.gen_range(1.5_f64..5.0),
+            bull_trend_threshold:      rng.gen_range(0.0001_f64..0.001),
+            bear_trend_threshold:      rng.gen_range(-0.001_f64..-0.0001),
+            long_ema_period:           rng.gen_range(100_usize..=199),
+            atr_period:                rng.gen_range(5_usize..=29),
+            atr_median_period:         rng.gen_range(50_usize..=199),
+            buy_threshold:             rng.gen_range(0.0_f64..5.0),
+            sell_threshold:            rng.gen_range(-3.0_f64..0.0),
+            short_threshold:           rng.gen_range(-5.0_f64..-0.5),
+        };
+        let primary_interval = random_interval(rng).to_string();
+        let secondary_interval = random_interval(rng).to_string();
+        Self { params, primary_interval, secondary_interval }
     }
 
-    fn to_toml(&self) -> String {
-        format!(
-            "period               = {}\n\
-             oversold_threshold   = {:.2}\n\
-             overbought_threshold = {:.2}\n\
-             slope_weight         = {:.4}\n\
-             slope_lookback       = {}\n\
-             zone_filter_weight   = {:.4}\n\
-             buy_threshold        = {:.4}\n\
-             sell_threshold       = {:.4}\n",
-            self.period,
-            self.oversold_threshold, self.overbought_threshold,
-            self.slope_weight, self.slope_lookback,
-            self.zone_filter_weight,
-            self.buy_threshold, self.sell_threshold,
-        )
+    /// Return a mutated copy of this genome.
+    ///
+    /// `magnitude` ∈ [0.0, 1.0]:
+    /// - `f64` fields: `new = (old + magnitude * rng.gen_range(-range/2..=range/2)).clamp(min, max)`
+    /// - `usize` fields: flip ±1 with probability `magnitude / 2`
+    /// - `bool` fields: flip with probability `magnitude / 2`
+    /// - interval strings: pick from allowed list with probability `magnitude / 3`
+    pub fn mutate(&self, magnitude: f64, rng: &mut impl Rng) -> Self {
+        let p = &self.params;
+        let params = DualMacdParams {
+            fast:  mu(p.fast,  magnitude, 5,   20,  rng),
+            slow:  mu(p.slow,  magnitude, 15,  50,  rng),
+            signal:mu(p.signal,magnitude, 5,   15,  rng),
+            primary_crossover_weight:  mf(p.primary_crossover_weight,  magnitude, 0.0,    3.0,    rng),
+            primary_histogram_weight:  mf(p.primary_histogram_weight,  magnitude, 0.0,    3.0,    rng),
+            primary_slope_weight:      mf(p.primary_slope_weight,      magnitude, 0.0,    3.0,    rng),
+            primary_slope_lookback:    mu(p.primary_slope_lookback,    magnitude, 1,      10,     rng),
+            secondary_drop_threshold:  mf(p.secondary_drop_threshold,  magnitude, 0.0005, 0.05,   rng),
+            secondary_drop_weight:     mf(p.secondary_drop_weight,     magnitude, 0.0,    3.0,    rng),
+            secondary_slope_lookback:  mu(p.secondary_slope_lookback,  magnitude, 1,      5,      rng),
+            month_start_boost:         mf(p.month_start_boost,         magnitude, 0.0,    1.0,    rng),
+            month_start_days:          mu(p.month_start_days,          magnitude, 1,      5,      rng),
+            month_end_caution:         mf(p.month_end_caution,         magnitude, -1.0,   0.0,    rng),
+            month_end_days:            mu(p.month_end_days,            magnitude, 1,      5,      rng),
+            quarter_end_caution:       mf(p.quarter_end_caution,       magnitude, -0.5,   0.0,    rng),
+            year_end_boost:            mf(p.year_end_boost,            magnitude, 0.0,    0.5,    rng),
+            crash_atr_multiplier:      mf(p.crash_atr_multiplier,      magnitude, 1.5,    5.0,    rng),
+            bull_trend_threshold:      mf(p.bull_trend_threshold,      magnitude, 0.0001, 0.001,  rng),
+            bear_trend_threshold:      mf(p.bear_trend_threshold,      magnitude, -0.001, -0.0001, rng),
+            long_ema_period:           mu(p.long_ema_period,           magnitude, 100,    200,    rng),
+            atr_period:                mu(p.atr_period,                magnitude, 5,      30,     rng),
+            atr_median_period:         mu(p.atr_median_period,         magnitude, 50,     200,    rng),
+            buy_threshold:             mf(p.buy_threshold,             magnitude, 0.0,    5.0,    rng),
+            sell_threshold:            mf(p.sell_threshold,            magnitude, -3.0,   0.0,    rng),
+            short_threshold:           mf(p.short_threshold,           magnitude, -5.0,   -0.5,   rng),
+        };
+
+        let primary_interval = maybe_mutate_interval(&self.primary_interval, magnitude / 3.0, rng);
+        let secondary_interval = maybe_mutate_interval(&self.secondary_interval, magnitude / 3.0, rng);
+
+        Self { params, primary_interval, secondary_interval }
+    }
+
+    /// Convert genome to an executable strategy instance.
+    pub fn to_strategy(&self) -> DualMacdStrategy {
+        DualMacdStrategy { params: self.params.clone() }
+    }
+
+    /// Serialize to TOML string.
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_else(|e| format!("# serialization error: {e}"))
+    }
+
+    /// Deserialize from TOML string.
+    pub fn from_toml(s: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(toml::from_str(s)?)
     }
 }
 
-// ── Mutations-Hilfsfunktionen ─────────────────────────────────────────────────
+// ─── Mutation helpers ─────────────────────────────────────────────────────────
 
-/// Mutiert einen f64-Wert: addiert Normalverteilungs-Rauschen proportional
-/// zur Parameterbreite (max−min), clamped auf [min, max].
+/// Mutate an `f64` field: add `magnitude * U(-half_range, half_range)`, then clamp.
 fn mf(val: f64, magnitude: f64, min: f64, max: f64, rng: &mut impl Rng) -> f64 {
-    let range = max - min;
-    let sigma = magnitude * range * 0.3; // 30% der Range bei magnitude=1
-    let delta: f64 = rng.gen::<f64>() * 2.0 * sigma - sigma; // uniform [-sigma, +sigma]
+    let half = (max - min) / 2.0;
+    let delta: f64 = magnitude * rng.gen_range(-half..=half);
     (val + delta).clamp(min, max)
 }
 
-/// Mutiert einen usize-Wert: mit Wahrscheinlichkeit `magnitude` ±1.
-fn mi(val: usize, magnitude: f64, min: usize, max: usize, rng: &mut impl Rng) -> usize {
-    if rng.gen::<f64>() < magnitude {
-        let delta: i32 = if rng.gen::<bool>() { 1 } else { -1 };
-        ((val as i32 + delta).max(min as i32) as usize).min(max)
+/// Mutate a `usize` field: ±1 with probability `magnitude / 2`.
+fn mu(val: usize, magnitude: f64, min: usize, max: usize, rng: &mut impl Rng) -> usize {
+    if rng.gen::<f64>() < magnitude / 2.0 {
+        let delta: i64 = if rng.gen::<bool>() { 1 } else { -1 };
+        ((val as i64 + delta).max(min as i64) as usize).min(max)
     } else {
         val
+    }
+}
+
+/// Possibly replace the interval string with a random one from the allowed list.
+fn maybe_mutate_interval(current: &str, probability: f64, rng: &mut impl Rng) -> String {
+    if rng.gen::<f64>() < probability {
+        random_interval(rng).to_string()
+    } else {
+        current.to_string()
+    }
+}
+
+fn random_interval(rng: &mut impl Rng) -> &'static str {
+    ALLOWED_INTERVALS[rng.gen_range(0..ALLOWED_INTERVALS.len())]
+}
+
+// ─── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    fn seeded() -> StdRng { StdRng::seed_from_u64(42) }
+
+    #[test]
+    fn random_params_in_range() {
+        let mut rng = seeded();
+        let g = DualMacdGenome::random(&mut rng);
+        let p = &g.params;
+
+        assert!((5..=20).contains(&p.fast),          "fast={}", p.fast);
+        assert!((15..=50).contains(&p.slow),         "slow={}", p.slow);
+        assert!((5..=15).contains(&p.signal),        "signal={}", p.signal);
+        assert!((0.0..=3.0).contains(&p.primary_crossover_weight));
+        assert!((0.0..=3.0).contains(&p.primary_histogram_weight));
+        assert!((0.0..=3.0).contains(&p.primary_slope_weight));
+        assert!((1..=10).contains(&p.primary_slope_lookback));
+        assert!(p.secondary_drop_threshold >= 0.0005 && p.secondary_drop_threshold <= 0.05);
+        assert!((0.0..=3.0).contains(&p.secondary_drop_weight));
+        assert!((1..=5).contains(&p.secondary_slope_lookback));
+        assert!((0.0..=1.0).contains(&p.month_start_boost));
+        assert!((1..=5).contains(&p.month_start_days));
+        assert!(p.month_end_caution >= -1.0 && p.month_end_caution <= 0.0);
+        assert!((1..=5).contains(&p.month_end_days));
+        assert!(p.quarter_end_caution >= -0.5 && p.quarter_end_caution <= 0.0);
+        assert!((0.0..=0.5).contains(&p.year_end_boost));
+        assert!(p.crash_atr_multiplier >= 1.5 && p.crash_atr_multiplier <= 5.0);
+        assert!(p.bull_trend_threshold >= 0.0001 && p.bull_trend_threshold <= 0.001);
+        assert!(p.bear_trend_threshold >= -0.001 && p.bear_trend_threshold <= -0.0001);
+        assert!((100..=200).contains(&p.long_ema_period));
+        assert!((5..=30).contains(&p.atr_period));
+        assert!((50..=200).contains(&p.atr_median_period));
+        assert!((0.0..=5.0).contains(&p.buy_threshold));
+        assert!(p.sell_threshold >= -3.0 && p.sell_threshold <= 0.0);
+        assert!(p.short_threshold >= -5.0 && p.short_threshold <= -0.5);
+
+        assert!(ALLOWED_INTERVALS.contains(&g.primary_interval.as_str()));
+        assert!(ALLOWED_INTERVALS.contains(&g.secondary_interval.as_str()));
+    }
+
+    #[test]
+    fn mutate_zero_magnitude_params_unchanged() {
+        let mut rng = seeded();
+        let g = DualMacdGenome::random(&mut rng);
+        let mutated = g.mutate(0.0, &mut rng);
+        // With magnitude=0 no mutations should fire; values stay identical.
+        let p = &g.params;
+        let m = &mutated.params;
+        assert_eq!(p.fast,  m.fast);
+        assert_eq!(p.slow,  m.slow);
+        assert_eq!(p.signal, m.signal);
+        // f64 fields: delta = 0 * anything = 0
+        assert_eq!(p.primary_crossover_weight, m.primary_crossover_weight);
+        assert_eq!(p.buy_threshold,            m.buy_threshold);
+        assert_eq!(g.primary_interval,         mutated.primary_interval);
+        assert_eq!(g.secondary_interval,       mutated.secondary_interval);
+    }
+
+    #[test]
+    fn mutate_high_magnitude_changes_params() {
+        // With magnitude=1.0 and many iterations at least one param must change.
+        let mut rng = seeded();
+        let g = DualMacdGenome::random(&mut rng);
+        let mut changed = false;
+        for _ in 0..20 {
+            let mutated = g.mutate(1.0, &mut rng);
+            if mutated.params.buy_threshold != g.params.buy_threshold
+                || mutated.params.fast != g.params.fast
+            {
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed, "expected at least one param to change with magnitude=1.0");
+    }
+
+    #[test]
+    fn toml_roundtrip() {
+        let mut rng = seeded();
+        let g = DualMacdGenome::random(&mut rng);
+        let s = g.to_toml();
+        assert!(!s.contains("serialization error"));
+        let g2 = DualMacdGenome::from_toml(&s).expect("from_toml failed");
+        assert_eq!(g.params.fast,  g2.params.fast);
+        assert_eq!(g.params.slow,  g2.params.slow);
+        assert!((g.params.buy_threshold - g2.params.buy_threshold).abs() < 1e-9);
+        assert_eq!(g.primary_interval,   g2.primary_interval);
+        assert_eq!(g.secondary_interval, g2.secondary_interval);
     }
 }
