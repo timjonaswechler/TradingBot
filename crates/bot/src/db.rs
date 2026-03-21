@@ -285,8 +285,10 @@ impl Db {
 
     pub fn save_trade(&self, trade: &Trade) -> Result<()> {
         let side = match trade.side {
-            TradeSide::Buy  => "buy",
-            TradeSide::Sell => "sell",
+            TradeSide::Buy   => "buy",
+            TradeSide::Sell  => "sell",
+            TradeSide::Short => "short",
+            TradeSide::Cover => "cover",
         };
         self.conn.execute(
             "INSERT INTO trades
@@ -318,16 +320,20 @@ impl Db {
                 let side_str: String = row.get(1)?;
                 let side = if side_str == "buy" { TradeSide::Buy } else { TradeSide::Sell };
                 Ok(Trade {
-                    asset:         row.get(0)?,
+                    asset:           row.get(0)?,
                     side,
-                    quantity:      row.get(2)?,
-                    price:         row.get(3)?,
-                    fee:           row.get(4)?,
-                    timestamp:     row.get(5)?,
-                    strategy:      row.get(6)?,
-                    gain_loss:     row.get(7)?,
-                    gain_loss_pct: row.get(8)?,
-                    tax:           row.get(9)?,
+                    quantity:        row.get(2)?,
+                    price:           row.get(3)?,
+                    fee:             row.get(4)?,
+                    timestamp:       row.get(5)?,
+                    strategy:        row.get(6)?,
+                    gain_loss:       row.get(7)?,
+                    gain_loss_pct:   row.get(8)?,
+                    tax:             row.get(9)?,
+                    // stub-only fields — not persisted in this schema
+                    price_cents:     row.get(3)?,
+                    pnl_cents:       row.get(7).unwrap_or(0),
+                    commission_cents: row.get(4)?,
                 })
             })?
             .filter_map(|r| r.ok())

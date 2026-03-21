@@ -1,142 +1,145 @@
+/// Optimize CLI binary.
+///
+/// Usage:
+///   cargo run --bin optimize -- [--population 25] [--generations 100] \
+///                               [--output best_genome.toml] [--config config.toml]
+///
+/// Prerequisites: run `cargo run --bin collector` first to populate the DB.
+
+use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-use bot::{config, db, optimizer::{engine, evaluator::CandlePool, genome::*}};
-use bot::strategy::macd_enhanced::MacdEnhancedParams;
-
-use anyhow::{bail, Result};
-use std::path::Path;
+use bot::{
+    config::Config,
+    db::Db,
+    optimizer::{CandlePool, OptimizerConfig, run as optimizer_run},
+};
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
-    let cfg = config::Config::load(Path::new("config.toml"))?;
-    let opt = cfg.optimizer.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("[optimizer] Block fehlt in config.toml"))?;
+    // ── Parse CLI args ────────────────────────────────────────────────────────
+    let args: Vec<String> = std::env::args().collect();
 
-    let db = db::Db::open(&cfg.db.path)?;
+    let config_path = arg_value(&args, "--config")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("config.toml"));
 
-    // ── Alle Candles für alle Assets + alle Intervalle laden ─────────────────
-    // Jedes Individuum wählt beim Backtesten zufällig Asset + Intervall.
+    let cfg = Config::load(&config_path)
+        .with_context(|| format!("failed to load config from '{}'", config_path.display()))?;
+
+    let population_size = arg_value(&args, "--population")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(cfg.optimizer.population_size);
+
+    let max_generations = arg_value(&args, "--generations")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(cfg.optimizer.max_generations);
+
+    let output_path = arg_value(&args, "--output")
+        .unwrap_or_else(|| "best_genome.toml".to_string());
+
+    // ── Open DB ───────────────────────────────────────────────────────────────
+    let db = Db::open(&cfg.db.path)?;
+
+    // ── Determine asset list: CLI assets override > optimizer.assets > watchlist
+    let assets: Vec<String> = if !cfg.optimizer.assets.is_empty() {
+        cfg.optimizer.assets.clone()
+    } else {
+        cfg.assets.watchlist.clone()
+    };
+
+    if assets.is_empty() {
+        bail!("No assets configured. Set optimizer.assets or assets.watchlist in config.toml.");
+    }
+
+    let primary_interval   = cfg.strategy.primary_interval.clone();
+    let secondary_interval = cfg.strategy.secondary_interval.clone();
+    // Deduplicate so we don't load the same interval twice when primary == secondary.
+    let mut intervals: Vec<&str> = vec![&primary_interval];
+    if secondary_interval != primary_interval {
+        intervals.push(&secondary_interval);
+    }
+
+    // ── Load candles into pool ────────────────────────────────────────────────
     let mut pool: CandlePool = HashMap::new();
     let mut total_series = 0usize;
 
-    for asset in &cfg.assets.watchlist {
-        let mut interval_map: HashMap<String, Vec<bot::market_data::Candle>> = HashMap::new();
-        for interval in &cfg.data.intervals {
-            if let Ok(candles) = db.get_all_candles_asc(asset, interval) {
-                if !candles.is_empty() {
+    for asset in &assets {
+        for interval in &intervals {
+            match db.get_all_candles_asc(asset, interval) {
+                Ok(candles) if !candles.is_empty() => {
                     total_series += 1;
-                    interval_map.insert(interval.clone(), candles);
+                    pool.insert((asset.clone(), interval.to_string()), candles);
+                }
+                Ok(_) => {
+                    log::warn!("No candles for {} {} — skipping.", asset, interval);
+                }
+                Err(e) => {
+                    log::warn!("Failed to load candles for {} {}: {} — skipping.", asset, interval, e);
                 }
             }
-        }
-        if !interval_map.is_empty() {
-            pool.insert(asset.clone(), interval_map);
         }
     }
 
     if pool.is_empty() {
-        bail!("Keine Candle-Daten gefunden. Zuerst: cargo run -p bot --bin collector");
+        bail!(
+            "No candle data found. Run `cargo run --bin collector` first."
+        );
     }
 
-    println!("\n══ Optimizer ═══════════════════════════════════════════════════════════");
-    println!("  Strategie:   {}", opt.strategy);
-    println!("  Assets:      {} ({total_series} Asset×Intervall-Kombinationen)",
-             pool.len());
-    println!("  Generationen:{}", opt.max_generations);
-    println!("  Population:  {} ({}×{} Gruppen)", opt.population_size,
-             opt.population_size / 2, 2);
-    println!("  Mutation:    {:.0}%", opt.mutation_magnitude * 100.0);
-    println!("  Fenster:     min. {} Candles", opt.min_window_candles);
-    println!("  Fitness:     WinRate×{}  Exp×{}  AvgWin×{}  AvgLoss×{}  Sharpe×{}  DD×{}",
-             opt.fitness.win_rate, opt.fitness.expectancy, opt.fitness.avg_win,
-             opt.fitness.avg_loss, opt.fitness.sharpe, opt.fitness.drawdown);
-    println!("               Score = win_rate_pct × {:.1}  (0–100, Ziel: 100)",
-             opt.fitness.win_rate);
-    println!("────────────────────────────────────────────────────────────────────────\n");
-
-    match opt.strategy.as_str() {
-        "macd_enhanced" => run_macd_enhanced(&cfg, &pool)?,
-        "rsi"           => run_rsi(&cfg, &pool)?,
-        other           => bail!("Unbekannte Strategie: '{other}'. Verfügbar: macd_enhanced, rsi"),
-    }
-
-    Ok(())
-}
-
-// ── MACD Enhanced ─────────────────────────────────────────────────────────────
-
-fn run_macd_enhanced(cfg: &config::Config, pool: &CandlePool) -> Result<()> {
-    let opt = cfg.optimizer.as_ref().unwrap();
-    let s   = &cfg.strategy;
-
-    let base = MacdEnhancedParams {
-        fast_period:   s.macd_fast.unwrap_or(12),
-        slow_period:   s.macd_slow.unwrap_or(26),
-        signal_period: s.macd_signal.unwrap_or(9),
-        ..Default::default()
+    let assets_count = assets.len();
+    let opt_cfg = OptimizerConfig {
+        population_size,
+        max_generations,
+        initial_mutation: cfg.optimizer.initial_mutation,
+        assets,
     };
-    let seed = MacdEnhancedGenome(base);
 
-    // Vorherige Gewinner laden wenn vorhanden
-    let prev = MacdEnhancedGenome::load_prev_winners("data/best_macd_enhanced.toml");
-    if prev.is_some() {
-        println!("  Vorherige Ergebnisse gefunden: data/best_macd_enhanced.toml");
-    }
+    println!("=== Optimizer ===");
+    println!("  Assets:      {} ({} series)", assets_count, total_series);
+    println!("  Population:  {}", population_size);
+    println!("  Generations: {}", max_generations);
+    println!("  Mutation:    {:.0}%", cfg.optimizer.initial_mutation * 100.0);
+    println!("  Min window:  {} candles", cfg.optimizer.min_window_candles);
+    println!("  Fitness:     sharpe×{}  win_rate×{}  expectancy×{}  drawdown×{}",
+        cfg.optimizer.fitness.sharpe,
+        cfg.optimizer.fitness.win_rate,
+        cfg.optimizer.fitness.expectancy,
+        cfg.optimizer.fitness.drawdown,
+    );
+    println!("────────────────────────────────────────");
 
-    let (result, _logs) = engine::run(&seed, prev, pool, opt, &cfg.paper_trading, &cfg.costs, &cfg.tax);
+    // ── Run optimizer ─────────────────────────────────────────────────────────
+    let result = optimizer_run(opt_cfg, &pool);
 
-    print_and_save("macd_enhanced", &result.winner_a, result.score_a, &result.winner_b, result.score_b)
-}
-
-// ── RSI ───────────────────────────────────────────────────────────────────────
-
-fn run_rsi(cfg: &config::Config, pool: &CandlePool) -> Result<()> {
-    let opt    = cfg.optimizer.as_ref().unwrap();
-    let period = cfg.strategy.rsi_period.unwrap_or(14);
-    let seed   = RsiGenome::new_random(period, &mut rand::thread_rng());
-
-    let prev = None; // RSI: noch kein Laden implementiert
-    let (result, _logs) = engine::run(&seed, prev, pool, opt, &cfg.paper_trading, &cfg.costs, &cfg.tax);
-
-    print_and_save("rsi", &result.winner_a, result.score_a, &result.winner_b, result.score_b)
-}
-
-// ── Ausgabe & Speichern ───────────────────────────────────────────────────────
-
-fn print_and_save<G: Genome>(
-    name:    &str,
-    a:       &G,
-    score_a: f64,
-    b:       &G,
-    score_b: f64,
-) -> Result<()> {
-    println!("\n══ Ergebnis ════════════════════════════════════════════════════════════");
-    println!("── Gewinner A  (Fitness: {score_a:+.4}) ─────────────────────────────────");
-    println!("{}", a.to_toml());
-    println!("── Gewinner B  (Fitness: {score_b:+.4}) ─────────────────────────────────");
-    println!("{}", b.to_toml());
-    println!("════════════════════════════════════════════════════════════════════════");
-
-    std::fs::create_dir_all("data")?;
-    let path = format!("data/best_{name}.toml");
-    let now  = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-
-    let content = format!(
-        "# Optimierungsergebnis: {name}\n\
-         # Erstellt:  {now}\n\n\
-         [winner_a]\n\
-         fitness = {score_a:.6}\n\
-         {}\n\
-         [winner_b]\n\
-         fitness = {score_b:.6}\n\
-         {}\n",
-        a.to_toml(),
-        b.to_toml(),
+    // ── Print results ─────────────────────────────────────────────────────────
+    println!("\n=== Optimization Complete ===");
+    println!("  Best fitness:  {:.4}", result.best_fitness);
+    println!("  Generations:   {}", result.generations.len());
+    println!(
+        "  Winner MACD:   fast={} slow={} signal={}",
+        result.winner.params.fast,
+        result.winner.params.slow,
+        result.winner.params.signal,
     );
 
-    std::fs::write(&path, &content)?;
-    println!("\n  Gespeichert: {path}");
-    println!("  → Werte aus [winner_a] in config.toml [strategy] eintragen um sie im Bot zu nutzen.");
+    // ── Save best genome ──────────────────────────────────────────────────────
+    if let Some(parent) = std::path::Path::new(&output_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&output_path, result.winner.to_toml())?;
+    println!("  Saved to: {}", output_path);
+
     Ok(())
+}
+
+/// Returns the value following `key` in `args`, if present.
+fn arg_value(args: &[String], key: &str) -> Option<String> {
+    args.windows(2)
+        .find(|w| w[0] == key)
+        .map(|w| w[1].clone())
 }
