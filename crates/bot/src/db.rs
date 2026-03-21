@@ -39,6 +39,39 @@ impl Db {
         Ok(())
     }
 
+    // ── Nicht-verfügbare Intervalle tracken ───────────────────────────────────
+
+    /// Erstellt die Tabelle für dauerhaft nicht-verfügbare Asset×Intervall-Kombinationen.
+    pub fn ensure_unavailable_table(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS unavailable_intervals (
+                asset    VARCHAR NOT NULL,
+                interval VARCHAR NOT NULL,
+                PRIMARY KEY (asset, interval)
+            );"
+        )?;
+        Ok(())
+    }
+
+    /// Markiert eine Asset×Intervall-Kombination als dauerhaft nicht verfügbar.
+    pub fn mark_unavailable(&self, asset: &str, interval: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO unavailable_intervals (asset, interval) VALUES (?, ?)
+             ON CONFLICT (asset, interval) DO NOTHING",
+            params![asset, interval],
+        )?;
+        Ok(())
+    }
+
+    /// Prüft ob eine Asset×Intervall-Kombination als nicht verfügbar markiert ist.
+    pub fn is_unavailable(&self, asset: &str, interval: &str) -> bool {
+        self.conn.query_row(
+            "SELECT 1 FROM unavailable_intervals WHERE asset = ? AND interval = ?",
+            params![asset, interval],
+            |_| Ok(true),
+        ).unwrap_or(false)
+    }
+
     /// Fügt Candles ein und überspringt Duplikate (anhand timestamp + interval).
     pub fn upsert_candles(&self, asset: &str, candles: &[Candle], interval: &str) -> Result<usize> {
         let table = candle_table(asset);
@@ -161,15 +194,16 @@ impl Db {
             );
 
             CREATE TABLE IF NOT EXISTS trades (
-                asset      VARCHAR NOT NULL,
-                side       VARCHAR NOT NULL,
-                quantity   BIGINT  NOT NULL,
-                price      BIGINT  NOT NULL,
-                fee        BIGINT  NOT NULL,
-                timestamp  BIGINT  NOT NULL,
-                strategy   VARCHAR NOT NULL,
-                gain_loss  BIGINT,
-                tax        BIGINT
+                asset          VARCHAR NOT NULL,
+                side           VARCHAR NOT NULL,
+                quantity       BIGINT  NOT NULL,
+                price          BIGINT  NOT NULL,
+                fee            BIGINT  NOT NULL,
+                timestamp      BIGINT  NOT NULL,
+                strategy       VARCHAR NOT NULL,
+                gain_loss      BIGINT,
+                gain_loss_pct  REAL,
+                tax            BIGINT
             );
 
             CREATE TABLE IF NOT EXISTS positions (
@@ -256,8 +290,8 @@ impl Db {
         };
         self.conn.execute(
             "INSERT INTO trades
-                 (asset, side, quantity, price, fee, timestamp, strategy, gain_loss, tax)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (asset, side, quantity, price, fee, timestamp, strategy, gain_loss, gain_loss_pct, tax)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 trade.asset,
                 side,
@@ -267,6 +301,7 @@ impl Db {
                 trade.timestamp,
                 trade.strategy,
                 trade.gain_loss,
+                trade.gain_loss_pct,
                 trade.tax
             ],
         )?;
@@ -275,27 +310,24 @@ impl Db {
 
     pub fn load_trades(&self) -> Result<Vec<Trade>> {
         let mut stmt = self.conn.prepare(
-            "SELECT asset, side, quantity, price, fee, timestamp, strategy, gain_loss, tax
+            "SELECT asset, side, quantity, price, fee, timestamp, strategy, gain_loss, gain_loss_pct, tax
              FROM trades ORDER BY timestamp ASC",
         )?;
         let trades = stmt
             .query_map([], |row| {
                 let side_str: String = row.get(1)?;
-                let side = if side_str == "buy" {
-                    TradeSide::Buy
-                } else {
-                    TradeSide::Sell
-                };
+                let side = if side_str == "buy" { TradeSide::Buy } else { TradeSide::Sell };
                 Ok(Trade {
-                    asset:     row.get(0)?,
+                    asset:         row.get(0)?,
                     side,
-                    quantity:  row.get(2)?,
-                    price:     row.get(3)?,
-                    fee:       row.get(4)?,
-                    timestamp: row.get(5)?,
-                    strategy:  row.get(6)?,
-                    gain_loss: row.get(7)?,
-                    tax:       row.get(8)?,
+                    quantity:      row.get(2)?,
+                    price:         row.get(3)?,
+                    fee:           row.get(4)?,
+                    timestamp:     row.get(5)?,
+                    strategy:      row.get(6)?,
+                    gain_loss:     row.get(7)?,
+                    gain_loss_pct: row.get(8)?,
+                    tax:           row.get(9)?,
                 })
             })?
             .filter_map(|r| r.ok())

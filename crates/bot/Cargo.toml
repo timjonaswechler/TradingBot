@@ -15,6 +15,10 @@ path = "src/bin/backtest.rs"
 name = "collector"
 path = "src/bin/collector.rs"
 
+[[bin]]
+name = "optimize"
+path = "src/bin/optimize.rs"
+
 [dependencies]
 tokio      = { version = "1",    features = ["full"] }
 reqwest    = { version = "0.12", features = ["json"] }
@@ -28,3 +32,5 @@ log        = "0.4"
 env_logger = "0.11"
 rusqlite   = "0.32"
 plotters   = { version = "0.3", features = ["chrono"] }
+rand       = { version = "0.8", features = ["small_rng"] }
+rayon      = "1"

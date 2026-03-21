@@ -12,6 +12,7 @@ pub struct Config {
     pub db:            DbConfig,
     #[serde(default)]
     pub data:          DataConfig,
+    pub optimizer:     Option<OptimizerConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +100,70 @@ fn default_long_period()  -> usize { 50 }
 pub struct DbConfig {
     pub path: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct OptimizerConfig {
+    /// Strategie-Name: "macd_enhanced", "rsi", "bollinger", "sma_crossover"
+    pub strategy: String,
+    /// Anzahl Bots pro Generation (wird intern in 2 Gruppen geteilt)
+    pub population_size: usize,
+    /// Maximale Anzahl Generationen
+    pub max_generations: u32,
+    /// Mutationsstärke: 0.0 = keine Änderung, 1.0 = vollständig zufällig
+    pub mutation_magnitude: f64,
+    /// Minimale Fenstergröße in Candles für eine Bewertung
+    pub min_window_candles: usize,
+    /// Fitness-Gewichte
+    #[serde(default)]
+    pub fitness: FitnessWeights,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FitnessWeights {
+    /// Sharpe Ratio (risikoadjustierte Rendite, normiert)
+    #[serde(default = "fw_sharpe")]
+    pub sharpe: f64,
+    /// Win-Rate (Anteil gewonnener Trades, 0–1)
+    #[serde(default = "fw_win_rate")]
+    pub win_rate: f64,
+    /// Ø Gewinn pro Gewinn-Trade in % (höher = besser)
+    #[serde(default = "fw_avg_win")]
+    pub avg_win: f64,
+    /// Strafe: Ø Verlust pro Verlust-Trade in % (wird subtrahiert)
+    #[serde(default = "fw_avg_loss")]
+    pub avg_loss: f64,
+    /// Erwartungswert pro Trade in % (win_rate×avg_win − loss_rate×avg_loss)
+    #[serde(default = "fw_expectancy")]
+    pub expectancy: f64,
+    /// Strafe für maximalen Drawdown in % (wird subtrahiert)
+    #[serde(default = "fw_drawdown")]
+    pub drawdown: f64,
+    /// Mindestanzahl Trades — weniger → Fitness = -∞
+    #[serde(default = "fw_min_trades")]
+    pub min_trades: usize,
+}
+
+impl Default for FitnessWeights {
+    fn default() -> Self {
+        Self {
+            sharpe:     fw_sharpe(),
+            win_rate:   fw_win_rate(),
+            avg_win:    fw_avg_win(),
+            avg_loss:   fw_avg_loss(),
+            expectancy: fw_expectancy(),
+            drawdown:   fw_drawdown(),
+            min_trades: fw_min_trades(),
+        }
+    }
+}
+
+fn fw_sharpe()     -> f64   { 1.0 }
+fn fw_win_rate()   -> f64   { 0.5 }
+fn fw_avg_win()    -> f64   { 0.3 }
+fn fw_avg_loss()   -> f64   { 0.3 }
+fn fw_expectancy() -> f64   { 1.0 }
+fn fw_drawdown()   -> f64   { 0.5 }
+fn fw_min_trades() -> usize { 5   }
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {

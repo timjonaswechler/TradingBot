@@ -1,5 +1,6 @@
 pub mod bollinger;
 pub mod macd;
+pub mod macd_enhanced;
 pub mod rsi;
 pub mod sma_crossover;
 
@@ -49,6 +50,14 @@ pub fn from_config(cfg: &crate::config::StrategyConfig) -> Result<Box<dyn Strate
             slow_period:   cfg.macd_slow.unwrap_or(26),
             signal_period: cfg.macd_signal.unwrap_or(9),
         }),
+        "macd_enhanced" => Box::new(macd_enhanced::MacdEnhanced::new(
+            macd_enhanced::MacdEnhancedParams {
+                fast_period:   cfg.macd_fast.unwrap_or(12),
+                slow_period:   cfg.macd_slow.unwrap_or(26),
+                signal_period: cfg.macd_signal.unwrap_or(9),
+                ..Default::default()
+            }
+        )),
         "bollinger" => Box::new(bollinger::BollingerBands {
             period: cfg.bb_period.unwrap_or(20),
             k:      cfg.bb_k.unwrap_or(2.0),

@@ -58,16 +58,16 @@ struct YfQuote {
     volume: Vec<Option<f64>>,
 }
 
-/// Liefert den frühesten sinnvollen Unix-Timestamp für ein Intervall.
+/// Liefert den frühesten erlaubten Unix-Timestamp für ein Intervall (mit Sicherheitspuffer).
 /// Intraday-Intervalle haben bei Yahoo Finance ein hartes History-Limit.
-fn period1_for_interval(interval: &str) -> i64 {
+pub fn period1_for_interval(interval: &str) -> i64 {
     let now = chrono::Utc::now().timestamp();
     match interval {
-        "1m"                  => now - 7   * 86_400,
-        "2m" | "5m"           => now - 60  * 86_400,
-        "15m" | "30m"         => now - 60  * 86_400,
-        "60m" | "1h"           => now - 730 * 86_400,
-        "90m"                  => now - 60  * 86_400,
+        "1m"                  => now -   6 * 86_400,  // Limit ~7d, Puffer 1d
+        "2m" | "5m"           => now -  59 * 86_400,  // Limit ~60d, Puffer 1d
+        "15m" | "30m"         => now -  59 * 86_400,
+        "60m" | "1h"          => now - 729 * 86_400,  // Limit ~730d, Puffer 1d
+        "90m"                 => now -  59 * 86_400,
         _                     => 0, // EOD: Epoch = komplette verfügbare History
     }
 }
@@ -91,17 +91,20 @@ pub async fn fetch_history(
 }
 
 /// Inkrementelles Update: holt nur Candles seit `since_ts` (Unix-Timestamp).
-/// Ideal für regelmäßige Cron-Runs — lädt nur was noch fehlt.
+/// `since_ts` wird auf das erlaubte History-Limit des Intervalls geclampt —
+/// verhindert Fehler wenn die DB einen sehr alten Timestamp enthält.
 pub async fn fetch_since(
     client: &reqwest::Client,
     symbol: &str,
     interval: &str,
     since_ts: i64,
 ) -> Result<Vec<Candle>> {
-    let now = Utc::now().timestamp();
+    let now      = Utc::now().timestamp();
+    let earliest = period1_for_interval(interval);
+    let period1  = since_ts.max(earliest);
     let url = format!(
         "https://query1.finance.yahoo.com/v8/finance/chart/{}?interval={}&period1={}&period2={}",
-        symbol, interval, since_ts, now
+        symbol, interval, period1, now
     );
     fetch_url(client, &url).await
 }

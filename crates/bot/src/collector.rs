@@ -24,10 +24,18 @@ pub async fn run(cfg: &Config, db: &Db, http: &reqwest::Client) -> Result<usize>
     let market_open = us_market_is_open();
     let mut total_new = 0usize;
 
+    db.ensure_unavailable_table()?;
+
     for asset in &cfg.assets.watchlist {
         db.ensure_asset_table(asset)?;
 
         for interval in &cfg.data.intervals {
+            // Dauerhaft nicht-verfügbare Kombinationen überspringen
+            if db.is_unavailable(asset, interval) {
+                log::debug!("{asset}/{interval}: als nicht verfügbar markiert, überspringe");
+                continue;
+            }
+
             let last_ts = db.get_last_timestamp(asset, interval)?;
 
             // Intraday bei geschlossenem Markt nur überspringen wenn Daten
@@ -39,20 +47,28 @@ pub async fn run(cfg: &Config, db: &Db, http: &reqwest::Client) -> Result<usize>
                 continue;
             }
 
-            let n = match last_ts {
+            let result = match last_ts {
                 Some(ts) => {
                     log::info!("{asset}/{interval}: inkrementelles Update seit {ts}");
-                    match market_data::fetch_since(http, asset, interval, ts).await {
-                        Ok(candles) => db.upsert_candles(asset, &candles, interval)?,
-                        Err(e) => { log::warn!("{asset}/{interval}: fetch fehlgeschlagen – {e}"); 0 }
-                    }
+                    market_data::fetch_since(http, asset, interval, ts).await
                 }
                 None => {
                     log::info!("{asset}/{interval}: Erstabzug");
-                    match market_data::fetch_history(http, asset, interval, &cfg.data.range).await {
-                        Ok(candles) => db.upsert_candles(asset, &candles, interval)?,
-                        Err(e) => { log::warn!("{asset}/{interval}: Erstabzug fehlgeschlagen – {e}"); 0 }
+                    market_data::fetch_history(http, asset, interval, &cfg.data.range).await
+                }
+            };
+
+            let n = match result {
+                Ok(candles) => db.upsert_candles(asset, &candles, interval)?,
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("Unprocessable Entity") || msg.contains("No data found") {
+                        log::info!("{asset}/{interval}: nicht verfügbar bei Yahoo Finance, wird dauerhaft übersprungen");
+                        db.mark_unavailable(asset, interval)?;
+                    } else {
+                        log::warn!("{asset}/{interval}: fetch fehlgeschlagen – {e}");
                     }
+                    0
                 }
             };
 

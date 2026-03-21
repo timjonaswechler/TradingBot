@@ -5,7 +5,19 @@
       "Bash(cargo build:*)",
       "Bash(gh issue:*)",
       "Bash(__NEW_LINE_a829fd5dfab50ab2__ gh:*)",
-      "Bash(cargo run:*)"
+      "Bash(cargo run:*)",
+      "WebFetch(domain:longbridge.github.io)",
+      "WebFetch(domain:docs.rs)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(head:*)",
+      "Bash(grep -n \"fn small\\\\|fn xsmall\\\\|fn ghost\\\\|fn primary\\\\|fn w_full\\\\|impl Styled\\\\|impl StyledExt\\\\|impl ButtonVariants\\\\|fn on_click\" ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.5.1/src/button/button.rs)",
+      "Bash(grep -n \"fn small\\\\|fn xsmall\\\\|impl Sizable\\\\|fn w_full\\\\|fn when\\\\|FluentBuilder\" ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.5.1/src/button/button.rs)",
+      "Bash(grep -n \"fn small\\\\|fn xsmall\" ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.5.1/src/*.rs)",
+      "Bash(ls ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.5.1/src/theme/ 2)",
+      "Bash(/dev/null grep:*)",
+      "Bash(ls ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.5.1/src/chart/ 2)",
+      "Bash(grep -n ^s*[A-Z][a-zA-Z]*, ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.5.1/src/icon.rs)"
     ]
   }
 }

@@ -16,15 +16,16 @@ pub struct Position {
 
 #[derive(Debug, Clone)]
 pub struct Trade {
-    pub asset:     String,
-    pub side:      TradeSide,
-    pub quantity:  i64,
-    pub price:     i64,           // in Cent
-    pub fee:       i64,           // Broker-Kosten in Cent
-    pub timestamp: i64,           // Unix timestamp
-    pub strategy:  String,
-    pub gain_loss: Option<i64>,   // realisierter Gewinn/Verlust in Cent (nur Sell)
-    pub tax:       Option<i64>,   // Steuer in Cent (nur Sell)
+    pub asset:          String,
+    pub side:           TradeSide,
+    pub quantity:       i64,
+    pub price:          i64,           // in Cent
+    pub fee:            i64,           // Broker-Kosten in Cent
+    pub timestamp:      i64,           // Unix timestamp
+    pub strategy:       String,
+    pub gain_loss:      Option<i64>,   // realisierter Gewinn/Verlust in Cent (nur Sell)
+    pub gain_loss_pct:  Option<f64>,   // Gewinn/Verlust in % des eingesetzten Kapitals (nur Sell)
+    pub tax:            Option<i64>,   // Steuer in Cent (nur Sell)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,15 +118,16 @@ impl PaperTradingEngine {
         }
 
         let trade = Trade {
-            asset:     asset.to_string(),
-            side:      TradeSide::Buy,
+            asset:         asset.to_string(),
+            side:          TradeSide::Buy,
             quantity,
             price,
             fee,
-            timestamp: Utc::now().timestamp(),
-            strategy:  strategy.to_string(),
-            gain_loss: None,
-            tax:       None,
+            timestamp:     Utc::now().timestamp(),
+            strategy:      strategy.to_string(),
+            gain_loss:     None,
+            gain_loss_pct: None,
+            tax:           None,
         };
         self.trades.push(trade.clone());
         log::info!(
@@ -161,16 +163,24 @@ impl PaperTradingEngine {
 
         self.cash += proceeds - tax_result.tax;
 
+        // Prozentsatz des Gewinns/Verlusts relativ zum eingesetzten Kapital
+        let gain_loss_pct = if cost > 0 {
+            Some(gain as f64 / cost as f64 * 100.0)
+        } else {
+            None
+        };
+
         let trade = Trade {
-            asset:     asset.to_string(),
-            side:      TradeSide::Sell,
-            quantity:  pos.quantity,
+            asset:         asset.to_string(),
+            side:          TradeSide::Sell,
+            quantity:      pos.quantity,
             price,
             fee,
-            timestamp: Utc::now().timestamp(),
-            strategy:  strategy.to_string(),
-            gain_loss: Some(gain),
-            tax:       Some(tax_result.tax),
+            timestamp:     Utc::now().timestamp(),
+            strategy:      strategy.to_string(),
+            gain_loss:     Some(gain),
+            gain_loss_pct,
+            tax:           Some(tax_result.tax),
         };
         self.trades.push(trade.clone());
         log::info!(
