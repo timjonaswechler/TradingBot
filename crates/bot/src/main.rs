@@ -1,4 +1,5 @@
 use bot::{collector, config, db, paper_trading, strategy};
+use bot::strategy::dual_macd::{DualMacdParams, DualMacdStrategy};
 
 use anyhow::Result;
 use std::{collections::HashMap, path::Path};
@@ -20,8 +21,8 @@ async fn main() -> Result<()> {
     log::info!("Collector: {new_candles} neue Candles gespeichert");
 
     // ── 2. Strategie & Paper Trading ──────────────────────────────────────────
-    let strategy = strategy::from_config(&cfg.strategy)?;
-    log::info!("Strategie: {}", strategy.name());
+    let strat: Box<dyn strategy::Strategy> = Box::new(DualMacdStrategy::new(DualMacdParams::default()));
+    log::info!("Strategie: {}", strat.name());
 
     let cash                = db.load_cash(cfg.paper_trading.starting_capital)?;
     let exemption_remaining = db.load_exemption_remaining(cfg.tax.freistellungsauftrag)?;
@@ -41,23 +42,32 @@ async fn main() -> Result<()> {
         engine.positions.len()
     );
 
-    let primary = cfg.data.primary_interval().to_string();
+    // Primary interval (e.g. "1d") and secondary interval (e.g. "1h")
+    let primary_interval   = cfg.data.primary_interval().to_string();
+    let secondary_interval = cfg.data.intervals.get(1)
+        .cloned()
+        .unwrap_or_else(|| primary_interval.clone());
+
+    let required = strat.required_history();
 
     for asset in &cfg.assets.watchlist {
-        let history = db.get_candles(asset, &primary, strategy.required_history())?;
-        if history.len() < strategy.required_history() {
+        let primary = db.get_candles(asset, &primary_interval, required)?;
+        if primary.len() < required {
             log::warn!(
                 "{asset}: Nicht genug Historie ({}/{}), überspringe",
-                history.len(), strategy.required_history()
+                primary.len(), required
             );
             continue;
         }
 
-        let signal = strategy.signal(&history);
+        let secondary = db.get_candles(asset, &secondary_interval, required)
+            .unwrap_or_default();
+
+        let signal = strat.signal(&primary, &secondary);
         log::info!("{asset}: Signal = {:?}", signal);
 
-        let current_price = history[0].close;
-        if let Some(trade) = engine.execute(&signal, asset, current_price, strategy.name())? {
+        let current_price = primary[0].close;
+        if let Some(trade) = engine.execute(&signal, asset, current_price, strat.name())? {
             db.save_trade(&trade)?;
         }
     }
@@ -70,7 +80,7 @@ async fn main() -> Result<()> {
     // ── 4. Zusammenfassung ────────────────────────────────────────────────────
     let prices: HashMap<String, i64> = cfg.assets.watchlist.iter()
         .filter_map(|a| {
-            db.get_candles(a, &primary, 1).ok()?
+            db.get_candles(a, &primary_interval, 1).ok()?
                 .into_iter().next()
                 .map(|c| (a.clone(), c.close))
         })
