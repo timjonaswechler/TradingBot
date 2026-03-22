@@ -4,36 +4,37 @@ pub mod macd_enhanced;
 pub mod rsi;
 pub mod sma_crossover;
 
-use crate::market_data::Candle;
-use anyhow::Result;
+// STUB — replace when merging with the real dual_macd strategy.
+pub mod dual_macd;
 
-/// Rückgabewert einer Strategie-Berechnung.
+use crate::market_data::Candle;
+
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Signal {
     Buy,
     Sell,
     Hold,
+    Short,
 }
 
-/// Trait den jede Handelsstrategie implementieren muss.
-///
-/// Der Bot kennt nur diesen Trait – die konkrete Strategie ist austauschbar:
-///   let s: Box<dyn Strategy> = Box::new(SmaCrossover { ... });
-///
-/// Die einzige Stelle wo die eigentliche Kalkulation stattfindet ist `signal()`.
+/// Single-timeframe strategy trait used by the legacy binaries.
 pub trait Strategy: Send + Sync {
-    /// Name der Strategie (für Logging und Trade-History).
     fn name(&self) -> &str;
-
-    /// Wie viele Candles werden mindestens für die Berechnung benötigt?
     fn required_history(&self) -> usize;
-
-    /// Kernfunktion: Berechnet anhand der Candle-Historie ein Handelssignal.
-    /// `candles` ist absteigend sortiert – candles[0] ist die neueste Candle.
+    /// `candles` is newest-first.
     fn signal(&self, candles: &[Candle]) -> Signal;
 }
 
-/// Erzeugt eine Strategie anhand des Namens aus der Config.
+/// Dual-timeframe strategy trait used by the optimizer.
+// STUB — replace when merging.
+pub trait DualStrategy: Send + Sync {
+    fn name(&self) -> &str;
+    fn required_history(&self) -> usize;
+    /// Both slices are newest-first.
+    fn signal(&self, primary: &[Candle], secondary: &[Candle]) -> Signal;
+}
+
 pub fn from_config(cfg: &crate::config::StrategyConfig) -> Result<Box<dyn Strategy>> {
     let s: Box<dyn Strategy> = match cfg.name.as_str() {
         "sma_crossover" => Box::new(sma_crossover::SmaCrossover {
@@ -66,3 +67,14 @@ pub fn from_config(cfg: &crate::config::StrategyConfig) -> Result<Box<dyn Strate
     };
     Ok(s)
 }
+pub trait Strategy: Send + Sync {
+    fn name(&self) -> &str;
+    /// Minimum number of CANDLES required in each slice for signal computation.
+    fn required_history(&self) -> usize;
+    /// Compute a trading signal.
+    /// primary: large-interval candles (e.g. 1d), newest-first
+    /// secondary: small-interval candles (e.g. 1h), newest-first
+    fn signal(&self, primary: &[Candle], secondary: &[Candle]) -> Signal;
+}
+
+pub mod dual_macd;
