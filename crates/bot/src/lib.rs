@@ -7,4 +7,5 @@ pub mod market_data;
 pub mod metrics;
 pub mod optimizer;
 pub mod paper_trading;
+pub mod regime;
 pub mod strategy;
