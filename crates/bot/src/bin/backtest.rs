@@ -1,3 +1,4 @@
+use bot::{config, db, metrics, paper_trading::PaperTradingEngine, strategy};
 use bot::{config, db, metrics::Metrics, paper_trading, strategy};
 
 use anyhow::Result;
@@ -20,7 +21,6 @@ fn main() -> Result<()> {
     let assets: Vec<String> = {
         let mut args = std::env::args();
         if let Some(pos) = args.position(|a| a == "--asset") {
-            // --asset wurde gefunden, nächstes Argument ist der Asset-Name
             std::env::args().nth(pos + 1)
                 .map(|a| vec![a])
                 .unwrap_or_else(|| cfg.assets.watchlist.clone())
@@ -34,11 +34,9 @@ fn main() -> Result<()> {
     println!("\n Backtest: {}  |  Strategie: {}", assets.join(", "), strategy.name());
     println!(" Startkapital pro Asset: {:.2} €\n", cfg.paper_trading.starting_capital as f64 / 100.0);
 
-    // Ergebnisse sammeln für Tabelle am Ende
     struct AssetResult {
         asset:   String,
-        metrics: Metrics,
-        days:    u64,
+        metrics: metrics::Metrics,
         trades:  usize,
     }
     let mut results: Vec<AssetResult> = Vec::new();
@@ -66,7 +64,8 @@ fn main() -> Result<()> {
 
         let mut engine = paper_trading::PaperTradingEngine::new(trading_cfg.clone());
 
-        let mut equity_curve: Vec<i64> = Vec::with_capacity(candles.len() - h + 1);
+        let mut equity_curve: Vec<(chrono::DateTime<chrono::Utc>, i64)> =
+            Vec::with_capacity(candles.len() - h + 1);
 
         for t in (h - 1)..candles.len() {
             let window: Vec<_> = candles[t + 1 - h..=t]
@@ -84,17 +83,15 @@ fn main() -> Result<()> {
                 .values()
                 .map(|p| p.quantity * candle.close)
                 .sum();
+            equity_curve.push((candles[t].timestamp, engine.cash + pos_value));
             equity_curve.push(engine.cash_cents + pos_value);
         }
 
-        let start_ts = candles[h - 1].timestamp;
-        let end_ts   = candles.last().unwrap().timestamp;
-        let days     = (end_ts - start_ts).num_days().unsigned_abs();
-
-        let m = Metrics::compute(&equity_curve, &engine.trades, days);
+        let trade_records = metrics::from_paper_trades(&engine.trades);
+        let m = metrics::compute(&equity_curve, &trade_records, cfg.paper_trading.starting_capital);
         let trade_count = engine.trades.len();
 
-        results.push(AssetResult { asset: asset.clone(), metrics: m, days, trades: trade_count });
+        results.push(AssetResult { asset: asset.clone(), metrics: m, trades: trade_count });
     }
 
     if results.is_empty() {
@@ -104,32 +101,52 @@ fn main() -> Result<()> {
 
     // ── Detailausgabe pro Asset ───────────────────────────────────────────────
     for r in &results {
-        r.metrics.print(&r.asset, strategy.name(), r.days);
+        let m = &r.metrics;
+        println!("\n═══ Backtest: {} ══════════════════════════════════════════════════", r.asset);
+        println!("  Startkapital:     {:.2} €", cfg.paper_trading.starting_capital as f64 / 100.0);
+        println!();
+        println!("── Rendite ─────────────────────────────────────────────────────────────");
+        println!("  Total Return:     {:+.2} %", m.total_return_pct);
+        println!("  Total PnL:        {:.2} €", m.total_pnl_cents as f64 / 100.0);
+        println!();
+        println!("── Risiko ──────────────────────────────────────────────────────────────");
+        println!("  Sharpe Ratio:     {:.2}", m.sharpe);
+        println!("  Max Drawdown:     {:.2} %", m.max_drawdown_pct);
+        println!();
+        println!("── Trades ──────────────────────────────────────────────────────────────");
+        println!("  Gesamt:           {}", m.total_trades);
+        println!("  Gewinner:         {} ({:.1} %)", m.winning_trades, m.win_rate_pct);
+        println!("  Verlierer:        {}", m.losing_trades);
+        println!();
+        println!("── Ø Trade-Performance ─────────────────────────────────────────────────");
+        println!("  Ø Gewinn/Trade:   {:+.2} %", m.avg_win_pct);
+        println!("  Ø Verlust/Trade:  -{:.2} %", m.avg_loss_pct);
+        println!("  Erwartungswert:   {:+.2} % pro Trade", m.expectancy_pct);
+        println!("════════════════════════════════════════════════════════════════════════");
     }
 
     // ── Vergleichstabelle (nur bei mehreren Assets) ───────────────────────────
     if results.len() > 1 {
-        let sep = "═".repeat(88);
-        let div = "─".repeat(88);
+        let sep = "═".repeat(80);
+        let div = "─".repeat(80);
         println!("\n {sep}");
         println!(" VERGLEICH");
         println!(" {div}");
         println!(
-            " {:<8}  {:>9}  {:>8}  {:>8}  {:>8}  {:>8}  {:>7}",
-            "Asset", "Return %", "CAGR %", "Sharpe", "MaxDD %", "WinRate", "Trades"
+            " {:<8}  {:>9}  {:>8}  {:>8}  {:>7}  {:>7}",
+            "Asset", "Return %", "Sharpe", "MaxDD %", "WinRate", "Trades"
         );
         println!(" {div}");
 
         let mut sorted = results.iter().collect::<Vec<_>>();
-        sorted.sort_by(|a, b| b.metrics.cagr_pct.partial_cmp(&a.metrics.cagr_pct).unwrap());
+        sorted.sort_by(|a, b| b.metrics.total_return_pct.partial_cmp(&a.metrics.total_return_pct).unwrap_or(std::cmp::Ordering::Equal));
 
         for r in &sorted {
             let m = &r.metrics;
             println!(
-                " {:<8}  {:>+8.2}%  {:>+7.2}%  {:>8.2}  {:>7.2}%  {:>7.1}%  {:>7}",
+                " {:<8}  {:>+8.2}%  {:>8.2}  {:>7.2}%  {:>7.1}%  {:>7}",
                 r.asset,
                 m.total_return_pct,
-                m.cagr_pct,
                 m.sharpe,
                 m.max_drawdown_pct,
                 m.win_rate_pct,

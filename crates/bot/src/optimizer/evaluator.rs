@@ -4,6 +4,8 @@ use rand::Rng;
 
 use crate::config::{CostsConfig, FitnessWeights, PaperTradingConfig, TaxConfig};
 use crate::market_data::Candle;
+use crate::metrics::{self, Metrics};
+use crate::paper_trading::PaperTradingEngine;
 use crate::metrics::Metrics;
 use crate::paper_trading::{self, PaperTradingEngine, TradingConfig};
 
@@ -88,7 +90,8 @@ pub fn evaluate<G: Genome>(
     };
     let mut engine = PaperTradingEngine::new(trading_cfg);
 
-    let mut equity_curve: Vec<i64> = Vec::with_capacity(window.len());
+    let mut equity_curve: Vec<(chrono::DateTime<chrono::Utc>, i64)> =
+        Vec::with_capacity(window.len());
 
     for t in (required - 1)..window.len() {
         let slice: Vec<Candle> = window[t + 1 - required..=t]
@@ -104,6 +107,7 @@ pub fn evaluate<G: Genome>(
         let pos_value: i64 = engine.positions.values()
             .map(|p| p.quantity * candle.close)
             .sum();
+        equity_curve.push((window[t].timestamp, engine.cash + pos_value));
         equity_curve.push(engine.cash_cents + pos_value);
     }
 
@@ -111,20 +115,17 @@ pub fn evaluate<G: Genome>(
         return bad_result(&asset, &interval, paper_cfg.starting_capital);
     }
 
-    let start_ts = window[required - 1].timestamp;
-    let end_ts   = window.last().unwrap().timestamp;
-    let days     = (end_ts - start_ts).num_days().unsigned_abs();
-
-    let metrics = Metrics::compute(&equity_curve, &engine.trades, days);
+    let trade_records = metrics::from_paper_trades(&engine.trades);
+    let metrics = metrics::compute(&equity_curve, &trade_records, paper_cfg.starting_capital);
     let fitness = fitness::score(&metrics, fitness_cfg);
 
     EvalResult { fitness, metrics, asset: asset.to_string(), interval: interval.to_string() }
 }
 
-fn bad_result(asset: &str, interval: &str, capital: i64) -> EvalResult {
+fn bad_result(asset: &str, interval: &str, _capital: i64) -> EvalResult {
     EvalResult {
         fitness:  f64::NEG_INFINITY,
-        metrics:  Metrics::compute(&[capital], &[], 0),
+        metrics:  Metrics::default(),
         asset:    asset.to_string(),
         interval: interval.to_string(),
     }
