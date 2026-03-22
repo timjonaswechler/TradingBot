@@ -1,5 +1,7 @@
 pub mod engine;
 pub mod tax;
+// STUB — replace when merging with the real paper_trading::engine.
+pub mod engine;
 pub use engine::*;
 pub use tax::*;
 
@@ -76,6 +78,10 @@ impl PaperTradingEngine {
         strategy_name: &str,
     ) -> Result<Option<Trade>> {
         match signal {
+            Signal::Buy   => self.buy(asset, current_price, strategy_name),
+            Signal::Sell  => self.sell(asset, current_price, strategy_name),
+            Signal::Hold  => Ok(None),
+            Signal::Short => Ok(None), // short selling not supported in this engine
             Signal::Buy  => self.buy(asset, current_price, strategy_name),
             Signal::Sell | Signal::Short => self.sell(asset, current_price, strategy_name),
             Signal::Hold => Ok(None),

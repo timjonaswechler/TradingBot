@@ -1,329 +1,192 @@
-use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use rand::Rng;
+use rand::rngs::StdRng;
 use rayon::prelude::*;
 
-use crate::config::{CostsConfig, OptimizerConfig, PaperTradingConfig, TaxConfig};
+use crate::optimizer::evaluator::{evaluate, CandlePool, EvalConfig};
+use crate::optimizer::genome::DualMacdGenome;
 
-use super::evaluator::{self, pick_random_asset_interval, CandlePool, EvalResult};
-use super::genome::Genome;
-
-/// Ergebnis einer abgeschlossenen Optimierung.
-pub struct OptimizationResult<G: Genome> {
-    pub winner_a: G,
-    pub winner_b: G,
-    pub score_a: f64,
-    pub score_b: f64,
-    pub generations: u32,
+/// Configuration for the genetic optimizer.
+pub struct OptimizerConfig {
+    /// Number of individuals per group (default 25).
+    pub population_size: usize,
+    /// Maximum number of generations to run (default 100).
+    pub max_generations: usize,
+    /// Starting mutation magnitude ∈ [0.0, 1.0] (default 0.8).
+    pub initial_mutation: f64,
+    /// Per-generation multiplier applied to mutation magnitude (default 0.97).
+    pub mutation_decay: f64,
+    /// Evaluator configuration.
+    pub eval: EvalConfig,
+    /// Assets to train on; one is picked at random per generation.
+    pub assets: Vec<String>,
+    /// RNG seed for reproducibility.
+    pub seed: u64,
 }
 
-/// Protokolleintrag einer Generation (enthält frische Scores, nicht akkumulierte).
-#[derive(Debug)]
+impl Default for OptimizerConfig {
+    fn default() -> Self {
+        Self {
+            population_size: 25,
+            max_generations: 100,
+            initial_mutation: 0.8,
+            mutation_decay:   0.97,
+            eval:             EvalConfig::default(),
+            assets:           vec!["SPY".to_string()],
+            seed:             0,
+        }
+    }
+}
+
+/// Per-generation log entry.
+#[derive(Debug, Clone)]
 pub struct GenerationLog {
-    pub generation: u32,
-    pub fresh_a: f64,     // bester Score aus Gruppe A *dieser* Generation
-    pub fresh_b: f64,     // bester Score aus Gruppe B *dieser* Generation
-    pub asset: String,    // gemeinsames Asset dieser Generation
-    pub interval: String, // gemeinsames Intervall dieser Generation
-    pub all_time_best: f64,
-    pub best_gen: u32,
+    pub generation:       usize,
+    pub best_fitness_a:   f64,
+    pub best_fitness_b:   f64,
+    pub all_time_best:    f64,
+    pub asset:            String,
+    pub mutation_magnitude: f64,
 }
 
-pub fn run<G: Genome>(
-    seed_genome: &G,
-    prev_winners: Option<(G, G)>,
-    pool: &CandlePool,
-    opt_cfg: &OptimizerConfig,
-    paper_cfg: &PaperTradingConfig,
-    costs_cfg: &CostsConfig,
-    tax_cfg: &TaxConfig,
-) -> (OptimizationResult<G>, Vec<GenerationLog>) {
-    let mut rng = SmallRng::from_entropy();
-    let pop_size = opt_cfg.population_size.max(4);
-    let half = pop_size / 2;
+/// Final result returned after all generations have run.
+#[derive(Debug, Clone)]
+pub struct OptimizationResult {
+    pub winner:       DualMacdGenome,
+    pub best_fitness: f64,
+    pub generations:  Vec<GenerationLog>,
+}
 
-    // ── Generation 0 ─────────────────────────────────────────────────────────
-    let population: Vec<G> = match prev_winners {
-        Some((prev_a, prev_b)) => {
-            println!("  → Vorherige Gewinner als Startpunkt geladen.\n");
-            let mut pop = vec![prev_a.clone(), prev_b.clone()];
-            let remaining = pop_size.saturating_sub(2);
-            for _ in 0..remaining / 2 {
-                pop.push(prev_a.mutate(opt_cfg.mutation_magnitude, &mut rng));
-            }
-            for _ in 0..remaining - remaining / 2 {
-                pop.push(prev_b.mutate(opt_cfg.mutation_magnitude, &mut rng));
-            }
-            pop
-        }
-        None => (0..pop_size)
-            .map(|_| seed_genome.random_like(&mut rng))
-            .collect(),
-    };
+/// Run the two-group competitive genetic optimizer.
+///
+/// Algorithm:
+/// - Two independent populations (A and B) of `population_size` genomes each.
+/// - Each generation: pick a random asset, evaluate both groups in parallel,
+///   keep top half, mutate to fill bottom half.
+/// - Mutation magnitude decays each generation by `mutation_decay`
+///   but never falls below 0.05.
+pub fn run(cfg: OptimizerConfig, pool: &CandlePool) -> OptimizationResult {
+    let mut rng = StdRng::seed_from_u64(cfg.seed);
 
-    // Gen 0: gemeinsames Asset+Intervall wählen, ganze Population evaluieren
-    let (asset0, iv0) = pick_random_asset_interval(pool, &mut rng).expect("CandlePool ist leer");
+    // ── Initialise populations ────────────────────────────────────────────────
+    let mut group_a: Vec<DualMacdGenome> = (0..cfg.population_size)
+        .map(|_| DualMacdGenome::random(&mut rng))
+        .collect();
+    let mut group_b: Vec<DualMacdGenome> = (0..cfg.population_size)
+        .map(|_| DualMacdGenome::random(&mut rng))
+        .collect();
 
-    let all_results = eval_parallel(
-        &population,
-        pool,
-        &asset0,
-        &iv0,
-        opt_cfg,
-        paper_cfg,
-        costs_cfg,
-        tax_cfg,
-    );
+    let mut all_time_best_genome  = group_a[0].clone();
+    let mut all_time_best_fitness = f64::NEG_INFINITY;
+    let mut mutation_magnitude    = cfg.initial_mutation;
+    let mut log: Vec<GenerationLog> = Vec::with_capacity(cfg.max_generations);
 
-    let group_a_pop: Vec<G> = population[..half].to_vec();
-    let group_a_res: Vec<&EvalResult> = all_results[..half].iter().collect();
-    let group_b_pop: Vec<G> = population[half..].to_vec();
-    let group_b_res: Vec<&EvalResult> = all_results[half..].iter().collect();
+    for gen in 0..cfg.max_generations {
+        // ── Pick random asset for this generation ─────────────────────────────
+        let asset = cfg.assets[rng.gen_range(0..cfg.assets.len())].clone();
 
-    let (mut winner_a, mut score_a) = best_from_refs(&group_a_pop, &group_a_res);
-    let (mut winner_b, mut score_b) = best_from_refs(&group_b_pop, &group_b_res);
+        // Pre-generate per-genome seeds from the main RNG so each parallel
+        // worker gets a deterministic, non-overlapping stream.
+        let seeds_a: Vec<u64> = (0..cfg.population_size).map(|_| rng.gen()).collect();
+        let seeds_b: Vec<u64> = (0..cfg.population_size).map(|_| rng.gen()).collect();
 
-    let mut all_time_best = score_a.max(score_b);
-    let mut all_time_best_gen = 0u32;
-    let mut all_time_best_genome = if score_a >= score_b {
-        winner_a.clone()
-    } else {
-        winner_b.clone()
-    };
-
-    let mut logs = Vec::new();
-    print_header();
-    print_gen(
-        0,
-        score_a,
-        score_b,
-        &asset0,
-        &iv0,
-        all_time_best,
-        all_time_best_gen,
-        true,
-    );
-    logs.push(make_log(
-        0,
-        score_a,
-        score_b,
-        asset0,
-        iv0,
-        all_time_best,
-        all_time_best_gen,
-    ));
-
-    // ── Generationen 1..max ───────────────────────────────────────────────────
-    for gen in 1..=opt_cfg.max_generations {
-        // Pro Generation ein gemeinsames Asset+Intervall → fairer A-vs-B-Vergleich
-        let (asset, iv) = pick_random_asset_interval(pool, &mut rng).expect("CandlePool ist leer");
-
-        let seeds_a: Vec<G> = (0..half)
-            .map(|_| winner_a.mutate(opt_cfg.mutation_magnitude, &mut rng))
-            .collect();
-        let seeds_b: Vec<G> = (0..half)
-            .map(|_| winner_b.mutate(opt_cfg.mutation_magnitude, &mut rng))
+        // ── Parallel evaluation ───────────────────────────────────────────────
+        let results_a: Vec<f64> = group_a
+            .par_iter()
+            .zip(seeds_a.par_iter())
+            .map(|(g, &seed)| {
+                let mut local_rng = StdRng::seed_from_u64(seed);
+                evaluate(g, pool, &asset, &cfg.eval, &mut local_rng).fitness
+            })
             .collect();
 
-        let res_a = eval_parallel(
-            &seeds_a, pool, &asset, &iv, opt_cfg, paper_cfg, costs_cfg, tax_cfg,
-        );
-        let res_b = eval_parallel(
-            &seeds_b, pool, &asset, &iv, opt_cfg, paper_cfg, costs_cfg, tax_cfg,
-        );
+        let results_b: Vec<f64> = group_b
+            .par_iter()
+            .zip(seeds_b.par_iter())
+            .map(|(g, &seed)| {
+                let mut local_rng = StdRng::seed_from_u64(seed);
+                evaluate(g, pool, &asset, &cfg.eval, &mut local_rng).fitness
+            })
+            .collect();
 
-        // Frische Scores dieser Generation (was haben die Mutationen *jetzt* geschafft?)
-        let (best_a, fresh_a) = best_from_owned(&seeds_a, &res_a);
-        let (best_b, fresh_b) = best_from_owned(&seeds_b, &res_b);
+        // ── Sort indices by fitness descending ────────────────────────────────
+        let sorted_a = argsort_desc(&results_a);
+        let sorted_b = argsort_desc(&results_b);
 
-        // Elitist: Gewinner nur ersetzen wenn frischer Score besser als akkumulierter Bestwert
-        if fresh_a > score_a {
-            winner_a = best_a;
-            score_a = fresh_a;
+        let best_a = results_a[sorted_a[0]];
+        let best_b = results_b[sorted_b[0]];
+
+        // ── Track all-time best ───────────────────────────────────────────────
+        if best_a > all_time_best_fitness {
+            all_time_best_fitness = best_a;
+            all_time_best_genome  = group_a[sorted_a[0]].clone();
         }
-        if fresh_b > score_b {
-            winner_b = best_b;
-            score_b = fresh_b;
-        }
-
-        let gen_best = fresh_a.max(fresh_b);
-        let is_new = gen_best > all_time_best;
-        if is_new {
-            all_time_best = gen_best;
-            all_time_best_gen = gen;
-            all_time_best_genome = if fresh_a >= fresh_b {
-                winner_a.clone()
-            } else {
-                winner_b.clone()
-            };
+        if best_b > all_time_best_fitness {
+            all_time_best_fitness = best_b;
+            all_time_best_genome  = group_b[sorted_b[0]].clone();
         }
 
-        print_gen(
-            gen,
-            fresh_a,
-            fresh_b,
-            &asset,
-            &iv,
-            all_time_best,
-            all_time_best_gen,
-            is_new,
+        // ── Evolve: keep top half, mutate bottom half from top half ───────────
+        let half = cfg.population_size / 2;
+
+        // Collect mutations before updating the groups (avoid borrow issues).
+        let new_bottom_a: Vec<(usize, DualMacdGenome)> = (half..cfg.population_size)
+            .map(|i| {
+                let parent_idx = sorted_a[i % half];
+                let child = group_a[parent_idx].mutate(mutation_magnitude, &mut rng);
+                (sorted_a[i], child)
+            })
+            .collect();
+        for (slot, child) in new_bottom_a {
+            group_a[slot] = child;
+        }
+
+        let new_bottom_b: Vec<(usize, DualMacdGenome)> = (half..cfg.population_size)
+            .map(|i| {
+                let parent_idx = sorted_b[i % half];
+                let child = group_b[parent_idx].mutate(mutation_magnitude, &mut rng);
+                (sorted_b[i], child)
+            })
+            .collect();
+        for (slot, child) in new_bottom_b {
+            group_b[slot] = child;
+        }
+
+        // ── Decay mutation magnitude ──────────────────────────────────────────
+        mutation_magnitude = (mutation_magnitude * cfg.mutation_decay).max(0.05);
+
+        // ── Log & print ───────────────────────────────────────────────────────
+        log.push(GenerationLog {
+            generation:         gen,
+            best_fitness_a:     best_a,
+            best_fitness_b:     best_b,
+            all_time_best:      all_time_best_fitness,
+            asset:              asset.clone(),
+            mutation_magnitude,
+        });
+
+        println!(
+            "Gen {:3} | Mut {:.3} | Best A: {:7.2} | Best B: {:7.2} | All-time: {:7.2} | {}",
+            gen, mutation_magnitude, best_a, best_b, all_time_best_fitness, asset,
         );
-        logs.push(make_log(
-            gen,
-            fresh_a,
-            fresh_b,
-            asset,
-            iv,
-            all_time_best,
-            all_time_best_gen,
-        ));
     }
 
-    // ── Footer ───────────────────────────────────────────────────────────────
-    let valid_a: Vec<f64> = logs.iter().map(|l| l.fresh_a).filter(|s| s.is_finite()).collect();
-    let valid_b: Vec<f64> = logs.iter().map(|l| l.fresh_b).filter(|s| s.is_finite()).collect();
-    let avg_a = if valid_a.is_empty() { f64::NAN } else { valid_a.iter().sum::<f64>() / valid_a.len() as f64 };
-    let avg_b = if valid_b.is_empty() { f64::NAN } else { valid_b.iter().sum::<f64>() / valid_b.len() as f64 };
-
-    println!();
-    println!("  ─────┴───────────────────┴────────────────────────┴──────────────────────");
-    println!("  Avg  │                   │  {:>9}  {:>9}  │  {:>9}  (Gen {:>4})",
-             format!("{avg_a:+.4}"), format!("{avg_b:+.4}"),
-             format!("{all_time_best:+.4}"), all_time_best_gen);
-    println!();
-
-    // Winner A = bestes Individuum insgesamt
-    if score_b > score_a {
-        std::mem::swap(&mut winner_a, &mut winner_b);
-        std::mem::swap(&mut score_a, &mut score_b);
-    }
-    if all_time_best > score_a {
-        winner_a = all_time_best_genome;
-        score_a = all_time_best;
-    }
-
-    let result = OptimizationResult {
-        winner_a,
-        winner_b,
-        score_a,
-        score_b,
-        generations: opt_cfg.max_generations,
-    };
-    (result, logs)
-}
-
-// ── Hilfsfunktionen ───────────────────────────────────────────────────────────
-
-fn eval_parallel<G: Genome>(
-    population: &[G],
-    pool: &CandlePool,
-    asset: &str,
-    interval: &str,
-    opt_cfg: &OptimizerConfig,
-    paper_cfg: &PaperTradingConfig,
-    costs_cfg: &CostsConfig,
-    tax_cfg: &TaxConfig,
-) -> Vec<EvalResult> {
-    population
-        .par_iter()
-        .map(|genome| {
-            let mut rng = SmallRng::from_entropy();
-            evaluator::evaluate(
-                genome,
-                pool,
-                asset,
-                interval,
-                opt_cfg.min_window_candles,
-                paper_cfg,
-                costs_cfg,
-                tax_cfg,
-                &opt_cfg.fitness,
-                &mut rng,
-            )
-        })
-        .collect()
-}
-
-/// Bestes Individuum aus Referenzen auf EvalResults (für Gen 0).
-fn best_from_refs<G: Genome>(pop: &[G], results: &[&EvalResult]) -> (G, f64) {
-    let best = results
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.fitness.is_finite())
-        .max_by(|a, b| a.1.fitness.partial_cmp(&b.1.fitness).unwrap());
-    match best {
-        Some((i, r)) => (pop[i].clone(), r.fitness),
-        None => (pop[0].clone(), f64::NEG_INFINITY),
+    OptimizationResult {
+        winner:       all_time_best_genome,
+        best_fitness: all_time_best_fitness,
+        generations:  log,
     }
 }
 
-/// Bestes Individuum aus owned EvalResults (für Gen 1+).
-fn best_from_owned<G: Genome>(pop: &[G], results: &[EvalResult]) -> (G, f64) {
-    let best = results
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.fitness.is_finite())
-        .max_by(|a, b| a.1.fitness.partial_cmp(&b.1.fitness).unwrap());
-    match best {
-        Some((i, r)) => (pop[i].clone(), r.fitness),
-        None => (pop[0].clone(), f64::NEG_INFINITY),
-    }
-}
+// ─── Helper ───────────────────────────────────────────────────────────────────
 
-fn print_header() {
-    println!(
-        "  {:>4} │  {:<9}  {:<4}  │  {:>9}  {:>9}  │  {}",
-        "Gen", "Asset", "Int", "Score A", "Score B", "All-time Best"
-    );
-    println!("  ─────┼───────────────────┼────────────────────────┼──────────────────────");
-}
-
-fn print_gen(
-    gen: u32,
-    fa: f64,
-    fb: f64,
-    asset: &str,
-    iv: &str,
-    best: f64,
-    best_gen: u32,
-    is_new: bool,
-) {
-    let fa_str = if fa.is_finite() {
-        format!("{fa:+9.4}")
-    } else {
-        "   -inf  ".into()
-    };
-    let fb_str = if fb.is_finite() {
-        format!("{fb:+9.4}")
-    } else {
-        "  -inf   ".into()
-    };
-    let best_str = if best.is_finite() {
-        format!("{best:+9.4}")
-    } else {
-        "   -inf  ".into()
-    };
-    let marker = if is_new { "  ◄" } else { "" };
-    println!(
-        "  {gen:>4} │  {asset:<9}  {iv:<4}  │  {fa_str}  {fb_str}  │  {best_str}  (Gen {best_gen:>4}){marker}"
-    );
-}
-
-fn make_log(
-    gen: u32,
-    fa: f64,
-    fb: f64,
-    asset: String,
-    interval: String,
-    best: f64,
-    best_gen: u32,
-) -> GenerationLog {
-    GenerationLog {
-        generation: gen,
-        fresh_a: fa,
-        fresh_b: fb,
-        asset,
-        interval,
-        all_time_best: best,
-        best_gen,
-    }
+/// Return indices that would sort `values` in descending order.
+fn argsort_desc(values: &[f64]) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..values.len()).collect();
+    indices.sort_by(|&a, &b| {
+        values[b]
+            .partial_cmp(&values[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    indices
 }

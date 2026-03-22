@@ -1,46 +1,104 @@
-use crate::config::FitnessWeights;
 use crate::metrics::Metrics;
 
-/// Berechnet einen Fitness-Score der primär den Erwartungswert pro Trade optimiert.
-///
-/// Kernidee: Ein perfekter Trade hat avg_loss = 0 und win_rate = 100%.
-/// Der Erwartungswert drückt das direkt aus:
-///
-///   expectancy = (win_rate/100) × avg_win%  −  (1 − win_rate/100) × avg_loss%
-///
-/// Ideal: expectancy = avg_win_pct  (alle Trades gewinnen, kein Verlust)
-///
-/// Zusätzlich: Sharpe als Stabilitätskriterium (verhindert dass der Optimizer
-/// einen einzigen Glückstreffer auf einem Zeitfenster überfitten).
-/// Maximaler realistischer Erwartungswert pro Trade in %.
-/// Trades die darüber hinausgehen (z.B. Lucky-Window auf Penny Stocks)
-/// zählen nicht mehr — verhindert Overfitting auf Ausreißer-Fenster.
-const MAX_EXPECTANCY_PCT: f64 = 15.0; // ein Trade der im Schnitt 15% bringt ist bereits exzellent
-const MAX_AVG_WIN_PCT:    f64 = 20.0;
-const MAX_AVG_LOSS_PCT:   f64 = 20.0;
-const MAX_SHARPE:         f64 = 4.0;  // Sharpe > 4 ist auf echten Daten extrem unwahrscheinlich
+/// Weights controlling the composite fitness score.
+/// All fields have sensible defaults; override via config if needed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FitnessWeights {
+    /// Sharpe ratio contribution (default 1.0)
+    pub sharpe: f64,
+    /// Win-rate contribution (default 0.5)
+    pub win_rate: f64,
+    /// Expectancy contribution (default 1.0)
+    pub expectancy: f64,
+    /// Avg-win contribution (default 0.3)
+    pub avg_win: f64,
+    /// Avg-loss penalty coefficient (default 0.3)
+    pub avg_loss: f64,
+    /// Max-drawdown penalty coefficient (default 0.5)
+    pub drawdown: f64,
+    /// Minimum trades required; below this the genome scores -1000.0 (default 5)
+    pub min_trades: usize,
+}
 
-pub fn score(metrics: &Metrics, cfg: &FitnessWeights) -> f64 {
-    if metrics.total_trades < cfg.min_trades {
-        return f64::NEG_INFINITY;
+impl Default for FitnessWeights {
+    fn default() -> Self {
+        Self {
+            sharpe:     1.0,
+            win_rate:   0.5,
+            expectancy: 1.0,
+            avg_win:    0.3,
+            avg_loss:   0.3,
+            drawdown:   0.5,
+            min_trades: 5,
+        }
+    }
+}
+
+/// Composite fitness score computed from [`Metrics`].
+///
+/// Returns `-1000.0` if `metrics.total_trades < weights.min_trades`.
+pub fn score(metrics: &Metrics, weights: &FitnessWeights) -> f64 {
+    if metrics.total_trades < weights.min_trades {
+        return -1000.0;
     }
 
-    // Win Rate: 0–100, direkt skaliert mit Gewicht → Score 0–100 bei Gewicht 1.0
-    let win_rate_score   = metrics.win_rate_pct * cfg.win_rate;
-
-    // Optionale Zusatzterme (alle 0.0 wenn nicht erwünscht)
-    let expectancy       = metrics.expectancy_pct.clamp(-MAX_EXPECTANCY_PCT, MAX_EXPECTANCY_PCT);
-    let avg_win          = metrics.avg_win_pct.min(MAX_AVG_WIN_PCT);
-    let avg_loss         = metrics.avg_loss_pct.min(MAX_AVG_LOSS_PCT);
-    let sharpe           = metrics.sharpe.clamp(-MAX_SHARPE, MAX_SHARPE);
-    let drawdown         = metrics.max_drawdown_pct.abs();
-
-    let expectancy_score = expectancy * cfg.expectancy;
-    let sharpe_score     = sharpe     * cfg.sharpe;
-    let avg_win_score    = avg_win    * cfg.avg_win;
-    let avg_loss_penalty = avg_loss   * cfg.avg_loss;
-    let drawdown_penalty = drawdown   * cfg.drawdown;
+    let win_rate_score   = metrics.win_rate_pct * weights.win_rate;
+    let expectancy_score = metrics.expectancy_pct.clamp(-15.0, 15.0) * weights.expectancy;
+    let sharpe_score     = metrics.sharpe.clamp(-4.0, 4.0) * weights.sharpe;
+    let avg_win_score    = metrics.avg_win_pct.min(20.0) * weights.avg_win;
+    let avg_loss_penalty = metrics.avg_loss_pct.min(20.0) * weights.avg_loss;
+    let drawdown_penalty = metrics.max_drawdown_pct.abs() * weights.drawdown;
 
     win_rate_score + expectancy_score + sharpe_score + avg_win_score
         - avg_loss_penalty - drawdown_penalty
+}
+
+// ─── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics::Metrics;
+
+    fn metrics_with_trades(n: usize) -> Metrics {
+        Metrics {
+            total_trades:     n,
+            winning_trades:   n / 2,
+            losing_trades:    n - n / 2,
+            win_rate_pct:     50.0,
+            avg_win_pct:      5.0,
+            avg_loss_pct:     3.0,
+            expectancy_pct:   1.0,
+            sharpe:           1.2,
+            max_drawdown_pct: -8.0,
+            total_return_pct: 12.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn score_above_min_trades_is_finite() {
+        let m = metrics_with_trades(10);
+        let w = FitnessWeights::default();
+        let s = score(&m, &w);
+        assert!(s.is_finite(), "expected finite score, got {s}");
+        assert!(s > -1000.0);
+    }
+
+    #[test]
+    fn score_below_min_trades_returns_sentinel() {
+        let mut m = metrics_with_trades(4);
+        m.total_trades = 4;
+        let w = FitnessWeights::default(); // min_trades = 5
+        assert_eq!(score(&m, &w), -1000.0);
+    }
+
+    #[test]
+    fn score_exactly_at_min_trades_is_finite() {
+        let m = metrics_with_trades(5);
+        let w = FitnessWeights::default();
+        let s = score(&m, &w);
+        assert!(s.is_finite());
+        assert!(s > -1000.0);
+    }
 }
