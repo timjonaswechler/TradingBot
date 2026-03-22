@@ -1,58 +1,54 @@
 [paper_trading]
-starting_capital  = 1_000_000  # in Cent (= 100 €)
-position_size_pct = 20      # max. 20 % des Cashs pro Trade (hier: 20 €)
-currency = "EUR"
+starting_capital   = 1_000_000  # cents = €10,000
+commission_type    = "flat"
+commission_amount  = 100        # cents = €1 per trade
+position_size_pct  = 0.95
+max_short_size_pct = 0.50
 
 [costs]
-commission_type = "flat"       # "flat" | "percent"
-commission_amount = 100        # in Cent bei flat (= 1,00 €) | Basispunkte bei percent
+commission_type   = "flat"
+commission_amount = 100         # cents = €1
 
 [tax]
-country = "DE"
-freistellungsauftrag = 100_000 # in Cent (= 1.000 €)
-kirchensteuer = false
+country              = "DE"
+freistellungsauftrag = 100_100  # cents = €1,001
+kirchensteuer        = false
 
 [assets]
-# Aktive Watchlist aus Datei laden (ein Ticker pro Zeile, # = Kommentar).
-# Alternativ: watchlist = ["AAPL", "MSFT"] für eine Inline-Liste.
+# Active watchlist loaded from file (one ticker per line, # = comment).
+# Alternative: watchlist = ["AAPL", "MSFT"] for an inline list.
 watchlist_file = "data/watchlist.txt"
-# Vollständige Regionslisten:
-#   data/watchlists/eu.txt   (~120 STOXX 600)
-#   data/watchlists/us.txt   (~150 S&P 500)
-#   data/watchlists/asia.txt (~60 Asien/China)
+
 [strategy]
-name          = "macd_enhanced"
-macd_fast     = 12
-macd_slow     = 26
-macd_signal   = 9
+primary_interval   = "1d"
+secondary_interval = "1h"
+macd_fast          = 12
+macd_slow          = 26
+macd_signal        = 9
 
 [data]
-# Erstes Intervall = primär (Strategie + Backtest)
-# Intraday-Intervalle (1h, 30m, ...) sind nur ~60 Tage historisch verfügbar
+# First interval = primary (strategy + backtest)
+# Intraday intervals (1h, 30m, ...) only have ~60 days of history available
 # intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
 intervals = ["1d"]
-range     = "max"   # Erstabzug: "1y" | "2y" | "5y" | "max"
+range     = "max"   # initial fetch: "1y" | "2y" | "5y" | "max"
 
 [db]
 path = "data/market.duckdb"
 
-# ── Optimizer ─────────────────────────────────────────────────────────────────
-# Aufruf: cargo run -p bot --bin optimize
 [optimizer]
-strategy           = "macd_enhanced"  # "macd_enhanced" | "rsi"
-population_size    = 20               # Bots pro Generation (intern 2x5 geteilt)
-max_generations    = 1000
-mutation_magnitude = 0.15             # 0.0 = keine Änderung, 1.0 = komplett zufällig
-min_window_candles = 200              # Mindestlänge des Testfensters in Candles
+population_size    = 25
+max_generations    = 100
+initial_mutation   = 0.8
+mutation_decay     = 0.97
+min_window_candles = 50
+assets             = ["AAPL", "MSFT", "SPY"]
 
 [optimizer.fitness]
-# Ziel: möglichst alle Trades gewinnen (Win Rate → 100 %)
-# Score = win_rate_pct × 1.0  →  Wertebereich 0–100, leicht interpretierbar.
-# Alle anderen Gewichte auf 0 — Gewinnhöhe wird später über die UI analysiert.
-win_rate    = 1.0   # Hauptziel: Anteil Gewinn-Trades in % (0–100)
-expectancy  = 0.0
-avg_win     = 0.0
-avg_loss    = 0.0
-sharpe      = 0.0
-drawdown    = 0.0
-min_trades  = 10     # Mind. Trades — weniger → Fitness = -∞
+sharpe     = 1.0
+win_rate   = 0.5
+expectancy = 1.0
+avg_win    = 0.3
+avg_loss   = 0.3
+drawdown   = 0.5
+min_trades = 5

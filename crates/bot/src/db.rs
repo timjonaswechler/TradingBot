@@ -293,6 +293,37 @@ impl Db {
         )?;
         Ok(())
     }
+
+    pub fn load_trades(&self) -> Result<Vec<Trade>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT asset, side, quantity, price, fee, timestamp, strategy, gain_loss, gain_loss_pct, tax
+             FROM trades ORDER BY timestamp ASC",
+        )?;
+        let trades = stmt
+            .query_map([], |row| {
+                let side_str: String = row.get(1)?;
+                let side = if side_str == "buy" { TradeSide::Buy } else { TradeSide::Sell };
+                Ok(Trade {
+                    asset:           row.get(0)?,
+                    side,
+                    quantity:        row.get(2)?,
+                    price:           row.get(3)?,
+                    fee:             row.get(4)?,
+                    timestamp:       row.get(5)?,
+                    strategy:        row.get(6)?,
+                    gain_loss:       row.get(7)?,
+                    gain_loss_pct:   row.get(8)?,
+                    tax:             row.get(9)?,
+                    // stub-only fields — not persisted in this schema
+                    price_cents:     row.get(3)?,
+                    pnl_cents:       row.get(7).unwrap_or(0),
+                    commission_cents: row.get(4)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(trades)
+    }
 }
 
 /// Erzeugt einen sicheren SQL-Tabellennamen aus einem Asset-Symbol.
