@@ -23,6 +23,16 @@ pub struct EvalConfig {
     /// Paper-trading engine configuration.
     pub trading_cfg: TradingConfig,
 }
+use crate::metrics::{self, Metrics};
+use crate::paper_trading::PaperTradingEngine;
+use crate::metrics::Metrics;
+use crate::paper_trading::{self, PaperTradingEngine, TradingConfig};
+
+use super::fitness;
+use super::genome::Genome;
+
+/// Alle verfügbaren Candle-Daten: asset → interval → candles (älteste zuerst).
+pub type CandlePool = HashMap<String, HashMap<String, Vec<Candle>>>;
 
 impl Default for EvalConfig {
     fn default() -> Self {
@@ -101,6 +111,28 @@ pub fn evaluate(
 
     let start_primary   = rng.gen_range(0..=primary_candles.len() - window_len);
     let start_secondary = rng.gen_range(0..=secondary_candles.len() - window_len);
+    let max_start = all_candles.len() - min_size;
+    let start     = rng.gen_range(0..=max_start);
+    let max_extra = (all_candles.len() - start - min_size).min(min_size * 2);
+    let extra     = if max_extra > 0 { rng.gen_range(0..=max_extra) } else { 0 };
+    let window    = &all_candles[start..start + min_size + extra];
+
+    let trading_cfg = TradingConfig {
+        starting_capital_cents: paper_cfg.starting_capital,
+        commission_type: paper_trading::CommissionType::Flat,
+        commission_amount: costs_cfg.commission_amount,
+        position_size_pct: paper_cfg.position_size_pct as f64 / 100.0,
+        max_short_size_pct: 0.5,
+        tax: paper_trading::TaxConfig {
+            freistellungsauftrag_cents: tax_cfg.freistellungsauftrag,
+            kirchensteuer: tax_cfg.kirchensteuer,
+            kirchensteuer_rate: 0.09,
+        },
+    };
+    let mut engine = PaperTradingEngine::new(trading_cfg);
+
+    let mut equity_curve: Vec<(chrono::DateTime<chrono::Utc>, i64)> =
+        Vec::with_capacity(window.len());
 
     let primary_window   = &primary_candles[start_primary..start_primary + window_len];
     let secondary_window = &secondary_candles[start_secondary..start_secondary + window_len];
@@ -112,6 +144,16 @@ pub fn evaluate(
         // Reverse slices so index 0 = newest (strategy convention).
         let primary_slice: Vec<Candle>   = primary_window[0..=i].iter().rev().cloned().collect();
         let secondary_slice: Vec<Candle> = secondary_window[0..=i].iter().rev().cloned().collect();
+        let candle = &window[t];
+        let pt_signal = paper_trading::Signal::from(strategy.signal(&slice));
+        engine.execute(&pt_signal, asset, candle);
+
+        let pos_value: i64 = engine.positions.values()
+            .map(|p| p.quantity * candle.close)
+            .sum();
+        equity_curve.push((window[t].timestamp, engine.cash + pos_value));
+        equity_curve.push(engine.cash_cents + pos_value);
+    }
 
         let sig = strategy.signal(&primary_slice, &secondary_slice);
         engine.execute(&sig, asset, &primary_window[i]);
@@ -133,5 +175,18 @@ pub fn evaluate(
         primary_interval:   genome.primary_interval.clone(),
         secondary_interval: genome.secondary_interval.clone(),
         asset: asset.to_string(),
+    let trade_records = metrics::from_paper_trades(&engine.trades);
+    let metrics = metrics::compute(&equity_curve, &trade_records, paper_cfg.starting_capital);
+    let fitness = fitness::score(&metrics, fitness_cfg);
+
+    EvalResult { fitness, metrics, asset: asset.to_string(), interval: interval.to_string() }
+}
+
+fn bad_result(asset: &str, interval: &str, _capital: i64) -> EvalResult {
+    EvalResult {
+        fitness:  f64::NEG_INFINITY,
+        metrics:  Metrics::default(),
+        asset:    asset.to_string(),
+        interval: interval.to_string(),
     }
 }
