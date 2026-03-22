@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use crate::paper_trading::engine::{Trade, TradeSide};
 
 /// A closed trade record (compatible with paper_trading::engine::Trade)
 #[derive(Debug, Clone)]
@@ -17,6 +18,21 @@ pub struct Metrics {
     pub total_trades: usize,
     pub winning_trades: usize,
     pub losing_trades: usize,
+    pub losing_trades:  usize,
+    pub win_rate_pct:   f64,  // 0–100
+    pub profit_factor:  f64,  // Bruttogewinn / |Bruttoverlust|
+
+    // Trades — prozentual (asset-unabhängig, für Optimizer)
+    pub avg_win_pct:    f64,  // Ø Gewinn pro Gewinn-Trade in %
+    pub avg_loss_pct:   f64,  // Ø Verlust pro Verlust-Trade in % (positiver Wert)
+    pub best_trade_pct: f64,  // bester einzelner Trade in %
+    pub worst_trade_pct:f64,  // schlechtester einzelner Trade in %
+    pub expectancy_pct: f64,  // Erwartungswert pro Trade in %
+                              // = win_rate * avg_win - loss_rate * avg_loss
+
+    // Kosten
+    pub total_fees: i64, // Cent
+}
 
     /// Win rate as percentage 0–100
     pub win_rate_pct: f64,
@@ -51,6 +67,41 @@ pub fn compute(
     if trades.is_empty() {
         return Metrics::default();
     }
+        // ── CAGR ─────────────────────────────────────────────────────────────
+        // (Endwert / Startwert) ^ (365 / Tage) − 1
+        let cagr_pct = if start_value > 0 && days > 0 {
+            let ratio = end_value as f64 / start_value as f64;
+            (ratio.powf(365.0 / days as f64) - 1.0) * 100.0
+        } else {
+            0.0
+        };
+
+        // ── Tägliche Renditen für Sharpe & Volatilität ───────────────────────
+        let daily_returns: Vec<f64> = equity_curve
+            .windows(2)
+            .map(|w| {
+                if w[0] == 0 {
+                    0.0
+                } else {
+                    (w[1] as f64 - w[0] as f64) / w[0] as f64
+                }
+            })
+            .collect();
+
+        let sharpe = sharpe_ratio(&daily_returns);
+
+        // ── Max Drawdown ──────────────────────────────────────────────────────
+        let max_drawdown_pct = max_drawdown(equity_curve);
+
+        // ── Trade-Statistiken (nur SELL/COVER-Trades haben PnL) ──────────────
+        let closed_trades: Vec<&Trade> = trades
+            .iter()
+            .filter(|t| t.side == TradeSide::Sell || t.side == TradeSide::Cover)
+            .collect();
+
+        let total_trades   = closed_trades.len();
+        let winning_trades = closed_trades.iter().filter(|t| t.pnl_cents > 0).count();
+        let losing_trades  = closed_trades.iter().filter(|t| t.pnl_cents < 0).count();
 
     let total_trades = trades.len();
 
@@ -59,6 +110,8 @@ pub fn compute(
     let mut losing_trades = 0usize;
     let mut win_pct_sum = 0.0f64;
     let mut loss_pct_sum = 0.0f64;
+        let gross_profit: i64 = closed_trades.iter().filter(|t| t.pnl_cents > 0).map(|t| t.pnl_cents).sum();
+        let gross_loss:   i64 = closed_trades.iter().filter(|t| t.pnl_cents < 0).map(|t| t.pnl_cents.abs()).sum();
 
     for t in trades {
         let position_value = t.entry_price_cents * t.quantity;
@@ -109,6 +162,94 @@ pub fn compute(
         max_drawdown_pct,
         total_return_pct,
         total_pnl_cents,
+        // ── Prozentuale Trade-Metriken (asset-unabhängig) ─────────────────────
+        // Compute pnl as % of trade value (price * quantity) for each closed trade
+        let trade_pcts: Vec<f64> = closed_trades.iter()
+            .filter_map(|t| {
+                let trade_value = t.price_cents * t.quantity;
+                if trade_value > 0 {
+                    Some(t.pnl_cents as f64 / trade_value as f64 * 100.0)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let win_pcts:  Vec<f64> = trade_pcts.iter().cloned().filter(|&p| p > 0.0).collect();
+        let loss_pcts: Vec<f64> = trade_pcts.iter().cloned().filter(|&p| p < 0.0).map(|p| p.abs()).collect();
+
+        let avg_win_pct = if win_pcts.is_empty() { 0.0 } else {
+            win_pcts.iter().sum::<f64>() / win_pcts.len() as f64
+        };
+        let avg_loss_pct = if loss_pcts.is_empty() { 0.0 } else {
+            loss_pcts.iter().sum::<f64>() / loss_pcts.len() as f64
+        };
+        let best_trade_pct  = trade_pcts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let worst_trade_pct = trade_pcts.iter().cloned().fold(f64::INFINITY,     f64::min);
+
+        let loss_rate = 1.0 - win_rate_pct / 100.0;
+        let expectancy_pct = win_rate_pct / 100.0 * avg_win_pct - loss_rate * avg_loss_pct;
+
+        // ── Kosten ────────────────────────────────────────────────────────────
+        let total_fees: i64 = trades.iter().map(|t| t.commission_cents).sum();
+
+        Self {
+            total_return_pct,
+            cagr_pct,
+            start_value,
+            end_value,
+            sharpe,
+            max_drawdown_pct,
+            total_trades,
+            winning_trades,
+            losing_trades,
+            win_rate_pct,
+            profit_factor,
+            avg_win_pct,
+            avg_loss_pct,
+            best_trade_pct:  if best_trade_pct  == f64::NEG_INFINITY { 0.0 } else { best_trade_pct },
+            worst_trade_pct: if worst_trade_pct == f64::INFINITY     { 0.0 } else { worst_trade_pct },
+            expectancy_pct,
+            total_fees,
+        }
+    }
+
+    /// Druckt eine übersichtliche Zusammenfassung in die Konsole.
+    pub fn print(&self, asset: &str, strategy_name: &str, days: u64) {
+        let gl_sign = if self.end_value >= self.start_value { "+" } else { "" };
+
+        println!("\n═══ Backtest: {asset} – {strategy_name} ══════════════════════════════");
+        println!("  Zeitraum:         {} Tage", days);
+        println!("  Startkapital:     {:.2} €", self.start_value as f64 / 100.0);
+        println!("  Endkapital:       {:.2} €", self.end_value   as f64 / 100.0);
+        println!();
+        println!("── Rendite ─────────────────────────────────────────────────────────────");
+        println!(
+            "  Total Return:     {}{:.2} %",
+            gl_sign, self.total_return_pct
+        );
+        println!("  CAGR:             {:+.2} % p.a.", self.cagr_pct);
+        println!();
+        println!("── Risiko ──────────────────────────────────────────────────────────────");
+        println!("  Sharpe Ratio:     {:.2}", self.sharpe);
+        println!("  Max Drawdown:     {:.2} %", self.max_drawdown_pct);
+        println!();
+        println!("── Trades ──────────────────────────────────────────────────────────────");
+        println!("  Gesamt:           {}", self.total_trades);
+        println!("  Gewinner:         {} ({:.1} %)", self.winning_trades, self.win_rate_pct);
+        println!("  Verlierer:        {}", self.losing_trades);
+        println!("  Profit Factor:    {:.2}", self.profit_factor);
+        println!();
+        println!("── Ø Trade-Performance (% des eingesetzten Kapitals) ───────────────────");
+        println!("  Ø Gewinn/Trade:   {:+.2} %", self.avg_win_pct);
+        println!("  Ø Verlust/Trade:  -{:.2} %", self.avg_loss_pct);
+        println!("  Erwartungswert:   {:+.2} % pro Trade", self.expectancy_pct);
+        println!("  Bester Trade:     {:+.2} %", self.best_trade_pct);
+        println!("  Schlechtster:     {:+.2} %", self.worst_trade_pct);
+        println!();
+        println!("── Kosten & Steuern ────────────────────────────────────────────────────");
+        println!("  Gebühren:         {:.2} €", self.total_fees as f64 / 100.0);
+        println!("════════════════════════════════════════════════════════════════════════");
     }
 }
 

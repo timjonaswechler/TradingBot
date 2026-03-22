@@ -1,5 +1,7 @@
 pub mod engine;
 pub mod tax;
+pub use engine::*;
+pub use tax::*;
 
 use anyhow::Result;
 use chrono::Utc;
@@ -75,7 +77,7 @@ impl PaperTradingEngine {
     ) -> Result<Option<Trade>> {
         match signal {
             Signal::Buy  => self.buy(asset, current_price, strategy_name),
-            Signal::Sell => self.sell(asset, current_price, strategy_name),
+            Signal::Sell | Signal::Short => self.sell(asset, current_price, strategy_name),
             Signal::Hold => Ok(None),
         }
     }
