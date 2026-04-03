@@ -55,29 +55,31 @@ cargo test -p db-layer
 
 ---
 
-## Milestone 3 -- Indicators Library
+## Milestone 3 -- Indicators Library ✅
 
 **Goal:** All planned technical indicators implemented as pure Rust functions with `O(1)` incremental state support.
 
 ### Steps
-- [ ] Set up `indicators/` crate with module structure (`trend/`, `momentum/`, `volatility/`, `volume/`, `support_resistance/`)
-- [ ] Implement **Trend** indicators:
-  - [ ] SMA, EMA, DEMA, TEMA
-  - [ ] MACD (`MacdResult { line, signal, histogram }`)
-  - [ ] Parabolic SAR
-  - [ ] ADX
-  - [ ] Ichimoku Cloud (`IchimokuResult`)
-- [ ] Implement **Momentum** indicators:
-  - [ ] RSI, CCI, Stochastic (`{k, d}`), Williams %R, ROC
-- [ ] Implement **Volatility** indicators:
-  - [ ] Bollinger Bands (`BbResult`), ATR, Keltner Channels
-- [ ] Implement **Volume** indicators:
-  - [ ] OBV, VWAP, Volume Profile, MFI
-- [ ] Implement **Support/Resistance**:
-  - [ ] Pivot Points, Fibonacci Retracements
-- [ ] Implement **Slope** (linear regression slope)
-- [ ] All functions return `Option<T>` (return `None` when insufficient data)
-- [ ] Unit test every indicator against known values
+- [x] Set up `indicators/` crate with module structure (`trend/`, `momentum/`, `volatility/`, `volume/`, `support_resistance/`)
+- [x] Implement **Trend** indicators:
+  - [x] SMA, EMA, DEMA, TEMA
+  - [x] MACD (`MacdResult { line, signal, histogram }`)
+  - [x] Parabolic SAR
+  - [x] ADX
+  - [x] Ichimoku Cloud (`IchimokuResult`)
+- [x] Implement **Momentum** indicators:
+  - [x] RSI, CCI, Stochastic (`{k, d}`), Williams %R, ROC
+- [x] Implement **Volatility** indicators:
+  - [x] Bollinger Bands (`BbResult`), ATR, Keltner Channels
+- [x] Implement **Volume** indicators:
+  - [x] OBV, VWAP, Volume Profile, MFI
+- [x] Implement **Support/Resistance**:
+  - [x] Pivot Points, Fibonacci Retracements
+- [x] Implement **Slope** (linear regression slope)
+- [x] All functions return `Option<T>` (return `None` when insufficient data)
+- [x] Unit test every indicator against known values
+
+> Completed: 91/91 tests passing. 20 indicators across 5 categories. `ema_series` and `atr_series` helpers shared internally by DEMA/TEMA/Keltner.
 
 ### Verification
 ```bash
@@ -192,7 +194,7 @@ M1 (Workspace + Shared Types)  DONE
   |
   +-- M2 (DB Layer)
   |
-  +-- M3 (Indicators)
+  +-- M3 (Indicators)           DONE
         |
         +-- M4 (Engine / Lua)
               |
