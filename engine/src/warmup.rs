@@ -1,1 +1,86 @@
-// Engine warmup logic — stub (implemented in Milestone 4).
+use shared::Candle;
+use crate::{error::EngineError, vm::LuaEngine};
+
+/// Feed `warmup_candles` into the engine without calling `on_tick`.
+///
+/// Used by the daemon on startup: fetch the last N historical candles from
+/// SpacetimeDB and push them here so the indicator cache is warm before
+/// the first live candle arrives. No signals are produced, no trades are
+/// recorded.
+///
+/// `warmup_candles` must be in chronological order (oldest first).
+pub fn warmup(engine: &mut LuaEngine, warmup_candles: Vec<Candle>) -> Result<(), EngineError> {
+    for candle in warmup_candles {
+        engine.push_candle(candle);
+    }
+    Ok(())
+}
+
+/// Compute the minimum number of historical candles required before a strategy
+/// can produce a meaningful signal (i.e., before no indicator returns `nil`).
+///
+/// Heuristic: returns `max_lookback + 1`. For most strategies the dominant
+/// indicator is MACD(26) or similar, so the caller should pass that number.
+/// If unsure, 60 is a safe default for common strategies.
+pub fn required_warmup_bars(max_indicator_period: usize) -> usize {
+    max_indicator_period + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_candle(close: f64, ts: i64) -> Candle {
+        Candle {
+            timestamp: ts,
+            symbol: "TEST".into(),
+            open: close - 0.5,
+            high: close + 1.0,
+            low: close - 1.0,
+            close,
+            volume: 1000.0,
+            timeframe: "1d".into(),
+        }
+    }
+
+    const STRATEGY: &str = r#"
+function on_tick(candles, context)
+    return { signal = "HOLD" }
+end
+"#;
+
+    #[test]
+    fn warmup_pre_loads_candles() {
+        let mut engine = LuaEngine::new(STRATEGY).unwrap();
+
+        let historical: Vec<Candle> = (1..=20)
+            .map(|i| make_candle(i as f64, i))
+            .collect();
+        let count = historical.len();
+
+        warmup(&mut engine, historical).unwrap();
+
+        assert_eq!(engine.candle_count(), count);
+    }
+
+    #[test]
+    fn warmup_followed_by_tick_works() {
+        let mut engine = LuaEngine::new(STRATEGY).unwrap();
+
+        let historical: Vec<Candle> = (1..=20)
+            .map(|i| make_candle(i as f64, i))
+            .collect();
+        warmup(&mut engine, historical).unwrap();
+
+        let ctx = shared::Context::new(10_000.0);
+        let decision = engine.tick(make_candle(21.0, 21), ctx).unwrap();
+        assert_eq!(engine.candle_count(), 21);
+        assert_eq!(decision.signal, shared::Signal::Hold);
+    }
+
+    #[test]
+    fn required_bars_adds_one() {
+        assert_eq!(required_warmup_bars(26), 27);
+        assert_eq!(required_warmup_bars(0), 1);
+    }
+}

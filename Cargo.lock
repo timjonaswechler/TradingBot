@@ -271,6 +271,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "indicators",
  "mlua",
  "serde",
  "serde_json",

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 shared     = { path = "../shared" }
+indicators = { path = "../indicators" }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }
