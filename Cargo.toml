@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "shared",
+    "indicators",
     "db-layer",
     "engine",
     "trading-daemon",
