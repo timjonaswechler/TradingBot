@@ -1,0 +1,26 @@
+# Build output
+/target/
+
+# Cargo lock is committed for binaries, kept for reproducibility
+# Cargo.lock  ← intentionally NOT ignored (workspace with binaries)
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# SpacetimeDB local data
+.spacetime/
+
+# Log files
+*.log

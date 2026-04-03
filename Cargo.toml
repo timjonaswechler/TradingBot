@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "shared",
+    "db-layer",
+    "engine",
+    "trading-daemon",
+    "trading-ui",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Core
+serde       = { version = "1.0",  features = ["derive"] }
+serde_json  = "1.0"
+thiserror   = "2.0"
+anyhow      = "1.0"
+
+# Async runtime
+tokio       = { version = "1",    features = ["full"] }
+
+# HTTP / provider APIs
+reqwest     = { version = "0.12", features = ["json"] }
+
+# Lua scripting
+mlua        = { version = "0.10", features = ["lua54", "vendored"] }
+
+# Parallel backtesting
+rayon       = "1.10"
+
+# CLI
+clap        = { version = "4",    features = ["derive"] }
+
+# Logging
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
