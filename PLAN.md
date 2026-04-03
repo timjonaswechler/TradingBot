@@ -88,23 +88,25 @@ cargo test -p indicators
 
 ---
 
-## Milestone 4 -- Trading Engine (Lua Scripting + Stateful Indicator Cache)
+## Milestone 4 -- Trading Engine (Lua Scripting + Stateful Indicator Cache) ✅
 
 **Goal:** A working Lua scripting runtime with PineScript-like semantics and O(1) incremental indicator updates for the backtester.
 
 ### Steps
-- [ ] Set up `engine/` crate (replaces `lua-engine/` from DESIGN.md)
-- [ ] `candle_wrapper.rs` -- `LuaCandles` UserData: 1-indexed (newest first), `__index`, `__len`, helper methods (`closes()`, `opens()`, `highs()`, `lows()`, `volumes()`)
-- [ ] `bindings.rs` -- register `indicators.*` Lua table, bridge `LuaCandles` to `&[f64]` / `&[Candle]` for each indicator
-- [ ] `indicator_cache.rs` -- stateful O(1) incremental updates for backtesting (keyed by `(IndicatorType, period, offset)`)
-- [ ] `strategy_loader.rs` -- load, validate and execute `.lua` strategy files
-- [ ] `vm.rs` -- Lua VM lifecycle, `on_tick(candles, context)` call, error handling:
+- [x] Set up `engine/` crate (replaces `lua-engine/` from DESIGN.md)
+- [x] `candle_wrapper.rs` -- `LuaCandles` UserData: 1-indexed (newest first), `__index`, `__len`, helper methods (`closes()`, `opens()`, `highs()`, `lows()`, `volumes()`)
+- [x] `bindings.rs` -- register `indicators.*` Lua table, bridge `LuaCandles` to `&[f64]` / `&[Candle]` for each indicator
+- [x] `indicator_cache.rs` -- stateful O(1) incremental updates for backtesting (keyed by `(IndicatorType, period, offset)`)
+- [x] `strategy_loader.rs` -- load, validate and execute `.lua` strategy files
+- [x] `vm.rs` -- Lua VM lifecycle, `on_tick(candles, context)` call, error handling:
   - `on_tick` exception -- log + abort run
   - missing `signal` key -- error
   - unknown signal value -- error
   - missing `size` on BUY/SELL -- default `1.0`
-- [ ] `warmup.rs` -- startup warmup logic: read required lookback from script, fetch N historical candles from DB, feed into engine before live ticking begins
-- [ ] Write unit tests for indicator cache correctness and Lua bindings
+- [x] `warmup.rs` -- startup warmup logic: read required lookback from script, fetch N historical candles from DB, feed into engine before live ticking begins
+- [x] Write unit tests for indicator cache correctness and Lua bindings
+
+> Completed: 24/24 engine tests + 124 workspace total, all passing. Sample strategy `strategies/sma_cross.lua` added.
 
 ### Verification
 ```bash
@@ -196,7 +198,7 @@ M1 (Workspace + Shared Types)  DONE
   |
   +-- M3 (Indicators)           DONE
         |
-        +-- M4 (Engine / Lua)
+        +-- M4 (Engine / Lua)         DONE
               |
               +-- M5 (Daemon)
               |
