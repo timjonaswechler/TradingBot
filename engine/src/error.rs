@@ -1,8 +1,8 @@
 /// All errors that the trading engine can produce.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    #[error("Lua error: {0}")]
-    Lua(#[from] mlua::Error),
+    #[error("Rhai error: {0}")]
+    Rhai(#[from] Box<rhai::EvalAltResult>),
 
     #[error("Strategy error: {0}")]
     Strategy(String),

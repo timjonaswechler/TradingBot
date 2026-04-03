@@ -1,5 +1,5 @@
 use shared::Candle;
-use crate::{error::EngineError, vm::LuaEngine};
+use crate::{error::EngineError, vm::Engine};
 
 /// Feed `warmup_candles` into the engine without calling `on_tick`.
 ///
@@ -9,7 +9,7 @@ use crate::{error::EngineError, vm::LuaEngine};
 /// recorded.
 ///
 /// `warmup_candles` must be in chronological order (oldest first).
-pub fn warmup(engine: &mut LuaEngine, warmup_candles: Vec<Candle>) -> Result<(), EngineError> {
+pub fn warmup(engine: &mut Engine, warmup_candles: Vec<Candle>) -> Result<(), EngineError> {
     for candle in warmup_candles {
         engine.push_candle(candle);
     }
@@ -44,14 +44,14 @@ mod tests {
     }
 
     const STRATEGY: &str = r#"
-function on_tick(candles, context)
-    return { signal = "HOLD" }
-end
+fn on_tick(candles, context) {
+    #{ signal: "HOLD" }
+}
 "#;
 
     #[test]
     fn warmup_pre_loads_candles() {
-        let mut engine = LuaEngine::new(STRATEGY).unwrap();
+        let mut engine = Engine::new(STRATEGY).unwrap();
 
         let historical: Vec<Candle> = (1..=20)
             .map(|i| make_candle(i as f64, i))
@@ -65,7 +65,7 @@ end
 
     #[test]
     fn warmup_followed_by_tick_works() {
-        let mut engine = LuaEngine::new(STRATEGY).unwrap();
+        let mut engine = Engine::new(STRATEGY).unwrap();
 
         let historical: Vec<Candle> = (1..=20)
             .map(|i| make_candle(i as f64, i))

@@ -22,8 +22,8 @@ tokio       = { version = "1",    features = ["full"] }
 # HTTP / provider APIs
 reqwest     = { version = "0.12", features = ["json"] }
 
-# Lua scripting
-mlua        = { version = "0.10", features = ["lua54", "vendored"] }
+# Rhai scripting (Rust-native, no FFI)
+rhai        = { version = "1", features = ["sync"] }
 
 # Parallel backtesting
 rayon       = "1.10"

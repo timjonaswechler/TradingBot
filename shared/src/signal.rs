@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Trading signal emitted by a Lua strategy's `on_tick`.
+/// Trading signal emitted by a Rhai strategy's `on_tick`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Signal {

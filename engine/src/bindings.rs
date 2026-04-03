@@ -1,20 +1,20 @@
-/// Registers the `indicators` global table in the Lua VM.
+/// Builds the `indicators` Rhai module.
 ///
-/// Every function follows the Lua contract from DESIGN.md:
-///   `indicators.xxx(candles, period [, offset])  →  value | nil`
+/// Strategies access indicators with:  `indicators::rsi(candles, 14)`
 ///
-/// `candles` is the `LuaCandles` token; actual data is read from `EngineData`
-/// stored as Lua app-data. `offset = 0` means current bar, `offset = 1` means
-/// one bar back (uses a candle slice ending `offset` bars before the last).
-use std::cell::RefCell;
+/// Every function is overloaded:
+///   `indicators::xxx(candles, ...params)`          — offset = 0 (current bar)
+///   `indicators::xxx(candles, ...params, offset)`  — value `offset` bars back
+///
+/// Returns `()` (Rhai unit) when insufficient data, mirroring `Option::None`.
+use rhai::{Dynamic, Engine, Module, INT};
+use std::sync::Arc;
 
-use crate::{
-    indicator_cache::{
-        atr_from_cache, atr_store,
-        ema_from_cache, ema_store,
-        rsi_from_cache, rsi_store,
-    },
-    vm::EngineData,
+use crate::candle_wrapper::CandleList;
+use crate::indicator_cache::{
+    atr_from_cache, atr_store,
+    ema_from_cache, ema_store,
+    rsi_from_cache, rsi_store,
 };
 
 use indicators::{
@@ -28,200 +28,152 @@ use indicators::{
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Convert `Option<f64>` to a Lua value (`nil` when `None`).
-fn opt_f64(v: Option<f64>) -> mlua::Value {
+type RhaiResult = Result<Dynamic, Box<rhai::EvalAltResult>>;
+
+fn opt(v: Option<f64>) -> Dynamic {
     match v {
-        Some(n) => mlua::Value::Number(n),
-        None    => mlua::Value::Nil,
+        Some(n) => Dynamic::from(n),
+        None    => Dynamic::UNIT,
     }
 }
 
-/// Borrow the candle slice, optionally trimmed by `offset` bars from the end.
-macro_rules! with_candles {
-    ($lua:expr, $offset:expr, $body:expr) => {{
-        let data_ref = $lua
-            .app_data_ref::<RefCell<EngineData>>()
-            .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-        let data = data_ref.borrow();
-        let n = data.candles.len();
-        let end = n.saturating_sub($offset);
-        let candles = &data.candles[..end];
-        $body(candles)
-    }};
+/// Read candles from CandleList, trimmed by `offset` from the end.
+/// Returns a clone of the relevant slice.
+fn candles_slice(cl: &CandleList, offset: usize) -> Vec<shared::Candle> {
+    let candles = cl.candles.read().unwrap();
+    let n = candles.len();
+    let end = n.saturating_sub(offset);
+    candles[..end].to_vec()
 }
 
-// Same but also borrows the cache mutably (for incremental updates).
-// We need separate access since we can't borrow candles immutably
-// and cache mutably from the same RefCell at the same time.
-// Solution: clone the closes/candles slice needed, drop the borrow, then mutate cache.
+fn closes_slice(cl: &CandleList, offset: usize) -> Vec<f64> {
+    candles_slice(cl, offset).iter().map(|c| c.close).collect()
+}
 
-// ── Registration ─────────────────────────────────────────────────────────────
+// ── Module builder ────────────────────────────────────────────────────────────
 
-pub fn register_indicators(lua: &mlua::Lua) -> mlua::Result<()> {
-    let ind = lua.create_table()?;
+pub fn build_indicators_module() -> Module {
+    let mut m = Module::new();
 
     // ── Trend ────────────────────────────────────────────────────────────────
 
-    ind.set("sma", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-            sma(&closes, period)
-        });
-        Ok(opt_f64(result))
-    })?)?;
+    m.set_native_fn("sma", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        Ok(opt(sma(&closes_slice(cl, 0), period as usize)))
+    });
+    m.set_native_fn("sma", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(sma(&closes_slice(cl, offset as usize), period as usize)))
+    });
 
-    ind.set("ema", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        if offset > 0 {
-            // Offset access: recompute from trimmed slice, no cache involvement
-            let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-                let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-                ema_at(&closes, period, 0)
-            });
-            return Ok(opt_f64(result));
-        }
-
-        // offset = 0: try incremental cache first
-        let (closes, n) = {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let data = data_ref.borrow();
-            let closes: Vec<f64> = data.candles.iter().map(|c| c.close).collect();
-            let n = closes.len();
-            (closes, n)
-        };
-
-        // Try cache
+    m.set_native_fn("ema", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        let closes = closes_slice(cl, 0);
+        let n = closes.len();
+        // Try incremental cache
         let cached = {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let mut data = data_ref.borrow_mut();
-            ema_from_cache(&mut data.cache, &closes, period)
+            let mut cache = cl.cache.write().unwrap();
+            ema_from_cache(&mut cache, &closes, period as usize)
         };
-        if let Some(v) = cached { return Ok(opt_f64(Some(v))); }
-
-        // Full compute
-        let result = ema_at(&closes, period, 0);
+        if let Some(v) = cached { return Ok(Dynamic::from(v)); }
+        // Full compute + store
+        let result = ema_at(&closes, period as usize, 0);
         if let Some(v) = result {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let mut data = data_ref.borrow_mut();
-            ema_store(&mut data.cache, period, v, n);
+            let mut cache = cl.cache.write().unwrap();
+            ema_store(&mut cache, period as usize, v, n);
         }
-        Ok(opt_f64(result))
-    })?)?;
+        Ok(opt(result))
+    });
+    m.set_native_fn("ema", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(ema_at(&closes_slice(cl, offset as usize), period as usize, 0)))
+    });
 
-    ind.set("dema", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-            dema(&closes, period)
-        });
-        Ok(opt_f64(result))
-    })?)?;
+    m.set_native_fn("dema", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        Ok(opt(dema(&closes_slice(cl, 0), period as usize)))
+    });
+    m.set_native_fn("dema", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(dema(&closes_slice(cl, offset as usize), period as usize)))
+    });
 
-    ind.set("tema", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-            tema(&closes, period)
-        });
-        Ok(opt_f64(result))
-    })?)?;
+    m.set_native_fn("tema", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        Ok(opt(tema(&closes_slice(cl, 0), period as usize)))
+    });
+    m.set_native_fn("tema", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(tema(&closes_slice(cl, offset as usize), period as usize)))
+    });
 
-    ind.set("macd", lua.create_function(|lua, (_c, fast, slow, signal_p, offset): (mlua::AnyUserData, usize, usize, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-            macd(&closes, fast, slow, signal_p)
-        });
-        match result {
-            None    => Ok(mlua::Value::Nil),
+    m.set_native_fn("macd", |cl: &mut CandleList, fast: INT, slow: INT, signal: INT| -> RhaiResult {
+        match macd(&closes_slice(cl, 0), fast as usize, slow as usize, signal as usize) {
+            None    => Ok(Dynamic::UNIT),
             Some(r) => {
-                let t = lua.create_table()?;
-                t.set("line",      r.line)?;
-                t.set("signal",    r.signal)?;
-                t.set("histogram", r.histogram)?;
-                Ok(mlua::Value::Table(t))
+                let mut map = rhai::Map::new();
+                map.insert("line".into(),      Dynamic::from(r.line));
+                map.insert("signal".into(),    Dynamic::from(r.signal));
+                map.insert("histogram".into(), Dynamic::from(r.histogram));
+                Ok(Dynamic::from_map(map))
             }
         }
-    })?)?;
-
-    ind.set("sar", lua.create_function(|lua, (_c, step, max, offset): (mlua::AnyUserData, f64, f64, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            sar(candles, step, max)
-        });
-        Ok(opt_f64(result))
-    })?)?;
-
-    ind.set("adx", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            adx(candles, period)
-        });
-        match result {
-            None    => Ok(mlua::Value::Nil),
+    });
+    m.set_native_fn("macd", |cl: &mut CandleList, fast: INT, slow: INT, signal: INT, offset: INT| -> RhaiResult {
+        match macd(&closes_slice(cl, offset as usize), fast as usize, slow as usize, signal as usize) {
+            None    => Ok(Dynamic::UNIT),
             Some(r) => {
-                let t = lua.create_table()?;
-                t.set("adx",      r.adx)?;
-                t.set("plus_di",  r.plus_di)?;
-                t.set("minus_di", r.minus_di)?;
-                Ok(mlua::Value::Table(t))
+                let mut map = rhai::Map::new();
+                map.insert("line".into(),      Dynamic::from(r.line));
+                map.insert("signal".into(),    Dynamic::from(r.signal));
+                map.insert("histogram".into(), Dynamic::from(r.histogram));
+                Ok(Dynamic::from_map(map))
             }
         }
-    })?)?;
+    });
 
-    ind.set("ichimoku", lua.create_function(|lua, (_c, offset): (mlua::AnyUserData, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            ichimoku(candles)
-        });
-        match result {
-            None    => Ok(mlua::Value::Nil),
+    m.set_native_fn("sar", |cl: &mut CandleList, step: f64, max: f64| -> RhaiResult {
+        Ok(opt(sar(&candles_slice(cl, 0), step, max)))
+    });
+    m.set_native_fn("sar", |cl: &mut CandleList, step: f64, max: f64, offset: INT| -> RhaiResult {
+        Ok(opt(sar(&candles_slice(cl, offset as usize), step, max)))
+    });
+
+    m.set_native_fn("adx", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        match adx(&candles_slice(cl, 0), period as usize) {
+            None    => Ok(Dynamic::UNIT),
             Some(r) => {
-                let t = lua.create_table()?;
-                t.set("tenkan",  r.tenkan)?;
-                t.set("kijun",   r.kijun)?;
-                t.set("span_a",  r.span_a)?;
-                t.set("span_b",  r.span_b)?;
-                t.set("chikou",  r.chikou)?;
-                Ok(mlua::Value::Table(t))
+                let mut map = rhai::Map::new();
+                map.insert("adx".into(),      Dynamic::from(r.adx));
+                map.insert("plus_di".into(),  Dynamic::from(r.plus_di));
+                map.insert("minus_di".into(), Dynamic::from(r.minus_di));
+                Ok(Dynamic::from_map(map))
             }
         }
-    })?)?;
+    });
+
+    m.set_native_fn("ichimoku", |cl: &mut CandleList| -> RhaiResult {
+        match ichimoku(&candles_slice(cl, 0)) {
+            None    => Ok(Dynamic::UNIT),
+            Some(r) => {
+                let mut map = rhai::Map::new();
+                map.insert("tenkan".into(), Dynamic::from(r.tenkan));
+                map.insert("kijun".into(),  Dynamic::from(r.kijun));
+                map.insert("span_a".into(), Dynamic::from(r.span_a));
+                map.insert("span_b".into(), Dynamic::from(r.span_b));
+                map.insert("chikou".into(), Dynamic::from(r.chikou));
+                Ok(Dynamic::from_map(map))
+            }
+        }
+    });
 
     // ── Momentum ─────────────────────────────────────────────────────────────
 
-    ind.set("rsi", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        if offset > 0 {
-            let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-                let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-                rsi(&closes, period)
-            });
-            return Ok(opt_f64(result));
-        }
-
-        let closes = {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let data = data_ref.borrow();
-            data.candles.iter().map(|c| c.close).collect::<Vec<f64>>()
-        };
+    m.set_native_fn("rsi", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        let closes = closes_slice(cl, 0);
         let n = closes.len();
+        let period = period as usize;
 
         let cached = {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let mut data = data_ref.borrow_mut();
-            rsi_from_cache(&mut data.cache, &closes, period)
+            let mut cache = cl.cache.write().unwrap();
+            rsi_from_cache(&mut cache, &closes, period)
         };
-        if let Some(v) = cached { return Ok(opt_f64(Some(v))); }
+        if let Some(v) = cached { return Ok(Dynamic::from(v)); }
 
-        // Full compute — also extract the Wilder state for caching
-        if period == 0 || closes.len() <= period { return Ok(mlua::Value::Nil); }
+        // Full compute — extract Wilder state for caching
+        if period == 0 || closes.len() <= period { return Ok(Dynamic::UNIT); }
         let mut avg_gain = 0.0f64;
         let mut avg_loss = 0.0f64;
         for i in 1..=period {
@@ -240,215 +192,169 @@ pub fn register_indicators(lua: &mlua::Lua) -> mlua::Result<()> {
         let val = if avg_loss < 1e-12 { 100.0 } else { 100.0 - 100.0 / (1.0 + avg_gain / avg_loss) };
 
         {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let mut data = data_ref.borrow_mut();
-            rsi_store(&mut data.cache, period, avg_gain, avg_loss, *closes.last().unwrap(), n);
+            let mut cache = cl.cache.write().unwrap();
+            rsi_store(&mut cache, period, avg_gain, avg_loss, *closes.last().unwrap(), n);
         }
-        Ok(opt_f64(Some(val)))
-    })?)?;
+        Ok(Dynamic::from(val))
+    });
+    m.set_native_fn("rsi", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(rsi(&closes_slice(cl, offset as usize), period as usize)))
+    });
 
-    ind.set("cci", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            cci(candles, period)
-        });
-        Ok(opt_f64(result))
-    })?)?;
+    m.set_native_fn("cci", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        Ok(opt(cci(&candles_slice(cl, 0), period as usize)))
+    });
+    m.set_native_fn("cci", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(cci(&candles_slice(cl, offset as usize), period as usize)))
+    });
 
-    ind.set("stochastic", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            stochastic(candles, period)
-        });
-        match result {
-            None    => Ok(mlua::Value::Nil),
+    m.set_native_fn("stochastic", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        match stochastic(&candles_slice(cl, 0), period as usize) {
+            None    => Ok(Dynamic::UNIT),
             Some(r) => {
-                let t = lua.create_table()?;
-                t.set("k", r.k)?;
-                t.set("d", r.d)?;
-                Ok(mlua::Value::Table(t))
+                let mut map = rhai::Map::new();
+                map.insert("k".into(), Dynamic::from(r.k));
+                map.insert("d".into(), Dynamic::from(r.d));
+                Ok(Dynamic::from_map(map))
             }
         }
-    })?)?;
+    });
 
-    ind.set("williams_r", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            williams_r(candles, period)
-        });
-        Ok(opt_f64(result))
-    })?)?;
+    m.set_native_fn("williams_r", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        Ok(opt(williams_r(&candles_slice(cl, 0), period as usize)))
+    });
+    m.set_native_fn("williams_r", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(williams_r(&candles_slice(cl, offset as usize), period as usize)))
+    });
 
-    ind.set("roc", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-            roc(&closes, period)
-        });
-        Ok(opt_f64(result))
-    })?)?;
+    m.set_native_fn("roc", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        Ok(opt(roc(&closes_slice(cl, 0), period as usize)))
+    });
+    m.set_native_fn("roc", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(roc(&closes_slice(cl, offset as usize), period as usize)))
+    });
 
     // ── Volatility ───────────────────────────────────────────────────────────
 
-    ind.set("bollinger", lua.create_function(|lua, (_c, period, std_dev, offset): (mlua::AnyUserData, usize, f64, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-            bollinger(&closes, period, std_dev)
-        });
-        match result {
-            None    => Ok(mlua::Value::Nil),
+    m.set_native_fn("bollinger", |cl: &mut CandleList, period: INT, std_dev: f64| -> RhaiResult {
+        match bollinger(&closes_slice(cl, 0), period as usize, std_dev) {
+            None    => Ok(Dynamic::UNIT),
             Some(r) => {
-                let t = lua.create_table()?;
-                t.set("upper",  r.upper)?;
-                t.set("middle", r.middle)?;
-                t.set("lower",  r.lower)?;
-                Ok(mlua::Value::Table(t))
+                let mut map = rhai::Map::new();
+                map.insert("upper".into(),  Dynamic::from(r.upper));
+                map.insert("middle".into(), Dynamic::from(r.middle));
+                map.insert("lower".into(),  Dynamic::from(r.lower));
+                Ok(Dynamic::from_map(map))
             }
         }
-    })?)?;
+    });
 
-    ind.set("atr", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        if offset > 0 {
-            let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-                atr(candles, period)
-            });
-            return Ok(opt_f64(result));
-        }
-
-        let (candles_clone, n) = {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let data = data_ref.borrow();
-            (data.candles.clone(), data.candles.len())
-        };
+    m.set_native_fn("atr", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        let period = period as usize;
+        let candles = candles_slice(cl, 0);
+        let n = candles.len();
 
         let cached = {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let mut data = data_ref.borrow_mut();
-            atr_from_cache(&mut data.cache, &candles_clone, period)
+            let mut cache = cl.cache.write().unwrap();
+            atr_from_cache(&mut cache, &candles, period)
         };
-        if let Some(v) = cached { return Ok(opt_f64(Some(v))); }
+        if let Some(v) = cached { return Ok(Dynamic::from(v)); }
 
-        let result = atr(&candles_clone, period);
+        let result = atr(&candles, period);
         if let Some(v) = result {
-            let prev_close = candles_clone.last().map(|c| c.close).unwrap_or(0.0);
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let mut data = data_ref.borrow_mut();
-            atr_store(&mut data.cache, period, v, prev_close, n);
+            let prev_close = candles.last().map(|c| c.close).unwrap_or(0.0);
+            let mut cache = cl.cache.write().unwrap();
+            atr_store(&mut cache, period, v, prev_close, n);
         }
-        Ok(opt_f64(result))
-    })?)?;
+        Ok(opt(result))
+    });
+    m.set_native_fn("atr", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(atr(&candles_slice(cl, offset as usize), period as usize)))
+    });
 
-    ind.set("keltner", lua.create_function(|lua, (_c, period, mult, offset): (mlua::AnyUserData, usize, f64, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            keltner(candles, period, mult)
-        });
-        match result {
-            None    => Ok(mlua::Value::Nil),
+    m.set_native_fn("keltner", |cl: &mut CandleList, period: INT, mult: f64| -> RhaiResult {
+        match keltner(&candles_slice(cl, 0), period as usize, mult) {
+            None    => Ok(Dynamic::UNIT),
             Some(r) => {
-                let t = lua.create_table()?;
-                t.set("upper",  r.upper)?;
-                t.set("middle", r.middle)?;
-                t.set("lower",  r.lower)?;
-                Ok(mlua::Value::Table(t))
+                let mut map = rhai::Map::new();
+                map.insert("upper".into(),  Dynamic::from(r.upper));
+                map.insert("middle".into(), Dynamic::from(r.middle));
+                map.insert("lower".into(),  Dynamic::from(r.lower));
+                Ok(Dynamic::from_map(map))
             }
         }
-    })?)?;
+    });
 
     // ── Volume ───────────────────────────────────────────────────────────────
 
-    ind.set("obv", lua.create_function(|lua, (_c, offset): (mlua::AnyUserData, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            obv(candles)
-        });
-        Ok(opt_f64(result))
-    })?)?;
+    m.set_native_fn("obv",  |cl: &mut CandleList| -> RhaiResult {
+        Ok(opt(obv(&candles_slice(cl, 0))))
+    });
+    m.set_native_fn("vwap", |cl: &mut CandleList| -> RhaiResult {
+        Ok(opt(vwap(&candles_slice(cl, 0))))
+    });
+    m.set_native_fn("mfi",  |cl: &mut CandleList, period: INT| -> RhaiResult {
+        Ok(opt(mfi(&candles_slice(cl, 0), period as usize)))
+    });
 
-    ind.set("vwap", lua.create_function(|lua, (_c, offset): (mlua::AnyUserData, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            vwap(candles)
-        });
-        Ok(opt_f64(result))
-    })?)?;
-
-    ind.set("mfi", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            mfi(candles, period)
-        });
-        Ok(opt_f64(result))
-    })?)?;
-
-    ind.set("volume_profile", lua.create_function(|lua, (_c, buckets, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            volume_profile(candles, buckets)
-        });
-        match result {
-            None => Ok(mlua::Value::Nil),
+    m.set_native_fn("volume_profile", |cl: &mut CandleList, buckets: INT| -> RhaiResult {
+        match volume_profile(&candles_slice(cl, 0), buckets as usize) {
+            None => Ok(Dynamic::UNIT),
             Some(profile) => {
-                let t = lua.create_table()?;
-                for (i, bucket) in profile.iter().enumerate() {
-                    let b = lua.create_table()?;
-                    b.set("price",  bucket.price)?;
-                    b.set("volume", bucket.volume)?;
-                    t.set(i + 1, b)?;
-                }
-                Ok(mlua::Value::Table(t))
+                let arr: rhai::Array = profile.iter().map(|b| {
+                    let mut map = rhai::Map::new();
+                    map.insert("price".into(),  Dynamic::from(b.price));
+                    map.insert("volume".into(), Dynamic::from(b.volume));
+                    Dynamic::from_map(map)
+                }).collect();
+                Ok(Dynamic::from_array(arr))
             }
         }
-    })?)?;
+    });
 
     // ── Support / Resistance ─────────────────────────────────────────────────
 
-    ind.set("pivot_points", lua.create_function(|lua, (_c, offset): (mlua::AnyUserData, Option<usize>)| {
-        // Uses the candle immediately before the current window as the "previous period"
-        let offset = offset.unwrap_or(0);
-        let prev_candle = {
-            let data_ref = lua.app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let data = data_ref.borrow();
-            let n = data.candles.len();
-            let end = n.saturating_sub(offset);
-            if end < 1 { None } else { Some(data.candles[end - 1].clone()) }
-        };
-        match prev_candle {
-            None => Ok(mlua::Value::Nil),
-            Some(c) => {
-                let r = pivot_points(&c);
-                let t = lua.create_table()?;
-                t.set("pp", r.pp)?;
-                t.set("r1", r.r1)?; t.set("r2", r.r2)?; t.set("r3", r.r3)?;
-                t.set("s1", r.s1)?; t.set("s2", r.s2)?; t.set("s3", r.s3)?;
-                Ok(mlua::Value::Table(t))
+    m.set_native_fn("pivot_points", |cl: &mut CandleList| -> RhaiResult {
+        let candles = candles_slice(cl, 0);
+        match candles.last() {
+            None => Ok(Dynamic::UNIT),
+            Some(prev) => {
+                let r = pivot_points(prev);
+                let mut map = rhai::Map::new();
+                map.insert("pp".into(), Dynamic::from(r.pp));
+                map.insert("r1".into(), Dynamic::from(r.r1));
+                map.insert("r2".into(), Dynamic::from(r.r2));
+                map.insert("r3".into(), Dynamic::from(r.r3));
+                map.insert("s1".into(), Dynamic::from(r.s1));
+                map.insert("s2".into(), Dynamic::from(r.s2));
+                map.insert("s3".into(), Dynamic::from(r.s3));
+                Ok(Dynamic::from_map(map))
             }
         }
-    })?)?;
+    });
 
-    ind.set("fibonacci", lua.create_function(|_, (_c, low, high): (mlua::AnyUserData, f64, f64)| {
-        let levels = fibonacci_retracements(low, high);
-        Ok(levels)
-    })?)?;
+    m.set_native_fn("fibonacci", |_cl: &mut CandleList, low: f64, high: f64| -> RhaiResult {
+        let levels: rhai::Array = fibonacci_retracements(low, high)
+            .into_iter()
+            .map(Dynamic::from)
+            .collect();
+        Ok(Dynamic::from_array(levels))
+    });
 
     // ── Slope ────────────────────────────────────────────────────────────────
 
-    ind.set("slope", lua.create_function(|lua, (_c, period, offset): (mlua::AnyUserData, usize, Option<usize>)| {
-        let offset = offset.unwrap_or(0);
-        let result = with_candles!(lua, offset, |candles: &[shared::Candle]| {
-            let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
-            slope(&closes, period)
-        });
-        Ok(opt_f64(result))
-    })?)?;
+    m.set_native_fn("slope", |cl: &mut CandleList, period: INT| -> RhaiResult {
+        Ok(opt(slope(&closes_slice(cl, 0), period as usize)))
+    });
+    m.set_native_fn("slope", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(slope(&closes_slice(cl, offset as usize), period as usize)))
+    });
 
-    lua.globals().set("indicators", ind)?;
-    Ok(())
+    m
+}
+
+/// Register the indicators module and all candle/context types on the engine.
+pub fn register_all(engine: &mut Engine) {
+    let module = Arc::new(build_indicators_module());
+    engine.register_static_module("indicators", module);
 }

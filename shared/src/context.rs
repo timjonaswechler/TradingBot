@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use crate::Position;
 
-/// Runtime context passed to the Lua `on_tick` function on every candle.
+/// Runtime context passed to the Rhai `on_tick` function on every candle.
 ///
 /// Gives the strategy read-only visibility into the current portfolio state
 /// so it can make informed decisions (e.g. skip BUY when already in a position).

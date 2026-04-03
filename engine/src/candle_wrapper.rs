@@ -1,150 +1,137 @@
-use mlua::{MetaMethod, UserData, UserDataFields, UserDataMethods};
-use shared::{Context, Position};
-use std::cell::RefCell;
-use crate::vm::EngineData;
+use rhai::{Dynamic, Engine, INT};
+use shared::{Candle, Context, Position};
+use std::sync::{Arc, RwLock};
+use crate::indicator_cache::IndicatorCache;
 
-// ── LuaCandle ────────────────────────────────────────────────────────────────
+// ── CandleWrapper ─────────────────────────────────────────────────────────────
 
-/// A single OHLCV candle exposed to Lua strategies.
-pub struct LuaCandle(pub shared::Candle);
+/// A single OHLCV candle exposed to Rhai strategies.
+#[derive(Debug, Clone)]
+pub struct CandleWrapper(pub Candle);
 
-impl UserData for LuaCandle {
-    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("open",      |_, this| Ok(this.0.open));
-        fields.add_field_method_get("high",      |_, this| Ok(this.0.high));
-        fields.add_field_method_get("low",       |_, this| Ok(this.0.low));
-        fields.add_field_method_get("close",     |_, this| Ok(this.0.close));
-        fields.add_field_method_get("volume",    |_, this| Ok(this.0.volume));
-        fields.add_field_method_get("timestamp", |_, this| Ok(this.0.timestamp));
-        fields.add_field_method_get("symbol",    |_, this| Ok(this.0.symbol.clone()));
-    }
+// ── CandleList ────────────────────────────────────────────────────────────────
 
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("body",  |_, this, ()| Ok(this.0.body()));
-        methods.add_method("range", |_, this, ()| Ok(this.0.range()));
-    }
-}
-
-// ── LuaCandles ───────────────────────────────────────────────────────────────
-
-/// Token passed to Lua as the `candles` argument in `on_tick`.
+/// Passed to `on_tick` as the `candles` argument.
 ///
-/// Actual candle data lives in `EngineData` (stored as Lua app-data).
+/// Holds cheap Arc clones — no candle data is copied each tick.
 ///
-/// Lua-side contract:
-/// - `candles[1]`         → current (newest) candle
-/// - `candles[n]`         → nth candle back (nil if out of range)
-/// - `#candles`           → number of candles visible
-/// - `candles:closes()`   → table of closes, index 1 = newest
-/// - `candles:opens()`    → same for opens
-/// - `candles:highs()`    → same for highs
-/// - `candles:lows()`     → same for lows
-/// - `candles:volumes()`  → same for volumes
-pub struct LuaCandles;
+/// Rhai-side contract:
+/// - `candles[1]`           → current (newest) candle
+/// - `candles[n]`           → nth candle back  (unit `()` if out of range)
+/// - `candles.len()`        → number of candles visible
+/// - `candles.closes()`     → array of closes, index 1 = newest
+/// - `candles.opens()`      → same for opens
+/// - `candles.highs()`      → same for highs
+/// - `candles.lows()`       → same for lows
+/// - `candles.volumes()`    → same for volumes
+#[derive(Clone)]
+pub struct CandleList {
+    pub candles: Arc<RwLock<Vec<Candle>>>,
+    pub cache:   Arc<RwLock<IndicatorCache>>,
+}
 
-impl UserData for LuaCandles {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        // ── candles[n]  ──────────────────────────────────────────────────────
-        methods.add_meta_method(MetaMethod::Index, |lua, _, key: mlua::Value| {
-            match key {
-                // Integer key: candles[1] = newest, candles[n] = nth back
-                mlua::Value::Integer(n) if n >= 1 => {
-                    let idx = n as usize;
-                    let candle_clone = {
-                        let data = lua
-                            .app_data_ref::<RefCell<EngineData>>()
-                            .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-                        let data = data.borrow();
-                        let len = data.candles.len();
-                        len.checked_sub(idx).map(|i| data.candles[i].clone())
-                    };
-                    match candle_clone {
-                        Some(c) => Ok(mlua::Value::UserData(lua.create_userdata(LuaCandle(c))?)),
-                        None    => Ok(mlua::Value::Nil),
-                    }
-                }
-
-                // String key: helper methods returned as functions
-                mlua::Value::String(ref s) => {
-                    let method = s.to_str()?.to_owned();
-                    match method.as_str() {
-                        "closes" | "opens" | "highs" | "lows" | "volumes" => {
-                            let field = method.clone();
-                            let f = lua.create_function(move |lua, _: mlua::AnyUserData| {
-                                let data = lua
-                                    .app_data_ref::<RefCell<EngineData>>()
-                                    .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-                                let data = data.borrow();
-                                let v: Vec<f64> = data.candles.iter().rev().map(|c| match field.as_str() {
-                                    "closes"  => c.close,
-                                    "opens"   => c.open,
-                                    "highs"   => c.high,
-                                    "lows"    => c.low,
-                                    "volumes" => c.volume,
-                                    _         => unreachable!(),
-                                }).collect();
-                                Ok(v)
-                            })?;
-                            Ok(mlua::Value::Function(f))
-                        }
-                        _ => Ok(mlua::Value::Nil),
-                    }
-                }
-
-                _ => Ok(mlua::Value::Nil),
-            }
-        });
-
-        // ── #candles  ────────────────────────────────────────────────────────
-        methods.add_meta_method(MetaMethod::Len, |lua, _, ()| {
-            let data = lua
-                .app_data_ref::<RefCell<EngineData>>()
-                .ok_or_else(|| mlua::Error::runtime("EngineData not initialised"))?;
-            let len = data.borrow().candles.len();
-            Ok(len)
-        });
+impl CandleList {
+    pub fn new(candles: Arc<RwLock<Vec<Candle>>>, cache: Arc<RwLock<IndicatorCache>>) -> Self {
+        Self { candles, cache }
     }
 }
 
-// ── LuaPosition ──────────────────────────────────────────────────────────────
-
-/// An open trading position exposed to Lua.
-pub struct LuaPosition(pub Position);
-
-impl UserData for LuaPosition {
-    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("side",        |_, this| Ok(this.0.side.to_string()));
-        fields.add_field_method_get("entry_price", |_, this| Ok(this.0.entry_price));
-        fields.add_field_method_get("size",        |_, this| Ok(this.0.size));
-        fields.add_field_method_get("entry_time",  |_, this| Ok(this.0.entry_time));
-        fields.add_field_method_get("stop_loss",   |_, this| Ok(this.0.stop_loss));
-        fields.add_field_method_get("take_profit", |_, this| Ok(this.0.take_profit));
-    }
-}
-
-// ── LuaContext ───────────────────────────────────────────────────────────────
+// ── ContextWrapper ────────────────────────────────────────────────────────────
 
 /// Portfolio context passed to `on_tick` every candle.
-pub struct LuaContext(pub Context);
+#[derive(Debug, Clone)]
+pub struct ContextWrapper(pub Context);
 
-impl UserData for LuaContext {
-    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("balance",      |_, this| Ok(this.0.balance));
-        fields.add_field_method_get("equity",       |_, this| Ok(this.0.equity));
-        fields.add_field_method_get("trades_count", |_, this| Ok(this.0.trades_count as i64));
+/// An open position exposed to Rhai.
+#[derive(Debug, Clone)]
+pub struct PositionWrapper(pub Position);
 
-        fields.add_field_method_get("position", |lua, this| {
-            match &this.0.position {
-                None      => Ok(mlua::Value::Nil),
-                Some(pos) => {
-                    let ud = lua.create_userdata(LuaPosition(pos.clone()))?;
-                    Ok(mlua::Value::UserData(ud))
-                }
-            }
-        });
-    }
+// ── Registration helpers ──────────────────────────────────────────────────────
 
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("has_position", |_, this, ()| Ok(this.0.has_position()));
-    }
+fn price_array(cl: &mut CandleList, field: &str) -> rhai::Array {
+    cl.candles
+        .read()
+        .unwrap()
+        .iter()
+        .rev()
+        .map(|c| Dynamic::from(match field {
+            "close"  => c.close,
+            "open"   => c.open,
+            "high"   => c.high,
+            "low"    => c.low,
+            "volume" => c.volume,
+            _        => unreachable!(),
+        }))
+        .collect()
+}
+
+/// Register all custom types and their fields/methods on the Rhai `Engine`.
+pub fn register_types(engine: &mut Engine) {
+    // ── CandleWrapper ─────────────────────────────────────────────────────
+    engine.register_type_with_name::<CandleWrapper>("Candle");
+
+    engine.register_get("open",      |c: &mut CandleWrapper| c.0.open);
+    engine.register_get("high",      |c: &mut CandleWrapper| c.0.high);
+    engine.register_get("low",       |c: &mut CandleWrapper| c.0.low);
+    engine.register_get("close",     |c: &mut CandleWrapper| c.0.close);
+    engine.register_get("volume",    |c: &mut CandleWrapper| c.0.volume);
+    engine.register_get("timestamp", |c: &mut CandleWrapper| c.0.timestamp);
+    engine.register_get("symbol",    |c: &mut CandleWrapper| c.0.symbol.clone());
+
+    engine.register_fn("body",  |c: &mut CandleWrapper| c.0.body());
+    engine.register_fn("range", |c: &mut CandleWrapper| c.0.range());
+
+    // ── CandleList ────────────────────────────────────────────────────────
+    engine.register_type_with_name::<CandleList>("CandleList");
+
+    // candles[n]  — 1-indexed, newest first
+    engine.register_indexer_get(|cl: &mut CandleList, idx: INT| -> Dynamic {
+        if idx < 1 { return Dynamic::UNIT; }
+        let candles = cl.candles.read().unwrap();
+        let n = candles.len();
+        match n.checked_sub(idx as usize) {
+            Some(i) => Dynamic::from(CandleWrapper(candles[i].clone())),
+            None    => Dynamic::UNIT,
+        }
+    });
+
+    // candles.len()
+    engine.register_fn("len", |cl: &mut CandleList| -> INT {
+        cl.candles.read().unwrap().len() as INT
+    });
+
+    // Price-series helpers — newest first, consistent with candles[1]
+    engine.register_fn("closes",  |cl: &mut CandleList| price_array(cl, "close"));
+    engine.register_fn("opens",   |cl: &mut CandleList| price_array(cl, "open"));
+    engine.register_fn("highs",   |cl: &mut CandleList| price_array(cl, "high"));
+    engine.register_fn("lows",    |cl: &mut CandleList| price_array(cl, "low"));
+    engine.register_fn("volumes", |cl: &mut CandleList| price_array(cl, "volume"));
+
+    // ── PositionWrapper ───────────────────────────────────────────────────
+    engine.register_type_with_name::<PositionWrapper>("Position");
+
+    engine.register_get("side",        |p: &mut PositionWrapper| p.0.side.to_string());
+    engine.register_get("entry_price", |p: &mut PositionWrapper| p.0.entry_price);
+    engine.register_get("size",        |p: &mut PositionWrapper| p.0.size);
+    engine.register_get("entry_time",  |p: &mut PositionWrapper| p.0.entry_time);
+    engine.register_get("stop_loss",   |p: &mut PositionWrapper| -> Dynamic {
+        p.0.stop_loss.map(Dynamic::from).unwrap_or(Dynamic::UNIT)
+    });
+    engine.register_get("take_profit", |p: &mut PositionWrapper| -> Dynamic {
+        p.0.take_profit.map(Dynamic::from).unwrap_or(Dynamic::UNIT)
+    });
+
+    // ── ContextWrapper ────────────────────────────────────────────────────
+    engine.register_type_with_name::<ContextWrapper>("Context");
+
+    engine.register_get("balance",      |c: &mut ContextWrapper| c.0.balance);
+    engine.register_get("equity",       |c: &mut ContextWrapper| c.0.equity);
+    engine.register_get("trades_count", |c: &mut ContextWrapper| c.0.trades_count as INT);
+    engine.register_get("position",     |c: &mut ContextWrapper| -> Dynamic {
+        match &c.0.position {
+            None      => Dynamic::UNIT,
+            Some(pos) => Dynamic::from(PositionWrapper(pos.clone())),
+        }
+    });
+    engine.register_fn("has_position", |c: &mut ContextWrapper| c.0.has_position());
 }

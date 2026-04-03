@@ -19,7 +19,7 @@ This project is a professional, stateful Rust trading bot (V2). The architecture
   - `TradeDecision` struct (`signal`, `size`, `stop_loss`, `take_profit`, `reason`)
   - `Position` / `PositionSide` structs
   - `Context` struct (`balance`, `equity`, `position`, `trades_count`)
-- [x] Add all workspace-level dependencies to root `Cargo.toml` (`serde`, `thiserror`, `anyhow`, `tokio`, `reqwest`, `mlua`, `rayon`, `clap`, `tracing`) -- `chrono` omitted; timestamps handled as Unix ms (`i64`), wall-clock time via `tokio::time`
+- [x] Add all workspace-level dependencies to root `Cargo.toml` (`serde`, `thiserror`, `anyhow`, `tokio`, `reqwest`, `rhai`, `rayon`, `clap`, `tracing`) -- `chrono` omitted; timestamps handled as Unix ms (`i64`), wall-clock time via `tokio::time`
 - [x] Verify: `cargo build` compiles the whole workspace cleanly
 
 > Completed: 9/9 unit tests passing. Git repo initialised. `justfile` added with 18 recipes.
@@ -88,25 +88,25 @@ cargo test -p indicators
 
 ---
 
-## Milestone 4 -- Trading Engine (Lua Scripting + Stateful Indicator Cache) ✅
+## Milestone 4 -- Trading Engine (Rhai Scripting + Stateful Indicator Cache) ✅
 
-**Goal:** A working Lua scripting runtime with PineScript-like semantics and O(1) incremental indicator updates for the backtester.
+**Goal:** A working Rhai scripting engine with Rust-like syntax and O(1) incremental indicator updates for the backtester.
 
 ### Steps
 - [x] Set up `engine/` crate (replaces `lua-engine/` from DESIGN.md)
-- [x] `candle_wrapper.rs` -- `LuaCandles` UserData: 1-indexed (newest first), `__index`, `__len`, helper methods (`closes()`, `opens()`, `highs()`, `lows()`, `volumes()`)
-- [x] `bindings.rs` -- register `indicators.*` Lua table, bridge `LuaCandles` to `&[f64]` / `&[Candle]` for each indicator
+- [x] `candle_wrapper.rs` -- `CandleWrapper`, `CandleList`, `ContextWrapper`, `PositionWrapper` Rhai custom types: 1-indexed (newest first), indexer, helper methods (`closes()`, `opens()`, `highs()`, `lows()`, `volumes()`)
+- [x] `bindings.rs` -- register `indicators::` Rhai module with all 20+ indicators; complex results (MACD, BB, ADX...) returned as Rhai maps
 - [x] `indicator_cache.rs` -- stateful O(1) incremental updates for backtesting (keyed by `(IndicatorType, period, offset)`)
-- [x] `strategy_loader.rs` -- load, validate and execute `.lua` strategy files
-- [x] `vm.rs` -- Lua VM lifecycle, `on_tick(candles, context)` call, error handling:
-  - `on_tick` exception -- log + abort run
+- [x] `strategy_loader.rs` -- load, validate and execute `.rhai` strategy files; Rhai syntax validation + `on_tick` existence check
+- [x] `vm.rs` -- `Engine`: Rhai engine lifecycle, `tick(candle, context) -> TradeDecision`, Arc/RwLock for candle state sharing, error handling:
+  - Rhai exception -- log + abort run
   - missing `signal` key -- error
   - unknown signal value -- error
   - missing `size` on BUY/SELL -- default `1.0`
 - [x] `warmup.rs` -- startup warmup logic: read required lookback from script, fetch N historical candles from DB, feed into engine before live ticking begins
 - [x] Write unit tests for indicator cache correctness and Lua bindings
 
-> Completed: 24/24 engine tests + 124 workspace total, all passing. Sample strategy `strategies/sma_cross.lua` added.
+> Completed: 27/27 engine tests + 127 workspace total, all passing. Sample strategy `strategies/sma_cross.rhai` added.
 
 ### Verification
 ```bash
@@ -123,7 +123,7 @@ cargo test -p engine
 - [ ] Set up `trading-daemon/` binary crate with Tokio async runtime
 - [ ] `data_fetcher.rs` -- async task: polls provider API every N minutes, filters incomplete candles (especially Yahoo Finance live candle), writes to SpacetimeDB
 - [ ] Implement provider abstraction trait + Yahoo Finance provider (with incomplete candle filtering: `candle.timestamp + interval_ms < now_ms`)
-- [ ] `live_engine.rs` -- keeps indicator state warm in RAM; on new candle: O(1) update, run Lua script, emit signal
+- [ ] `live_engine.rs` -- keeps indicator state warm in RAM; on new candle: O(1) update, run Rhai strategy, emit signal
 - [ ] `order_executor.rs` -- paper trading dummy: intercept BUY/SELL signals, simulate trades, persist to `live_trades` / `live_positions` tables in DB
 - [ ] `warmup.rs` -- on startup, fetch required historical candles from SpacetimeDB and initialize engine state
 - [ ] CLI args via `clap`: `--strategy`, `--symbol`, `--interval`, `--provider`
@@ -155,7 +155,7 @@ cargo build -p trading-daemon
   - [ ] Compute metrics: PnL, drawdown, win rate, Sharpe
 - [ ] Visualize: PnL curve, drawdown chart, trade entry/exit markers on price chart
 - [ ] **Trade & profit table panel:** live-updating table of all simulated trades (entry, exit, size, PnL per trade, cumulative PnL) -- updates on each manual tick or at run completion
-- [ ] Strategy editor: list `.lua` files in `strategies/`, simple text editor to modify and save
+- [ ] Strategy editor: list `.rhai` files in `strategies/`, simple text editor to modify and save
 - [ ] Live trades panel: read `live_trades` from SpacetimeDB, display daemon activity
 - [ ] **DB Viewer panel:** read-only view of SpacetimeDB state -- browse `candles`, `live_trades`, `live_positions` tables with basic filtering (symbol, timeframe, date range); shows row counts and last-updated timestamps as a health overview
 
@@ -174,10 +174,10 @@ cargo build -p trading-ui
 | `Cargo.toml` | Workspace root |
 | `shared/` | Shared types (Candle, Signal, Position, Context) |
 | `db-layer/` | SpacetimeDB client & query helpers |
-| `engine/` | Lua VM, indicator cache, strategy loader |
+| `engine/` | Rhai VM, indicator cache, strategy loader |
 | `trading-daemon/` | Live/paper trading daemon binary |
 | `trading-ui/` | GPUI desktop app binary |
-| `strategies/` | Sample Lua strategy files |
+| `strategies/` | Sample Rhai strategy files |
 
 ---
 
@@ -198,7 +198,7 @@ M1 (Workspace + Shared Types)  DONE
   |
   +-- M3 (Indicators)           DONE
         |
-        +-- M4 (Engine / Lua)         DONE
+        +-- M4 (Engine / Rhai)       DONE
               |
               +-- M5 (Daemon)
               |

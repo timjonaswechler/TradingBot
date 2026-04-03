@@ -8,4 +8,4 @@ pub mod warmup;
 
 pub use error::EngineError;
 pub use strategy_loader::StrategyConfig;
-pub use vm::LuaEngine;
+pub use vm::Engine;
