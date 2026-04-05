@@ -12,22 +12,22 @@ Das System besteht konzeptionell aus **drei laufenden Prozessen**. Zwei davon ba
 
 ### 1. `spacetimedb` Server (Third-Party)
 - **Zweck:** Der extrem schnelle, RAM-basierte Data-Lake.
-- **Aufgabe:** Speichert historische OHLCV-Daten (`candles`), offene Live-Trades (`live_positions`) und eine Historie aller Live-Trades (`live_trades`). 
-- **Besonderheit:** Enthält **keine Logik**. Keine WebAssembly-Skripte, keine Reducer mit Trading-Logik. Nur ein reiner, blitzschneller Speicher, der per HTTP/SQL oder WebSocket abgefragt wird.
+- **Aufgabe:** Speichert historische OHLCV-Daten (`candles`), offene Live-Trades (`live_positions`) und eine Historie aller Live-Trades (`live_trades`).
+- **Besonderheit:** Enthält **keine Trading-Logik**. Das WASM-Modul (`spacetimedb-module/`) definiert nur das Schema (Tabellen) und minimale CRUD-Reducer (insert/delete). Clients verbinden sich per WebSocket via `spacetimedb-sdk` und halten einen lokalen Cache der subscriebten Tabellen.
 
 ### 2. `trading-daemon` (Dein Rust-Backend)
 - **Zweck:** Der Headless-Service (ohne UI) für das echte, laufende Trading (Paper oder Live).
 - **Start:** Wird beim Systemstart oder manuell über die Konsole gestartet und läuft dauerhaft im Hintergrund (Tokio Async Runtime).
 - **Aufgaben:**
   - **Data Fetcher:** Ein asynchroner Task wacht z.B. alle 30 Minuten auf, holt neue Kerzen (Candles) uber die Broker/Provider-API und speichert sie in SpacetimeDB.
-  - **Live Trading Engine:** Ein weiterer Task halt den "State" der Indikatoren im Arbeitsspeicher warm. Sobald der Data Fetcher eine neue Kerze in die DB schreibt (oder direkt weitergibt), tickt die Engine *eine* neue Candle weiter ($O(1)$) und fuhrt das Lua/Rhai-Skript aus.
+  - **Live Trading Engine:** Ein weiterer Task halt den "State" der Indikatoren im Arbeitsspeicher warm. Sobald der Data Fetcher eine neue Kerze in die DB schreibt (oder direkt weitergibt), tickt die Engine *eine* neue Candle weiter ($O(1)$) und fuhrt das Rhai-Skript aus.
   - **Order Execution:** Wenn das Skript "BUY" sagt, kommuniziert der Daemon mit der Broker-API und speichert den Trade in der DB.
 
 ### 3. `trading-ui` (Dein GPUI Frontend)
 - **Zweck:** Das visuelle Interface fur Charting, Strategie-Entwicklung und Backtesting.
 - **Start:** Wird manuell vom Nutzer gestartet wie eine normale Desktop-App.
 - **Aufgaben:**
-  - **Charting & Visualisierung:** Zieht sich per HTTP/SQL die historischen Kerzen aus der SpacetimeDB und zeichnet den Chart.
+  - **Charting & Visualisierung:** Verbindet sich per `spacetimedb-sdk` (WebSocket) mit SpacetimeDB, subscribed die `candles`-Tabelle und ladt die Kerzen aus dem lokalen Cache in den Chart.
   - **In-Memory Backtester:** Wenn du einen Backtest startest, nutzt die UI *dieselbe* Rust-Engine-Bibliothek wie der Daemon. Sie ladt tausende Kerzen aus der DB in den RAM und jagt sie in Millisekunden durch die Engine.
   - **Keine DB-Schreibzugriffe:** Die UI schreibt beim Backtesten **nichts** in die Datenbank (kein Simulations-Mull). Die Ergebnisse werden direkt im RAM gehalten und als PnL-Kurve oder Trade-Liste in der UI angezeigt.
 
@@ -43,11 +43,14 @@ trading-bot/
 ├── ARCHITECTURE.md                     # Dieses Dokument
 │
 ├── shared/                             # Crate: Gemeinsame Typen (OHLCV, Trade, Signal)
-├── db-layer/                           # Crate: SpacetimeDB HTTP/SDK Clients & Queries
-├── engine/                             # Crate: Core Logic, Skript-Integration (Lua/Rhai), State Management
+├── db-layer/                           # Crate: SpacetimeDB SDK Client, Queries, generierte Bindings
+├── indicators/                         # Crate: Alle Indikatoren als pure Rust-Funktionen
+├── engine/                             # Crate: Core Logic, Rhai-Scripting, O(1) Indicator Cache
+├── spacetimedb-module/                 # WASM-Modul: Schema + CRUD-Reducer (kein Workspace-Member)
 │
 ├── trading-daemon/                     # Binary 1: Das Backend (Tokio, Broker API, Live-Trading)
-└── trading-ui/                         # Binary 2: Das Frontend (GPUI, Charting, In-Memory Backtester)
+├── trading-ui/                         # Binary 2: Das Frontend (GPUI, Charting, In-Memory Backtester)
+└── strategies/                         # Rhai-Strategiedateien (z.B. sma_cross.rhai)
 ```
 
 ---
@@ -87,8 +90,8 @@ Mit diesen 26 Kerzen futtert er die Indikatoren initial. Ab 14:00 Uhr wartet er 
 ```text
 [Nutzer klickt "Start Backtest AAPL, 2020 bis 2024"]
        │
-       ▼ (1. HTTP/SQL Request)
-[SpacetimeDB] ──► Liefert 50.000 Candles in Millisekunden
+       ▼ (1. SDK WebSocket — lokaler Cache)
+[SpacetimeDB] ──► Liefert 50.000 Candles aus dem subscriebten Cache
        │
        ▼ (2. Ubergabe an In-Memory Engine)
 [trading-ui: Backtest Runner (Rayon / Parallel)]
@@ -179,29 +182,32 @@ Du kannst die UI jederzeit schliessen - der Daemon lauft im Hintergrund sicher w
 [workspace]
 members = [
     "shared",
+    "indicators",
     "db-layer",
     "engine",
     "trading-daemon",
     "trading-ui",
 ]
+# spacetimedb-module ist kein Workspace-Member (wasm32-unknown-unknown Target)
+exclude = ["spacetimedb-module"]
 
 [workspace.dependencies]
 # Core
-serde = { version = "1.0", features = ["derive"] }
+serde      = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-thiserror = "2.0"
-anyhow = "1.0"
+thiserror  = "2.0"
+anyhow     = "1.0"
 
-# SpacetimeDB
-spacetimedb-sdk = "1.12"        # in db-layer + Binaries
+# SpacetimeDB client SDK (WebSocket, generierte Bindings)
+spacetimedb-sdk = { version = "2" }
+# spacetimedb = "2"  # nur in spacetimedb-module (server-side WASM)
 
-# Lua
-mlua = { version = "0.11", features = ["lua54", "vendored"] }
+# Rhai Scripting
+rhai = { version = "1", features = ["sync"] }
 
-# HTTP / API
-reqwest = { version = "0.13", features = ["json"] }
-tokio = { version = "1", features = ["full"] }
+# HTTP / Broker APIs
+reqwest = { version = "0.12", features = ["json"] }
+tokio   = { version = "1",    features = ["full"] }
 
 # Parallelisierung (Backtesting)
 rayon = "1.10"
@@ -210,6 +216,6 @@ rayon = "1.10"
 clap = { version = "4", features = ["derive"] }
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```

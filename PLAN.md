@@ -2,7 +2,7 @@
 
 ## Context
 
-This project is a professional, stateful Rust trading bot (V2). The architecture has evolved from an ephemeral cron-based setup (V1, described in `DESIGN.md`) to a long-running daemon setup (V2, described in `ARCHITECTURE.md`). The V2 implementation has not yet been started -- no Cargo workspace exists yet. This plan breaks the full `NEXT_STEPS.md` roadmap into concrete, trackable milestones.
+This project is a professional, stateful Rust trading bot (V2). The architecture has evolved from an ephemeral cron-based setup (V1, described in `DESIGN.md`) to a long-running daemon setup (V2, described in `ARCHITECTURE.md`). This plan breaks the full `NEXT_STEPS.md` roadmap into concrete, trackable milestones. M1–M4 are complete.
 
 ---
 
@@ -32,25 +32,38 @@ cargo test --workspace
 
 ---
 
-## Milestone 2 -- Data Layer: SpacetimeDB Schema & DB Crate
+## Milestone 2 -- Data Layer: SpacetimeDB Schema & DB Crate ✅
 
 **Goal:** A running local SpacetimeDB instance with defined tables and a Rust client wrapper.
 
 ### Steps
-- [ ] Define SpacetimeDB schema tables (in `db-layer/` or a dedicated `spacetimedb-module/`):
-  - `candles` (`id`, `canonical_id`, `timestamp`, `symbol`, `open`, `high`, `low`, `close`, `volume`, `timeframe`, `provider`)
-  - `live_positions` / `positions` (`id`, `strategy`, `symbol`, `side`, `entry_price`, `size`, `stop_loss`, `take_profit`, `entry_time`)
-  - `live_trades` / `trades` (`id`, `timestamp`, `strategy`, `symbol`, `side`, `entry_price`, `exit_price`, `size`, `pnl`, `status`, `entry_reason`, `exit_reason`)
-- [ ] Deploy schema to a local SpacetimeDB server
-- [ ] Implement `db-layer` crate:
-  - `client.rs` -- SpacetimeDB SDK connection setup
-  - `queries.rs` -- helpers: `get_candles(symbol, timeframe, limit)`, `get_candles_before(symbol, timeframe, before_ts, limit)`, `insert_candle()`, `get_open_position()`, `insert_trade()`
-- [ ] Write integration tests against local SpacetimeDB
+- [x] Define SpacetimeDB schema tables in `spacetimedb-module/` (separate WASM crate, excluded from main workspace):
+  - `candles` (`id` auto_inc, `canonical_id` unique, `timestamp`, `symbol`, `open`, `high`, `low`, `close`, `volume`, `timeframe`, `provider`)
+  - `live_positions` (`id`, `strategy`, `symbol`, `side`, `entry_price`, `size`, `stop_loss`, `take_profit`, `entry_time`, `entry_reason`)
+  - `live_trades` (`id`, `strategy`, `symbol`, `side`, `entry_price`, `exit_price`, `size`, `pnl`, `status`, `entry_time`, `exit_time`, `entry_reason`, `exit_reason`)
+- [x] Implement CRUD reducers: `insert_candle` (idempotent), `open_position`, `close_position`, `insert_trade`, `delete_candles_by_symbol`, `delete_trades_by_strategy`
+- [x] Implement `db-layer` crate using `spacetimedb-sdk` (WebSocket, generated bindings):
+  - `error.rs` -- `DbError` enum
+  - `models.rs` -- conversion helpers between `module_bindings::` types and `shared::` types
+  - `client.rs` -- `SpacetimeClient`: connects via SDK, subscribes all tables on connect, blocks until cache warm (`on_applied`)
+  - `queries.rs` -- `get_candles`, `get_candles_before`, `count_candles`, `insert_candle`, `get_open_position`, `open_position`, `close_position`, `insert_trade`, `get_trades` — reads from local cache, writes via reducers
+  - `module_bindings/` -- auto-generated via `spacetime generate`, never edited manually
+- [x] Write unit tests (no DB required) + integration tests (guarded by `SPACETIMEDB_INTEGRATION=1`), sequential (`--test-threads=1`), with teardown
+- [x] Add `justfile` recipes: `db-build`, `db-deploy`, `db-deploy-clean`, `db-generate`, `db-setup`, `db-test`, `db-status`, `db-start`, `db-stop`, `db-restart`, `db-backup`, `db-candles`, `db-trades`, `db-logs`
+
+> Completed: 134 workspace tests total, all green. 7/7 integration tests pass against live SpacetimeDB.
+> `spacetimedb-module` excluded from workspace (builds to `wasm32-unknown-unknown`).
+> SDK uses WebSocket + local cache — no HTTP REST, no manual JSON parsing.
 
 ### Verification
 ```bash
-spacetimedb start
+# Unit tests (no running DB needed)
 cargo test -p db-layer
+
+# Integration tests (requires running SpacetimeDB + deployed module)
+just db-start        # Terminal 1 — leave running
+just db-setup        # build WASM + generate bindings + deploy (once)
+just db-test         # run integration tests
 ```
 
 ---
@@ -133,7 +146,7 @@ cargo test -p engine
 ### Verification
 ```bash
 cargo build -p trading-daemon
-./target/release/trading-daemon --strategy strategies/sma_cross.lua --symbol AAPL --interval 5m --provider yahoo
+./target/release/trading-daemon --strategy strategies/sma_cross.rhai --symbol AAPL --interval 5m --provider yahoo
 ```
 
 ---
@@ -145,7 +158,7 @@ cargo build -p trading-daemon
 ### Steps
 - [ ] Set up `trading-ui/` binary crate with GPUI
 - [ ] Basic window + chart canvas
-- [ ] Data fetching: HTTP/SQL query to SpacetimeDB, load historical candles into UI RAM
+- [ ] Data fetching: connect to SpacetimeDB via SDK, subscribe to `candles` table, load into UI RAM from local cache
 - [ ] **In-memory backtest runner** (uses `engine` + `indicators` crates directly, no DB writes):
   - [ ] Feed all loaded candles through a fresh engine instance
   - [ ] Backtest state (`Vec<Trade>`, PnL curve, current tick index) lives in UI RAM for the full app session -- switching panels and returning keeps everything intact
@@ -167,25 +180,11 @@ cargo build -p trading-ui
 
 ---
 
-## Files to Create (No existing code yet)
-
-| Path | Purpose |
-|---|---|
-| `Cargo.toml` | Workspace root |
-| `shared/` | Shared types (Candle, Signal, Position, Context) |
-| `db-layer/` | SpacetimeDB client & query helpers |
-| `engine/` | Rhai VM, indicator cache, strategy loader |
-| `trading-daemon/` | Live/paper trading daemon binary |
-| `trading-ui/` | GPUI desktop app binary |
-| `strategies/` | Sample Rhai strategy files |
-
----
-
 ## Reuse Notes
 
 - `engine/` crate is shared by both `trading-daemon` (live O(1) ticking) and `trading-ui` (in-memory backtest) -- no duplication
 - `indicators/` pure functions are used by `engine/` only -- no direct binary dependency
-- `db-layer/` is used by `trading-daemon`; the UI reads DB directly via HTTP/SQL
+- `db-layer/` is used by both `trading-daemon` and `trading-ui` — both connect via `spacetimedb-sdk` (WebSocket + local cache)
 
 ---
 
@@ -194,7 +193,7 @@ cargo build -p trading-ui
 ```
 M1 (Workspace + Shared Types)  DONE
   |
-  +-- M2 (DB Layer)
+  +-- M2 (DB Layer)             DONE
   |
   +-- M3 (Indicators)           DONE
         |

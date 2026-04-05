@@ -1,0 +1,23 @@
+[package]
+name    = "spacetimedb-module"
+version = "0.1.0"
+edition = "2021"
+
+# This crate compiles to WebAssembly and is deployed to SpacetimeDB.
+# CLI tool: `spacetime` (install via https://spacetimedb.com/install)
+#
+# Quick setup (starts server, compiles, publishes, generates bindings in one step):
+#   cd spacetimedb-module && spacetime dev --lang rust --out-dir ../db-layer/src/module_bindings
+#
+# Manual build + deploy:
+#   just db-build   # cargo build --target wasm32-unknown-unknown --release
+#   just db-deploy  # spacetime publish -s local --bin-path ... trading-bot
+#
+# Generate Rust client bindings after deploy:
+#   just db-generate
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+spacetimedb = "2"

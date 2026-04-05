@@ -7,6 +7,9 @@ members = [
     "trading-daemon",
     "trading-ui",
 ]
+# spacetimedb-module targets wasm32-unknown-unknown and is built separately.
+# See: just db-build / just db-deploy
+exclude = ["spacetimedb-module"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -19,8 +22,11 @@ anyhow      = "1.0"
 # Async runtime
 tokio       = { version = "1",    features = ["full"] }
 
-# HTTP / provider APIs
-reqwest     = { version = "0.12", features = ["json"] }
+# HTTP / provider APIs (used by trading-daemon for broker/Yahoo API calls)
+reqwest     = { version = "0.13", features = ["json"] }
+
+# SpacetimeDB client SDK
+spacetimedb-sdk = { version = "2" }
 
 # Rhai scripting (Rust-native, no FFI)
 rhai        = { version = "1", features = ["sync"] }
