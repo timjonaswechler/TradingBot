@@ -56,7 +56,7 @@ fn test_insert_and_fetch_candles() {
     }
 
     let client  = connect();
-    let conn    = &client.conn;
+    let conn    = &*client.conn;
     let ts_base = 1_700_000_000_000_i64;
 
     // Insert 5 candles.
@@ -90,7 +90,7 @@ fn test_get_candles_before() {
     if !integration_enabled() { return; }
 
     let client  = connect();
-    let conn    = &client.conn;
+    let conn    = &*client.conn;
     let ts_base = 1_700_000_000_000_i64;
     let cutoff  = ts_base + 3 * 86_400_000;
 
@@ -120,7 +120,7 @@ fn test_position_lifecycle() {
     if !integration_enabled() { return; }
 
     let client = connect();
-    let conn   = &client.conn;
+    let conn   = &*client.conn;
     let symbol = "__TEST_POS__";
 
     open_position(conn, STRAT, symbol, "long",
@@ -152,7 +152,7 @@ fn test_insert_and_fetch_trade() {
     if !integration_enabled() { return; }
 
     let client = connect();
-    let conn   = &client.conn;
+    let conn   = &*client.conn;
 
     insert_trade(conn, STRAT, "__TEST_TRADE__", "long",
         100.0, 110.0, 1.0, 10.0, "closed",

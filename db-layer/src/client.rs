@@ -7,7 +7,7 @@
 ///
 /// After `SpacetimeClient::connect()` returns, the cache is guaranteed to be
 /// warm — all existing rows are available via `conn.db.candles().iter()` etc.
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use spacetimedb_sdk::{credentials, DbContext};
 use tracing::{info, warn};
@@ -19,11 +19,11 @@ use crate::module_bindings::{
 
 /// A connected SpacetimeDB client with a warm local cache.
 ///
-/// Holds the `DbConnection` from the generated `module_bindings`.
-/// The background thread (started via `run_threaded`) keeps the cache
-/// up-to-date automatically via WebSocket.
+/// `conn` is wrapped in `Arc` so it can be shared across Tokio tasks
+/// without cloning (SpacetimeDB's `DbConnection` is not `Clone`,
+/// but the underlying `DbContextImpl` is reference-counted internally).
 pub struct SpacetimeClient {
-    pub conn: DbConnection,
+    pub conn: Arc<DbConnection>,
 }
 
 impl SpacetimeClient {
@@ -89,7 +89,7 @@ impl SpacetimeClient {
             .map_err(|_| anyhow::anyhow!("Subscription failed before on_applied"))?;
 
         info!("SpacetimeDB cache ready.");
-        Ok(Self { conn })
+        Ok(Self { conn: Arc::new(conn) })
     }
 
     /// Build a `SpacetimeClient` from environment variables.

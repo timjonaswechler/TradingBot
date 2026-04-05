@@ -1,0 +1,28 @@
+# TradingBot2 — Daemon Configuration
+# Usage:
+#   trading-daemon seed --config trading-bot.toml          # load historical data
+#   trading-daemon run  --config trading-bot.toml          # start live daemon
+
+[database]
+url    = "http://127.0.0.1:3000"
+module = "trading-bot"
+
+[seed]
+# Default start date for historical data (ISO 8601)
+from = "2020-01-01"
+
+# ── Assets ────────────────────────────────────────────────────────────────────
+# Each asset can have multiple intervals.
+# strategy and balance are only used by the `run` subcommand.
+
+[[assets]]
+symbol    = "AAPL"
+intervals = ["1d"]
+strategy  = "strategies/sma_cross.rhai"
+balance   = 10000.0
+
+# [[assets]]
+# symbol    = "BTC-USD"
+# intervals = ["1d", "1h"]
+# strategy  = "strategies/sma_cross.rhai"
+# balance   = 10000.0

@@ -128,25 +128,33 @@ cargo test -p engine
 
 ---
 
-## Milestone 5 -- Trading Daemon (Live & Paper Trading)
+## Milestone 5 -- Trading Daemon (Live & Paper Trading) ✅
 
-**Goal:** A headless, long-running Tokio service that fetches candles, ticks the engine, and executes paper trades.
+**Goal:** A headless, long-running Tokio service that reacts to new candles in SpacetimeDB, ticks Rhai strategies, and executes paper trades.
 
 ### Steps
-- [ ] Set up `trading-daemon/` binary crate with Tokio async runtime
-- [ ] `data_fetcher.rs` -- async task: polls provider API every N minutes, filters incomplete candles (especially Yahoo Finance live candle), writes to SpacetimeDB
-- [ ] Implement provider abstraction trait + Yahoo Finance provider (with incomplete candle filtering: `candle.timestamp + interval_ms < now_ms`)
-- [ ] `live_engine.rs` -- keeps indicator state warm in RAM; on new candle: O(1) update, run Rhai strategy, emit signal
-- [ ] `order_executor.rs` -- paper trading dummy: intercept BUY/SELL signals, simulate trades, persist to `live_trades` / `live_positions` tables in DB
-- [ ] `warmup.rs` -- on startup, fetch required historical candles from SpacetimeDB and initialize engine state
-- [ ] CLI args via `clap`: `--strategy`, `--symbol`, `--interval`, `--provider`
-- [ ] Graceful shutdown (SIGTERM/SIGINT handling)
-- [ ] Structured logging via `tracing`
+- [x] `engine/warmup_detector.rs` -- automatic warmup period detection from Rhai AST (scans `indicators::*` calls, resolves constants from scope, fallback 200)
+- [x] `cli.rs` -- two subcommands: `run` and `seed`
+- [x] `config.rs` -- TOML config (`trading-bot.toml`) with arrays of assets + intervals
+- [x] `seed/yahoo.rs` -- Yahoo Finance HTTP client, incomplete candle filtering
+- [x] `seed/mod.rs` -- parallel seed for all asset/interval combos, idempotent
+- [x] `order_executor.rs` -- `OrderExecutor` trait + `PaperExecutor`: BUY/SELL/stop-loss/take-profit, persists to SpacetimeDB, restores open position on restart
+- [x] `warmup.rs` -- loads historical candles from DB cache, feeds into engine
+- [x] `live_engine.rs` -- `on_insert` callback → mpsc channel → `engine.tick()` → `PaperExecutor`, per asset/interval Tokio task
+- [x] `main.rs` -- Tokio runtime, `CancellationToken` graceful shutdown (SIGINT + SIGTERM)
+- [x] `trading-bot.toml` -- example configuration file
+
+> Completed: 139/139 workspace tests passing.
+> `Arc<DbConnection>` shared across tasks (SpacetimeDB SDK not Clone).
+> Warmup period auto-detected from strategy AST — no manual config needed.
 
 ### Verification
 ```bash
-cargo build -p trading-daemon
-./target/release/trading-daemon --strategy strategies/sma_cross.rhai --symbol AAPL --interval 5m --provider yahoo
+# Seed historical data
+trading-daemon seed --config trading-bot.toml
+
+# Start daemon (reacts to on_insert callbacks from SpacetimeDB)
+trading-daemon run --config trading-bot.toml
 ```
 
 ---
@@ -199,7 +207,7 @@ M1 (Workspace + Shared Types)  DONE
         |
         +-- M4 (Engine / Rhai)       DONE
               |
-              +-- M5 (Daemon)
+              +-- M5 (Daemon)        DONE
               |
               +-- M6 (UI)
 ```

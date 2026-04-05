@@ -10,6 +10,7 @@ pub use client::SpacetimeClient;
 pub use error::DbError;
 pub use models::{canonical_id, db_candle_to_shared, db_position_to_shared, DbTrade};
 pub use module_bindings::{Candle as DbCandle, DbConnection, LivePosition, LiveTrade};
+pub use std::sync::Arc;
 
 /// Re-export the most-used query functions at crate root.
 pub use queries::{
