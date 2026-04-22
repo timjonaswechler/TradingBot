@@ -11,7 +11,7 @@
 ///
 /// Falls back to `DEFAULT_WARMUP` (200) when no indicators are found or
 /// the period cannot be resolved (e.g. dynamic expressions).
-use rhai::{AST, Dynamic, Expr, Scope};
+use rhai::{AST, Expr, Scope};
 
 /// Safe default: covers EMA(200), Ichimoku(52), MACD(26), etc.
 pub const DEFAULT_WARMUP: usize = 200;
@@ -174,7 +174,7 @@ mod tests {
     fn sma_cross_strategy_detects_slow_period() {
         let src = std::fs::read_to_string("../strategies/sma_cross.rhai").unwrap();
         let (ast, scope) = compile(&src);
-        // FAST=10, SLOW=30 → max+1 = 31
-        assert_eq!(detect_warmup_period(&ast, &scope), 31);
+        // Strategy currently uses FAST=5, SLOW=20 → max+1 = 21
+        assert_eq!(detect_warmup_period(&ast, &scope), 21);
     }
 }

@@ -16,16 +16,6 @@ pub fn warmup(engine: &mut Engine, warmup_candles: Vec<Candle>) -> Result<(), En
     Ok(())
 }
 
-/// Compute the minimum number of historical candles required before a strategy
-/// can produce a meaningful signal (i.e., before no indicator returns `nil`).
-///
-/// Heuristic: returns `max_lookback + 1`. For most strategies the dominant
-/// indicator is MACD(26) or similar, so the caller should pass that number.
-/// If unsure, 60 is a safe default for common strategies.
-pub fn required_warmup_bars(max_indicator_period: usize) -> usize {
-    max_indicator_period + 1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,9 +68,4 @@ fn on_tick(candles, context) {
         assert_eq!(decision.signal, shared::Signal::Hold);
     }
 
-    #[test]
-    fn required_bars_adds_one() {
-        assert_eq!(required_warmup_bars(26), 27);
-        assert_eq!(required_warmup_bars(0), 1);
-    }
 }

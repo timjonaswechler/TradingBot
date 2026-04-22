@@ -128,7 +128,7 @@ cargo test -p engine
 
 ---
 
-## Milestone 5 -- Trading Daemon (Live & Paper Trading) ✅
+## Milestone 5 -- Trading Daemon (Live & Paper Trading)
 
 **Goal:** A headless, long-running Tokio service that reacts to new candles in SpacetimeDB, ticks Rhai strategies, and executes paper trades.
 
@@ -157,6 +157,22 @@ trading-daemon seed --config trading-bot.toml
 trading-daemon run --config trading-bot.toml
 ```
 
+
+ 1. Nur erstes Interval pro Asset — live_engine.rs:34 nimmt nur intervals.first(). Wenn du ["1d", "1h"] konfigurierst, läuft nur 1d. Das war im Plan
+ "ein Task pro Asset/Interval" — fehlt.
+ 2. equity und trades_count im Context — beides als vereinfachtes Stub drin (equity = balance, trades_count = 0). Strategie kriegt keine echten
+ Werte.
+ 3. Short/Cover nicht implementiert — PaperExecutor loggt nur eine Warning, handelt nichts. Kein Problem für jetzt, aber offen.
+ 4. Seed ist nicht inkrementell — lädt immer ab from_ms, auch wenn die DB schon Daten hat. Idempotent ja, aber ineffizient. Besser wäre: letzten
+ Timestamp aus DB holen und nur ab da fetchen.
+ 5. position_id nach open_long — das spawn_blocking ruft get_open_position direkt nach dem open_position Reducer auf. Der Reducer ist aber async —
+ die Row ist im Cache möglicherweise noch nicht angekommen wenn wir sofort lesen. Race condition.
+
+ Workflow offen:
+
+ 6. Keine justfile Rezepte für Seed + Run — just daemon existiert, aber kein just seed oder just run.
+ 7. Keine Integration Tests für den Daemon — kein Test der den ganzen Ablauf (seed → run → tick → trade) durchspielt.
+ 
 ---
 
 ## Milestone 6 -- GPUI Frontend & In-Memory Backtester

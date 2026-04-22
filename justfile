@@ -61,7 +61,22 @@ check: fmt lint test
 
 # Start the trading daemon  (pass args after `--`, e.g. `just daemon -- --help`)
 daemon *args:
-    cargo run -p trading-daemon -- {{args}}
+    RUST_LOG=${RUST_LOG:-trading_daemon=info,db_layer=info} cargo run -p trading-daemon -- {{args}}
+
+# Seed SpacetimeDB with historical candles from Yahoo Finance
+# Uses trading-bot.toml unless you pass your own --config.
+seed *args='--config trading-bot.toml':
+    RUST_LOG=${RUST_LOG:-trading_daemon=info,db_layer=info} cargo run -p trading-daemon -- seed {{args}}
+
+# Start the live trading daemon
+# Uses trading-bot.toml unless you pass your own --config.
+run *args='--config trading-bot.toml':
+    RUST_LOG=${RUST_LOG:-trading_daemon=info,db_layer=info} cargo run -p trading-daemon -- run {{args}}
+
+# Run a backtest against candles in SpacetimeDB
+# Example: just backtest --strategy strategies/sma_cross.rhai --symbol AAPL --interval 1d
+backtest *args:
+    RUST_LOG=${RUST_LOG:-backtester=info} cargo run -p backtester -- {{args}}
 
 # Start the trading UI
 ui *args:

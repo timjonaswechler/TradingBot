@@ -184,6 +184,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "backtester"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "db-layer",
+ "engine",
+ "shared",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

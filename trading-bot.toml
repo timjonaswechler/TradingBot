@@ -17,7 +17,7 @@ from = "2020-01-01"
 
 [[assets]]
 symbol    = "AAPL"
-intervals = ["1d"]
+intervals = ["30m", "60m", "1d"]
 strategy  = "strategies/sma_cross.rhai"
 balance   = 10000.0
 

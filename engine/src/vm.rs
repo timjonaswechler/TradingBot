@@ -47,12 +47,7 @@ impl Engine {
             EngineError::Strategy(format!("strategy init error: {e}"))
         })?;
 
-        // Verify on_tick is defined.
-        if !rhai.call_fn::<Dynamic>(&mut scope, &ast, "on_tick", ()).is_ok() {
-            // A real call with no args will fail — we just need the function to exist.
-            // Check via AST iteration instead.
-        }
-        // Better check: try to find "on_tick" in the AST
+        // Verify on_tick is defined by scanning the AST.
         let has_on_tick = ast.iter_functions().any(|f| f.name == "on_tick");
         if !has_on_tick {
             return Err(EngineError::Strategy(
@@ -95,6 +90,17 @@ impl Engine {
     /// Used by the warmup module to pre-load history.
     pub fn push_candle(&mut self, candle: Candle) {
         self.candles.write().unwrap().push(candle);
+    }
+
+    /// Compiled AST of the strategy — used by `detect_warmup_period`.
+    pub fn ast(&self) -> &AST {
+        &self.ast
+    }
+
+    /// Scope populated by top-level `const` / `let` declarations — used by
+    /// `detect_warmup_period` to resolve period constants.
+    pub fn scope(&self) -> &Scope<'static> {
+        &self.scope
     }
 }
 

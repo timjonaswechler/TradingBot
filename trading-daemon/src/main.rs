@@ -15,12 +15,7 @@ use clap::Parser;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-mod cli;
-mod config;
-mod live_engine;
-mod order_executor;
-mod seed;
-mod warmup;
+use trading_daemon::{cli, config, live_engine, seed};
 
 use cli::{Cli, Command};
 use config::Config;
@@ -67,7 +62,7 @@ async fn run_daemon(config_path: &str) -> Result<()> {
     );
     info!("Connected — cache ready");
 
-    // ── Spawn one live engine task per asset (first interval only for now) ─────
+    // ── Spawn one live engine task per (asset × interval) ──────────────────────
     let cancel = CancellationToken::new();
     let mut handles = Vec::new();
 
@@ -81,16 +76,19 @@ async fn run_daemon(config_path: &str) -> Result<()> {
             continue;
         }
 
-        let client_clone = client.clone();
-        let cancel_clone = cancel.clone();
+        for interval in asset.intervals.clone() {
+            let client_clone = client.clone();
+            let cancel_clone = cancel.clone();
+            let asset_clone  = asset.clone();
 
-        let handle = tokio::spawn(async move {
-            if let Err(e) = live_engine::run(client_clone, asset, cancel_clone).await {
-                tracing::error!(error = %e, "Live engine task failed");
-            }
-        });
+            let handle = tokio::spawn(async move {
+                if let Err(e) = live_engine::run(client_clone, asset_clone, interval, cancel_clone).await {
+                    tracing::error!(error = %e, "Live engine task failed");
+                }
+            });
 
-        handles.push(handle);
+            handles.push(handle);
+        }
     }
 
     // ── Wait for shutdown signal ───────────────────────────────────────────────

@@ -3,8 +3,8 @@
 // BUY  when the fast SMA crosses above the slow SMA
 // SELL when the fast SMA crosses below the slow SMA
 
-const FAST = 10;
-const SLOW = 30;
+const FAST = 5;
+const SLOW = 20;
 
 fn on_tick(candles, context) {
     let fast      = indicators::sma(candles, FAST);

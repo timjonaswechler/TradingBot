@@ -59,6 +59,12 @@ pub struct AssetConfig {
     /// Starting paper-trading balance in USD (only used by `run` subcommand).
     #[serde(default = "default_balance")]
     pub balance: f64,
+
+    /// On graceful shutdown, close any open position at the last observed
+    /// candle close. When `false`, the position is left in `live_positions`
+    /// and restored on next startup.
+    #[serde(default = "default_liquidate")]
+    pub liquidate_on_shutdown: bool,
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -67,6 +73,7 @@ fn default_db_url()     -> String { "http://127.0.0.1:3000".into() }
 fn default_db_module()  -> String { "trading-bot".into() }
 fn default_seed_from()  -> String { "2020-01-01".into() }
 fn default_balance()    -> f64    { 10_000.0 }
+fn default_liquidate()  -> bool   { true }
 
 // ── Loader ───────────────────────────────────────────────────────────────────
 

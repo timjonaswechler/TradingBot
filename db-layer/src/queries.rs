@@ -99,6 +99,37 @@ pub fn count_candles(conn: &DbConnection, symbol: &str, timeframe: &str) -> u64 
         .count() as u64
 }
 
+/// All timestamps (Unix ms) present in the cache for `symbol` / `timeframe`,
+/// as a `HashSet` for O(1) membership checks. Used by the seed pipeline to
+/// skip candles that are already stored without re-inserting them.
+pub fn get_candle_timestamps(
+    conn: &DbConnection,
+    symbol: &str,
+    timeframe: &str,
+) -> std::collections::HashSet<i64> {
+    conn.db
+        .candles()
+        .iter()
+        .filter(|c| c.symbol == symbol && c.timeframe == timeframe)
+        .map(|c| c.timestamp)
+        .collect()
+}
+
+/// Most recent candle timestamp (Unix ms) for a symbol/timeframe, or `None`
+/// if no candles exist. Used by the seed pipeline to fetch only new bars.
+pub fn get_latest_candle_timestamp(
+    conn: &DbConnection,
+    symbol: &str,
+    timeframe: &str,
+) -> Option<i64> {
+    conn.db
+        .candles()
+        .iter()
+        .filter(|c| c.symbol == symbol && c.timeframe == timeframe)
+        .map(|c| c.timestamp)
+        .max()
+}
+
 // ── Position queries ──────────────────────────────────────────────────────────
 
 /// Open a new position in `live_positions`.
@@ -185,6 +216,15 @@ pub fn insert_trade(
             exit_reason.to_string(),
         )
         .map_err(|e| DbError::ReducerSend(e.to_string()))
+}
+
+/// Count trades in `live_trades` for a given strategy + symbol from the local cache.
+pub fn count_trades(conn: &DbConnection, strategy: &str, symbol: &str) -> u64 {
+    conn.db
+        .live_trades()
+        .iter()
+        .filter(|t| t.strategy == strategy && t.symbol == symbol)
+        .count() as u64
 }
 
 /// Fetch recent trades for a strategy from the local cache (newest first, capped at `limit`).

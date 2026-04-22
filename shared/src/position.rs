@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Whether the position bets on price going up or down.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PositionSide {
     Long,

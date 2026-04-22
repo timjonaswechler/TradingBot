@@ -1,0 +1,21 @@
+[package]
+name    = "backtester"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "backtester"
+path = "src/lib.rs"
+
+[[bin]]
+name = "backtester"
+path = "src/main.rs"
+
+[dependencies]
+shared     = { path = "../shared" }
+engine     = { path = "../engine" }
+db-layer   = { path = "../db-layer" }
+anyhow     = { workspace = true }
+clap       = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
