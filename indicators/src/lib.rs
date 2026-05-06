@@ -1,3 +1,4 @@
+pub mod anchored;
 pub mod momentum;
 pub mod slope;
 pub mod support_resistance;

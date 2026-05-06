@@ -5,6 +5,7 @@ use rhai::{Dynamic, Engine as RhaiEngine, Scope, AST};
 use shared::{Candle, Context, Signal, TradeDecision};
 
 use crate::{
+    anchored::{AnchoredOutputs, AnchoredRuntime, AnchoredSpec},
     bindings::register_all,
     candle_wrapper::{register_types, CandleList, ContextWrapper},
     error::EngineError,
@@ -20,11 +21,12 @@ use crate::{
 /// - **Backtesting** (UI): one fresh `Engine` per backtest run; call `tick`
 ///   for every historical candle in chronological order.
 pub struct Engine {
-    rhai:    RhaiEngine,
-    ast:     AST,
-    scope:   Scope<'static>,
-    candles: Arc<RwLock<Vec<Candle>>>,
-    cache:   Arc<RwLock<IndicatorCache>>,
+    rhai:     RhaiEngine,
+    ast:      AST,
+    scope:    Scope<'static>,
+    candles:  Arc<RwLock<Vec<Candle>>>,
+    cache:    Arc<RwLock<IndicatorCache>>,
+    anchored: Option<AnchoredRuntime>,
 }
 
 impl Engine {
@@ -55,23 +57,47 @@ impl Engine {
             ));
         }
 
+        // Optional: fn anchored_config() — build the AnchoredRuntime.
+        let anchored = if ast.iter_functions().any(|f| f.name == "anchored_config" && f.params.is_empty()) {
+            let result: Dynamic = rhai
+                .call_fn(&mut scope, &ast, "anchored_config", ())
+                .map_err(|e| EngineError::Strategy(format!("anchored_config error: {e}")))?;
+            let map = result.try_cast::<rhai::Map>().ok_or_else(|| {
+                EngineError::Strategy("anchored_config must return a map".into())
+            })?;
+            let spec = AnchoredSpec::from_rhai_map(map)?;
+            if spec.is_empty() { None } else { Some(AnchoredRuntime::from_spec(&spec)?) }
+        } else {
+            None
+        };
+
         let candles = Arc::new(RwLock::new(Vec::new()));
         let cache   = Arc::new(RwLock::new(IndicatorCache::new()));
 
-        Ok(Self { rhai, ast, scope, candles, cache })
+        Ok(Self { rhai, ast, scope, candles, cache, anchored })
     }
 
     /// Feed one candle into the engine and get a trading decision back.
     pub fn tick(&mut self, candle: Candle, ctx: Context) -> Result<TradeDecision, EngineError> {
         // Append the new candle.
-        self.candles.write().unwrap().push(candle);
+        self.candles.write().unwrap().push(candle.clone());
+
+        // Run the anchored pipeline (if any) on the new bar.
+        let outputs = if let Some(rt) = self.anchored.as_mut() {
+            let buf = self.candles.read().unwrap();
+            let bar = buf.len() as u64 - 1;
+            rt.tick(&candle, bar, &buf);
+            Arc::new(rt.outputs().clone())
+        } else {
+            Arc::new(AnchoredOutputs::default())
+        };
 
         // Build Rhai arguments — cheap Arc clones, no candle data copied.
         let candle_list = CandleList::new(
             Arc::clone(&self.candles),
             Arc::clone(&self.cache),
         );
-        let ctx_wrapper = ContextWrapper(ctx);
+        let ctx_wrapper = ContextWrapper::new(ctx, outputs, candle.close);
 
         // Call on_tick(candles, context).
         let result: Dynamic = self.rhai
@@ -387,6 +413,89 @@ fn on_tick(candles, context) {
             let d = e.tick(make_candle(100.0 + i as f64, i), flat_ctx()).unwrap();
             assert_eq!(d.signal, Signal::Hold);
         }
+    }
+
+    // ── Anchored: strategy declares pivot+trendline config ────────────────
+
+    const ANCHORED: &str = r#"
+fn anchored_config() {
+    #{
+        detectors: [ #{ id: "p", kind: "pivot", left: 2, right: 2 } ],
+        evaluators: [ #{
+            expose_as: "res", kind: "trendline", side: "resistance",
+            pivot_source: "p", pivot_buffer: 6,
+            tolerance: 0.01, min_touches: 3, max_lines: 1
+        } ],
+    }
+}
+fn on_tick(candles, context) {
+    let res = context.anchored("res");
+    if type_of(res) == "array" && res.len() > 0 {
+        let line = res[0];
+        let bar = candles[1].bar;
+        if candles[1].close > line.y_at(bar) {
+            return #{ signal: "BUY", reason: "broke resistance" };
+        }
+    }
+    #{ signal: "HOLD" }
+}
+"#;
+
+    fn hlc_candle(h: f64, l: f64, c: f64, ts: i64) -> Candle {
+        Candle { timestamp: ts, symbol: "T".into(), open: c, high: h, low: l, close: c, volume: 1.0, timeframe: "1m".into() }
+    }
+
+    #[test]
+    fn anchored_pipeline_exposes_trendline_and_fires_on_break() {
+        let mut e = Engine::new(ANCHORED).unwrap();
+        // Build three pivot highs at 100 (bars 2, 7, 12 with left=right=2) then break up at bar 15.
+        // Pattern for each high: low, low, HIGH, low, low.
+        let seq: &[(f64, f64)] = &[
+            (98.0, 95.0),  // 0
+            (98.0, 95.0),  // 1
+            (100.0, 95.0), // 2  pivot-high candidate
+            (98.0, 95.0),  // 3
+            (98.0, 95.0),  // 4  confirms pivot@2
+            (98.0, 95.0),  // 5
+            (98.0, 95.0),  // 6
+            (100.0, 95.0), // 7  pivot-high candidate
+            (98.0, 95.0),  // 8
+            (98.0, 95.0),  // 9  confirms pivot@7
+            (98.0, 95.0),  // 10
+            (98.0, 95.0),  // 11
+            (100.0, 95.0), // 12 pivot-high candidate
+            (98.0, 95.0),  // 13
+            (98.0, 95.0),  // 14 confirms pivot@12 → trendline becomes active
+            (110.0, 108.0),// 15 close=108 > 100 → BUY
+        ];
+        let mut last = Signal::Hold;
+        for (i, &(h, l)) in seq.iter().enumerate() {
+            // close = l on pivot bars (to keep them non-breaking), close = 108 on break bar
+            let close = if i == 15 { 108.0 } else { l };
+            let d = e.tick(hlc_candle(h, l, close, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy, "expected breakout BUY on final bar");
+    }
+
+    #[test]
+    fn trendline_break_strategy_loads() {
+        // Loads the actual strategy file from disk — exercises the full spec parse.
+        let src = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../strategies/trendline_break.rhai")
+        ).expect("read trendline_break.rhai");
+        let mut e = Engine::new(&src).expect("engine should load");
+        // A single HOLD tick must not crash (no anchored output yet).
+        let d = e.tick(make_candle(100.0, 1), flat_ctx()).unwrap();
+        assert_eq!(d.signal, Signal::Hold);
+    }
+
+    #[test]
+    fn strategy_without_anchored_config_works() {
+        // HOLD strategy has no anchored_config — must not break.
+        let mut e = Engine::new(HOLD).unwrap();
+        let d = e.tick(make_candle(100.0, 1), flat_ctx()).unwrap();
+        assert_eq!(d.signal, Signal::Hold);
     }
 
     #[test]

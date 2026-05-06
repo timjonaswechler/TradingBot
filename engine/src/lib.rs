@@ -1,3 +1,4 @@
+pub mod anchored;
 pub mod bindings;
 pub mod candle_wrapper;
 pub mod error;
