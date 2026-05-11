@@ -191,6 +191,7 @@ dependencies = [
  "clap",
  "db-layer",
  "engine",
+ "rhai",
  "shared",
  "tracing",
  "tracing-subscriber",
