@@ -1,4 +1,17 @@
-/// Standard Fibonacci retracement levels between a swing `low` and swing `high`.
+/// Standard Fibonacci retracement levels between an explicit `low` and `high`.
+///
+/// This is intentionally a low-level math helper, not the repo's long-term
+/// structure-aware Fibonacci model. It does **not**:
+/// - detect swings from candles
+/// - consume pivot structure
+/// - expose anchored state
+/// - know trend direction beyond the caller's chosen `low`/`high`
+///
+/// Long-term direction: keep this helper for manual use, but model the primary
+/// strategy-facing Fibonacci flow as an anchored evaluator built from pivot
+/// pairs (see ADR `docs/adr/0001-fibonacci-as-anchored-structure-indicator.md`).
+/// If we later rename this helper to something clearer like
+/// `fibonacci_levels`, the behavior should stay the same.
 ///
 /// Returns a `Vec` of prices at the standard ratios:
 /// `[0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]`

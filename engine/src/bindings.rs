@@ -2,9 +2,14 @@
 ///
 /// Strategies access indicators with:  `indicators::rsi(candles, 14)`
 ///
-/// Every function is overloaded:
+/// Most history-dependent functions are overloaded:
 ///   `indicators::xxx(candles, ...params)`          — offset = 0 (current bar)
 ///   `indicators::xxx(candles, ...params, offset)`  — value `offset` bars back
+///
+/// Exception: `indicators::fibonacci(candles, low, high)` is a low-level,
+/// stateless helper and has no meaningful offset variant. Long-term, the main
+/// Fibonacci workflow should move to an anchored pivot-based evaluator, while
+/// this function remains a primitive utility.
 ///
 /// Returns `()` (Rhai unit) when insufficient data, mirroring `Option::None`.
 use rhai::{Dynamic, Engine, Module, INT};
@@ -143,9 +148,35 @@ pub fn build_indicators_module() -> Module {
             }
         }
     });
+    m.set_native_fn("adx", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        match adx(&candles_slice(cl, offset as usize), period as usize) {
+            None    => Ok(Dynamic::UNIT),
+            Some(r) => {
+                let mut map = rhai::Map::new();
+                map.insert("adx".into(),      Dynamic::from(r.adx));
+                map.insert("plus_di".into(),  Dynamic::from(r.plus_di));
+                map.insert("minus_di".into(), Dynamic::from(r.minus_di));
+                Ok(Dynamic::from_map(map))
+            }
+        }
+    });
 
     m.set_native_fn("ichimoku", |cl: &mut CandleList| -> RhaiResult {
         match ichimoku(&candles_slice(cl, 0)) {
+            None    => Ok(Dynamic::UNIT),
+            Some(r) => {
+                let mut map = rhai::Map::new();
+                map.insert("tenkan".into(), Dynamic::from(r.tenkan));
+                map.insert("kijun".into(),  Dynamic::from(r.kijun));
+                map.insert("span_a".into(), Dynamic::from(r.span_a));
+                map.insert("span_b".into(), Dynamic::from(r.span_b));
+                map.insert("chikou".into(), Dynamic::from(r.chikou));
+                Ok(Dynamic::from_map(map))
+            }
+        }
+    });
+    m.set_native_fn("ichimoku", |cl: &mut CandleList, offset: INT| -> RhaiResult {
+        match ichimoku(&candles_slice(cl, offset as usize)) {
             None    => Ok(Dynamic::UNIT),
             Some(r) => {
                 let mut map = rhai::Map::new();
@@ -219,6 +250,17 @@ pub fn build_indicators_module() -> Module {
             }
         }
     });
+    m.set_native_fn("stochastic", |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        match stochastic(&candles_slice(cl, offset as usize), period as usize) {
+            None    => Ok(Dynamic::UNIT),
+            Some(r) => {
+                let mut map = rhai::Map::new();
+                map.insert("k".into(), Dynamic::from(r.k));
+                map.insert("d".into(), Dynamic::from(r.d));
+                Ok(Dynamic::from_map(map))
+            }
+        }
+    });
 
     m.set_native_fn("williams_r", |cl: &mut CandleList, period: INT| -> RhaiResult {
         Ok(opt(williams_r(&candles_slice(cl, 0), period as usize)))
@@ -238,6 +280,18 @@ pub fn build_indicators_module() -> Module {
 
     m.set_native_fn("bollinger", |cl: &mut CandleList, period: INT, std_dev: f64| -> RhaiResult {
         match bollinger(&closes_slice(cl, 0), period as usize, std_dev) {
+            None    => Ok(Dynamic::UNIT),
+            Some(r) => {
+                let mut map = rhai::Map::new();
+                map.insert("upper".into(),  Dynamic::from(r.upper));
+                map.insert("middle".into(), Dynamic::from(r.middle));
+                map.insert("lower".into(),  Dynamic::from(r.lower));
+                Ok(Dynamic::from_map(map))
+            }
+        }
+    });
+    m.set_native_fn("bollinger", |cl: &mut CandleList, period: INT, std_dev: f64, offset: INT| -> RhaiResult {
+        match bollinger(&closes_slice(cl, offset as usize), period as usize, std_dev) {
             None    => Ok(Dynamic::UNIT),
             Some(r) => {
                 let mut map = rhai::Map::new();
@@ -284,21 +338,56 @@ pub fn build_indicators_module() -> Module {
             }
         }
     });
+    m.set_native_fn("keltner", |cl: &mut CandleList, period: INT, mult: f64, offset: INT| -> RhaiResult {
+        match keltner(&candles_slice(cl, offset as usize), period as usize, mult) {
+            None    => Ok(Dynamic::UNIT),
+            Some(r) => {
+                let mut map = rhai::Map::new();
+                map.insert("upper".into(),  Dynamic::from(r.upper));
+                map.insert("middle".into(), Dynamic::from(r.middle));
+                map.insert("lower".into(),  Dynamic::from(r.lower));
+                Ok(Dynamic::from_map(map))
+            }
+        }
+    });
 
     // ── Volume ───────────────────────────────────────────────────────────────
 
     m.set_native_fn("obv",  |cl: &mut CandleList| -> RhaiResult {
         Ok(opt(obv(&candles_slice(cl, 0))))
     });
+    m.set_native_fn("obv",  |cl: &mut CandleList, offset: INT| -> RhaiResult {
+        Ok(opt(obv(&candles_slice(cl, offset as usize))))
+    });
     m.set_native_fn("vwap", |cl: &mut CandleList| -> RhaiResult {
         Ok(opt(vwap(&candles_slice(cl, 0))))
+    });
+    m.set_native_fn("vwap", |cl: &mut CandleList, offset: INT| -> RhaiResult {
+        Ok(opt(vwap(&candles_slice(cl, offset as usize))))
     });
     m.set_native_fn("mfi",  |cl: &mut CandleList, period: INT| -> RhaiResult {
         Ok(opt(mfi(&candles_slice(cl, 0), period as usize)))
     });
+    m.set_native_fn("mfi",  |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+        Ok(opt(mfi(&candles_slice(cl, offset as usize), period as usize)))
+    });
 
     m.set_native_fn("volume_profile", |cl: &mut CandleList, buckets: INT| -> RhaiResult {
         match volume_profile(&candles_slice(cl, 0), buckets as usize) {
+            None => Ok(Dynamic::UNIT),
+            Some(profile) => {
+                let arr: rhai::Array = profile.iter().map(|b| {
+                    let mut map = rhai::Map::new();
+                    map.insert("price".into(),  Dynamic::from(b.price));
+                    map.insert("volume".into(), Dynamic::from(b.volume));
+                    Dynamic::from_map(map)
+                }).collect();
+                Ok(Dynamic::from_array(arr))
+            }
+        }
+    });
+    m.set_native_fn("volume_profile", |cl: &mut CandleList, buckets: INT, offset: INT| -> RhaiResult {
+        match volume_profile(&candles_slice(cl, offset as usize), buckets as usize) {
             None => Ok(Dynamic::UNIT),
             Some(profile) => {
                 let arr: rhai::Array = profile.iter().map(|b| {
@@ -332,7 +421,28 @@ pub fn build_indicators_module() -> Module {
             }
         }
     });
+    m.set_native_fn("pivot_points", |cl: &mut CandleList, offset: INT| -> RhaiResult {
+        let candles = candles_slice(cl, offset as usize);
+        match candles.last() {
+            None => Ok(Dynamic::UNIT),
+            Some(prev) => {
+                let r = pivot_points(prev);
+                let mut map = rhai::Map::new();
+                map.insert("pp".into(), Dynamic::from(r.pp));
+                map.insert("r1".into(), Dynamic::from(r.r1));
+                map.insert("r2".into(), Dynamic::from(r.r2));
+                map.insert("r3".into(), Dynamic::from(r.r3));
+                map.insert("s1".into(), Dynamic::from(r.s1));
+                map.insert("s2".into(), Dynamic::from(r.s2));
+                map.insert("s3".into(), Dynamic::from(r.s3));
+                Ok(Dynamic::from_map(map))
+            }
+        }
+    });
 
+    // Low-level helper only: explicit low/high -> levels.
+    // Intentionally not offset-aware. The long-term strategy-facing Fibonacci
+    // direction is a pivot-based anchored evaluator rather than a rolling call.
     m.set_native_fn("fibonacci", |_cl: &mut CandleList, low: f64, high: f64| -> RhaiResult {
         let levels: rhai::Array = fibonacci_retracements(low, high)
             .into_iter()

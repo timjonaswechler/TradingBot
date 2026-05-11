@@ -418,6 +418,185 @@ fn on_tick(candles, context) {
         }
     }
 
+    fn assert_indicator_binding_smoke(expr: &str, ticks: usize) {
+        let src = format!(
+            r#"
+fn on_tick(candles, context) {{
+    let value = {expr};
+    if value == () {{ return #{{ signal: "HOLD" }}; }}
+    #{{ signal: "BUY" }}
+}}
+"#
+        );
+        let mut e = Engine::new(&src).unwrap();
+        let mut last = Signal::Hold;
+        for i in 0..ticks {
+            let d = e.tick(make_candle(100.0 + i as f64, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy, "binding should expose non-unit result for `{expr}` after warmup");
+    }
+
+    macro_rules! indicator_smoke_test {
+        ($name:ident, $expr:expr, $ticks:expr) => {
+            #[test]
+            fn $name() {
+                assert_indicator_binding_smoke($expr, $ticks);
+            }
+        };
+    }
+
+    indicator_smoke_test!(ema_binding_smoke, "indicators::ema(candles, 3)", 6);
+    indicator_smoke_test!(dema_binding_smoke, "indicators::dema(candles, 3)", 10);
+    indicator_smoke_test!(tema_binding_smoke, "indicators::tema(candles, 3)", 15);
+    indicator_smoke_test!(macd_binding_smoke, "indicators::macd(candles, 3, 6, 2)", 20);
+    indicator_smoke_test!(sar_binding_smoke, "indicators::sar(candles, 0.02, 0.2)", 6);
+    indicator_smoke_test!(adx_binding_smoke, "indicators::adx(candles, 3)", 20);
+    indicator_smoke_test!(ichimoku_binding_smoke, "indicators::ichimoku(candles)", 60);
+    indicator_smoke_test!(cci_binding_smoke, "indicators::cci(candles, 3)", 10);
+    indicator_smoke_test!(stochastic_binding_smoke, "indicators::stochastic(candles, 3)", 10);
+    indicator_smoke_test!(williams_r_binding_smoke, "indicators::williams_r(candles, 3)", 10);
+    indicator_smoke_test!(roc_binding_smoke, "indicators::roc(candles, 3)", 10);
+    indicator_smoke_test!(bollinger_binding_smoke, "indicators::bollinger(candles, 3, 2.0)", 10);
+    indicator_smoke_test!(atr_binding_smoke, "indicators::atr(candles, 3)", 10);
+    indicator_smoke_test!(keltner_binding_smoke, "indicators::keltner(candles, 3, 2.0)", 10);
+    indicator_smoke_test!(obv_binding_smoke, "indicators::obv(candles)", 3);
+    indicator_smoke_test!(vwap_binding_smoke, "indicators::vwap(candles)", 3);
+    indicator_smoke_test!(mfi_binding_smoke, "indicators::mfi(candles, 3)", 10);
+    indicator_smoke_test!(volume_profile_binding_smoke, "indicators::volume_profile(candles, 4)", 5);
+    indicator_smoke_test!(pivot_points_binding_smoke, "indicators::pivot_points(candles)", 2);
+    indicator_smoke_test!(fibonacci_binding_smoke, "indicators::fibonacci(candles, 90.0, 110.0)", 1);
+    indicator_smoke_test!(slope_binding_smoke, "indicators::slope(candles, 3)", 10);
+
+    fn assert_indicator_offset_binding_smoke(expr: &str, ticks: usize) {
+        let src = format!(
+            r#"
+fn on_tick(candles, context) {{
+    let value = {expr};
+    if value == () {{ return #{{ signal: "HOLD" }}; }}
+    #{{ signal: "BUY" }}
+}}
+"#
+        );
+        let mut e = Engine::new(&src).unwrap();
+        let mut last = Signal::Hold;
+        for i in 0..ticks {
+            let d = e.tick(make_candle(100.0 + i as f64, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy, "offset binding should expose non-unit result for `{expr}` after warmup");
+    }
+
+    macro_rules! indicator_offset_smoke_test {
+        ($name:ident, $expr:expr, $ticks:expr) => {
+            #[test]
+            fn $name() {
+                assert_indicator_offset_binding_smoke($expr, $ticks);
+            }
+        };
+    }
+
+    indicator_offset_smoke_test!(adx_offset_binding_smoke, "indicators::adx(candles, 3, 1)", 20);
+    indicator_offset_smoke_test!(ichimoku_offset_binding_smoke, "indicators::ichimoku(candles, 1)", 60);
+    indicator_offset_smoke_test!(stochastic_offset_binding_smoke, "indicators::stochastic(candles, 3, 1)", 10);
+    indicator_offset_smoke_test!(bollinger_offset_binding_smoke, "indicators::bollinger(candles, 3, 2.0, 1)", 10);
+    indicator_offset_smoke_test!(keltner_offset_binding_smoke, "indicators::keltner(candles, 3, 2.0, 1)", 10);
+    indicator_offset_smoke_test!(obv_offset_binding_smoke, "indicators::obv(candles, 1)", 3);
+    indicator_offset_smoke_test!(vwap_offset_binding_smoke, "indicators::vwap(candles, 1)", 3);
+    indicator_offset_smoke_test!(mfi_offset_binding_smoke, "indicators::mfi(candles, 3, 1)", 10);
+    indicator_offset_smoke_test!(volume_profile_offset_binding_smoke, "indicators::volume_profile(candles, 4, 1)", 5);
+    indicator_offset_smoke_test!(pivot_points_offset_binding_smoke, "indicators::pivot_points(candles, 1)", 3);
+
+    const OBV_OFFSET_SEMANTICS: &str = r#"
+fn on_tick(candles, context) {
+    let current = indicators::obv(candles);
+    let previous = indicators::obv(candles, 1);
+
+    let seen = context.state("seen", 0);
+    let last = context.state_f("last", 0.0);
+
+    let result = if seen == 1 && previous != () {
+        let matches = previous >= last - 0.000001 && previous <= last + 0.000001;
+        if matches { "BUY" } else { "SELL" }
+    } else {
+        "HOLD"
+    };
+
+    if current != () {
+        context.set_state_f("last", current);
+        context.set_state("seen", 1);
+    }
+
+    #{ signal: result }
+}
+"#;
+
+    #[test]
+    fn obv_offset_matches_previous_tick_value() {
+        let mut e = Engine::new(OBV_OFFSET_SEMANTICS).unwrap();
+        let mut last = Signal::Hold;
+        for (i, close) in [10.0, 12.0, 11.0, 15.0].into_iter().enumerate() {
+            let d = e.tick(make_candle(close, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy);
+    }
+
+    const PIVOT_POINTS_OFFSET_SEMANTICS: &str = r#"
+fn on_tick(candles, context) {
+    let current = indicators::pivot_points(candles);
+    let previous = indicators::pivot_points(candles, 1);
+
+    let seen = context.state("seen", 0);
+    let last_pp = context.state_f("pp", 0.0);
+    let last_r1 = context.state_f("r1", 0.0);
+    let last_r2 = context.state_f("r2", 0.0);
+    let last_r3 = context.state_f("r3", 0.0);
+    let last_s1 = context.state_f("s1", 0.0);
+    let last_s2 = context.state_f("s2", 0.0);
+    let last_s3 = context.state_f("s3", 0.0);
+
+    let result = if seen == 1 && previous != () {
+        let pp_ok = previous.pp >= last_pp - 0.000001 && previous.pp <= last_pp + 0.000001;
+        let r1_ok = previous.r1 >= last_r1 - 0.000001 && previous.r1 <= last_r1 + 0.000001;
+        let r2_ok = previous.r2 >= last_r2 - 0.000001 && previous.r2 <= last_r2 + 0.000001;
+        let r3_ok = previous.r3 >= last_r3 - 0.000001 && previous.r3 <= last_r3 + 0.000001;
+        let s1_ok = previous.s1 >= last_s1 - 0.000001 && previous.s1 <= last_s1 + 0.000001;
+        let s2_ok = previous.s2 >= last_s2 - 0.000001 && previous.s2 <= last_s2 + 0.000001;
+        let s3_ok = previous.s3 >= last_s3 - 0.000001 && previous.s3 <= last_s3 + 0.000001;
+        let all_resistance_ok = pp_ok && r1_ok && r2_ok && r3_ok;
+        let all_support_ok = s1_ok && s2_ok && s3_ok;
+        if all_resistance_ok && all_support_ok { "BUY" } else { "SELL" }
+    } else {
+        "HOLD"
+    };
+
+    if current != () {
+        context.set_state_f("pp", current.pp);
+        context.set_state_f("r1", current.r1);
+        context.set_state_f("r2", current.r2);
+        context.set_state_f("r3", current.r3);
+        context.set_state_f("s1", current.s1);
+        context.set_state_f("s2", current.s2);
+        context.set_state_f("s3", current.s3);
+        context.set_state("seen", 1);
+    }
+
+    #{ signal: result }
+}
+"#;
+
+    #[test]
+    fn pivot_points_offset_matches_previous_tick_levels() {
+        let mut e = Engine::new(PIVOT_POINTS_OFFSET_SEMANTICS).unwrap();
+        let mut last = Signal::Hold;
+        for (i, close) in [100.0, 101.0, 102.0].into_iter().enumerate() {
+            let d = e.tick(make_candle(close, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy);
+    }
+
     // ── Anchored: strategy declares pivot+trendline config ────────────────
 
     const ANCHORED: &str = r#"

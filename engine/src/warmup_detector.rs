@@ -1,17 +1,17 @@
 /// Automatic warmup period detection from a compiled Rhai strategy.
 ///
-/// Scans the AST for all `indicators::*` function calls and extracts the
-/// period argument (the second argument after `candles`).  Returns
-/// `max(all_periods) + 1` so the engine has one extra candle of history.
+/// Scans the AST for all `indicators::*` function calls and derives a warmup
+/// hint per call. For classic period-based indicators, this usually means the
+/// period argument after `candles`. For builtins like `ichimoku`, `obv`,
+/// `vwap`, `volume_profile`, `pivot_points`, `fibonacci`, and `sar`, the warmup
+/// comes from indicator-specific rules instead of blindly scanning numeric
+/// arguments.
 ///
-/// Handles:
-/// - Integer literals:  `indicators::sma(candles, 30)`          → 30
-/// - Constants:         `indicators::sma(candles, SLOW)`         → looks up SLOW in scope
-/// - Nested constants:  `indicators::macd(candles, FAST, SLOW, 9)` → max(FAST, SLOW, 9)
+/// Returns `max(all_hints) + 1` so the engine has one extra candle of history.
 ///
 /// Falls back to `DEFAULT_WARMUP` (200) when no indicators are found or
-/// the period cannot be resolved (e.g. dynamic expressions).
-use rhai::{AST, Expr, Scope};
+/// the warmup cannot be resolved.
+use rhai::{AST, Expr, FnCallExpr, Scope};
 
 /// Safe default: covers EMA(200), Ichimoku(52), MACD(26), etc.
 pub const DEFAULT_WARMUP: usize = 200;
@@ -19,7 +19,7 @@ pub const DEFAULT_WARMUP: usize = 200;
 /// Detect the minimum number of historical candles required before this
 /// strategy can produce meaningful signals.
 pub fn detect_warmup_period(ast: &AST, scope: &Scope) -> usize {
-    let mut max_period: usize = 0;
+    let mut max_hint: usize = 0;
     let mut found_any = false;
 
     ast.walk(&mut |nodes| {
@@ -45,15 +45,10 @@ pub fn detect_warmup_period(ast: &AST, scope: &Scope) -> usize {
                 return true;
             }
 
-            // Period is the second argument (index 1), after `candles`.
-            // Some indicators take multiple period args (e.g. MACD: fast, slow, signal).
-            // We scan all integer arguments starting from index 1.
-            for arg in call.args.iter().skip(1) {
-                if let Some(period) = resolve_period(arg, scope) {
-                    found_any = true;
-                    if period > max_period {
-                        max_period = period;
-                    }
+            if let Some(hint) = warmup_hint_for_call(call, scope) {
+                found_any = true;
+                if hint > max_hint {
+                    max_hint = hint;
                 }
             }
         }
@@ -61,10 +56,38 @@ pub fn detect_warmup_period(ast: &AST, scope: &Scope) -> usize {
         true // continue walking
     });
 
-    if found_any && max_period > 0 {
-        max_period + 1
+    if found_any {
+        max_hint + 1
     } else {
         DEFAULT_WARMUP
+    }
+}
+
+fn warmup_hint_for_call(call: &FnCallExpr, scope: &Scope) -> Option<usize> {
+    fn arg(call: &FnCallExpr, index: usize, scope: &Scope) -> Option<usize> {
+        call.args.get(index).and_then(|expr| resolve_period(expr, scope))
+    }
+
+    match call.name.as_str() {
+        // Single-period indicators
+        "sma" | "ema" | "dema" | "tema" | "adx" | "rsi" | "cci" | "stochastic"
+        | "williams_r" | "roc" | "atr" | "mfi" | "slope" | "bollinger" | "keltner" => {
+            arg(call, 1, scope)
+        }
+
+        // Multi-period indicator
+        "macd" => [1usize, 2, 3]
+            .into_iter()
+            .filter_map(|i| arg(call, i, scope))
+            .max(),
+
+        // Built-in warmup hints for indicators without meaningful integer period args
+        "ichimoku" => Some(52),
+        "sar" | "obv" => Some(1),
+        "vwap" | "volume_profile" | "pivot_points" | "fibonacci" => Some(0),
+
+        // Conservative fallback for future indicators: scan integer args after `candles`.
+        _ => call.args.iter().skip(1).filter_map(|expr| resolve_period(expr, scope)).max(),
     }
 }
 
@@ -171,10 +194,70 @@ mod tests {
     }
 
     #[test]
+    fn detects_ichimoku_builtin_warmup() {
+        let src = r#"
+            fn on_tick(candles, context) {
+                let x = indicators::ichimoku(candles);
+                #{ signal: "HOLD" }
+            }
+        "#;
+        let (ast, scope) = compile(src);
+        assert_eq!(detect_warmup_period(&ast, &scope), 53);
+    }
+
+    #[test]
+    fn detects_sar_builtin_warmup_without_numeric_period_args() {
+        let src = r#"
+            fn on_tick(candles, context) {
+                let x = indicators::sar(candles, 0.02, 0.2);
+                #{ signal: "HOLD" }
+            }
+        "#;
+        let (ast, scope) = compile(src);
+        assert_eq!(detect_warmup_period(&ast, &scope), 2);
+    }
+
+    #[test]
+    fn detects_obv_builtin_warmup() {
+        let src = r#"
+            fn on_tick(candles, context) {
+                let x = indicators::obv(candles);
+                #{ signal: "HOLD" }
+            }
+        "#;
+        let (ast, scope) = compile(src);
+        assert_eq!(detect_warmup_period(&ast, &scope), 2);
+    }
+
+    #[test]
+    fn ignores_non_warmup_numeric_params_for_volume_profile() {
+        let src = r#"
+            fn on_tick(candles, context) {
+                let x = indicators::volume_profile(candles, 50);
+                #{ signal: "HOLD" }
+            }
+        "#;
+        let (ast, scope) = compile(src);
+        assert_eq!(detect_warmup_period(&ast, &scope), 1);
+    }
+
+    #[test]
+    fn detects_stateless_fibonacci_without_falling_back_to_default() {
+        let src = r#"
+            fn on_tick(candles, context) {
+                let x = indicators::fibonacci(candles, 90.0, 110.0);
+                #{ signal: "HOLD" }
+            }
+        "#;
+        let (ast, scope) = compile(src);
+        assert_eq!(detect_warmup_period(&ast, &scope), 1);
+    }
+
+    #[test]
     fn sma_cross_strategy_detects_slow_period() {
         let src = std::fs::read_to_string("../strategies/sma_cross.rhai").unwrap();
         let (ast, scope) = compile(&src);
-        // Strategy currently uses FAST=5, SLOW=20 → max+1 = 21
-        assert_eq!(detect_warmup_period(&ast, &scope), 21);
+        // Strategy currently uses FAST=50, SLOW=200 → max+1 = 201
+        assert_eq!(detect_warmup_period(&ast, &scope), 201);
     }
 }
