@@ -2,6 +2,7 @@ use crate::anchored::{AnchoredOutput, AnchoredOutputs};
 use crate::indicator_cache::IndicatorCache;
 use rhai::{Dynamic, Engine, INT};
 use shared::{Candle, Context, Position, PositionSide};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 // ── CandleWrapper ─────────────────────────────────────────────────────────────
@@ -55,21 +56,33 @@ pub struct ContextWrapper {
     pub ctx: Context,
     pub anchored: Arc<AnchoredOutputs>,
     pub current_price: f64,
+    pub state: Arc<RwLock<HashMap<String, Dynamic>>>,
 }
 
 impl ContextWrapper {
-    pub fn new(ctx: Context, anchored: Arc<AnchoredOutputs>, current_price: f64) -> Self {
+    pub fn new(
+        ctx: Context,
+        anchored: Arc<AnchoredOutputs>,
+        current_price: f64,
+        state: Arc<RwLock<HashMap<String, Dynamic>>>,
+    ) -> Self {
         Self {
             ctx,
             anchored,
             current_price,
+            state,
         }
     }
-    pub fn plain(ctx: Context, current_price: f64) -> Self {
+    pub fn plain(
+        ctx: Context,
+        current_price: f64,
+        state: Arc<RwLock<HashMap<String, Dynamic>>>,
+    ) -> Self {
         Self {
             ctx,
             anchored: Arc::new(AnchoredOutputs::default()),
             current_price,
+            state,
         }
     }
 }
@@ -96,7 +109,10 @@ pub struct PositionWrapper {
 
 impl PositionWrapper {
     pub fn new(position: Position, current_price: f64) -> Self {
-        Self { position, current_price }
+        Self {
+            position,
+            current_price,
+        }
     }
 }
 
@@ -169,15 +185,27 @@ pub fn register_types(engine: &mut Engine) {
     // ── PositionWrapper ───────────────────────────────────────────────────
     engine.register_type_with_name::<PositionWrapper>("Position");
 
-    engine.register_get("side", |p: &mut PositionWrapper| p.position.side.to_string());
-    engine.register_get("entry_price", |p: &mut PositionWrapper| p.position.entry_price);
+    engine.register_get("side", |p: &mut PositionWrapper| {
+        p.position.side.to_string()
+    });
+    engine.register_get("entry_price", |p: &mut PositionWrapper| {
+        p.position.entry_price
+    });
     engine.register_get("size", |p: &mut PositionWrapper| p.position.size);
-    engine.register_get("entry_time", |p: &mut PositionWrapper| p.position.entry_time);
+    engine.register_get("entry_time", |p: &mut PositionWrapper| {
+        p.position.entry_time
+    });
     engine.register_get("stop_loss", |p: &mut PositionWrapper| -> Dynamic {
-        p.position.stop_loss.map(Dynamic::from).unwrap_or(Dynamic::UNIT)
+        p.position
+            .stop_loss
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT)
     });
     engine.register_get("take_profit", |p: &mut PositionWrapper| -> Dynamic {
-        p.position.take_profit.map(Dynamic::from).unwrap_or(Dynamic::UNIT)
+        p.position
+            .take_profit
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT)
     });
 
     // PnL and Value calculated from current_price
@@ -209,6 +237,49 @@ pub fn register_types(engine: &mut Engine) {
     engine.register_fn("has_position", |c: &mut ContextWrapper| {
         c.ctx.has_position()
     });
+
+    // State API — persistent key-value store between ticks
+    // Read state as integer
+    engine.register_fn(
+        "state",
+        |c: &mut ContextWrapper, name: &str, default_val: INT| -> Dynamic {
+            let state = c.state.read().unwrap();
+            match state.get(name) {
+                Some(v) => v.clone(),
+                None => Dynamic::from(default_val),
+            }
+        },
+    );
+
+    // Read state as float
+    engine.register_fn(
+        "state_f",
+        |c: &mut ContextWrapper, name: &str, default_val: f64| -> Dynamic {
+            let state = c.state.read().unwrap();
+            match state.get(name) {
+                Some(v) => v.clone(),
+                None => Dynamic::from(default_val),
+            }
+        },
+    );
+
+    // Set state with integer value
+    engine.register_fn(
+        "set_state",
+        |c: &mut ContextWrapper, name: &str, value: INT| {
+            let mut state = c.state.write().unwrap();
+            state.insert(name.to_string(), Dynamic::from(value));
+        },
+    );
+
+    // Set state with float value
+    engine.register_fn(
+        "set_state_f",
+        |c: &mut ContextWrapper, name: &str, value: f64| {
+            let mut state = c.state.write().unwrap();
+            state.insert(name.to_string(), Dynamic::from(value));
+        },
+    );
 
     // Anchored outputs — strategies access via `ctx.anchored("name")` etc.
     engine.register_fn(

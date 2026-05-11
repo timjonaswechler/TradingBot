@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
@@ -27,6 +28,7 @@ pub struct Engine {
     candles:  Arc<RwLock<Vec<Candle>>>,
     cache:    Arc<RwLock<IndicatorCache>>,
     anchored: Option<AnchoredRuntime>,
+    state:    Arc<RwLock<HashMap<String, Dynamic>>>,
 }
 
 impl Engine {
@@ -73,8 +75,9 @@ impl Engine {
 
         let candles = Arc::new(RwLock::new(Vec::new()));
         let cache   = Arc::new(RwLock::new(IndicatorCache::new()));
+        let state    = Arc::new(RwLock::new(HashMap::new()));
 
-        Ok(Self { rhai, ast, scope, candles, cache, anchored })
+        Ok(Self { rhai, ast, scope, candles, cache, anchored, state })
     }
 
     /// Feed one candle into the engine and get a trading decision back.
@@ -97,7 +100,7 @@ impl Engine {
             Arc::clone(&self.candles),
             Arc::clone(&self.cache),
         );
-        let ctx_wrapper = ContextWrapper::new(ctx, outputs, candle.close);
+        let ctx_wrapper = ContextWrapper::new(ctx, outputs, candle.close, Arc::clone(&self.state));
 
         // Call on_tick(candles, context).
         let result: Dynamic = self.rhai
@@ -505,6 +508,33 @@ fn on_tick(candles, context) {
             e.tick(make_candle(100.0 + i as f64 * 5.0, i), flat_ctx()).unwrap();
         }
         let d = e.tick(make_candle(100.0 + 31.0 * 5.0, 31), flat_ctx()).unwrap();
+        assert_eq!(d.signal, Signal::Sell);
+    }
+
+    // ── State API ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn state_persists_between_ticks() {
+        const STRAT: &str = r#"
+fn on_tick(candles, context) {
+    let current = context.state("counter", 0);
+    context.set_state("counter", current + 1);
+    if current >= 3 { return #{ signal: "SELL" }; }
+    #{ signal: "BUY" }
+}
+"#;
+        let mut e = Engine::new(STRAT).unwrap();
+        // Tick 1: counter=0, current=0, set counter=1, signal=BUY
+        let d = e.tick(make_candle(100.0, 1), flat_ctx()).unwrap();
+        assert_eq!(d.signal, Signal::Buy);
+        // Tick 2: counter=1, current=1, set counter=2, signal=BUY
+        let d = e.tick(make_candle(100.0, 2), flat_ctx()).unwrap();
+        assert_eq!(d.signal, Signal::Buy);
+        // Tick 3: counter=2, current=2, set counter=3, signal=BUY
+        let d = e.tick(make_candle(100.0, 3), flat_ctx()).unwrap();
+        assert_eq!(d.signal, Signal::Buy);
+        // Tick 4: counter=3, current=3, set counter=4, signal=SELL
+        let d = e.tick(make_candle(100.0, 4), flat_ctx()).unwrap();
         assert_eq!(d.signal, Signal::Sell);
     }
 }
