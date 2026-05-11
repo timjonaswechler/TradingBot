@@ -1,5 +1,5 @@
-use shared::Candle;
 use crate::{error::EngineError, vm::Engine};
+use shared::Candle;
 
 /// Feed `warmup_candles` into the engine without calling `on_tick`.
 ///
@@ -43,9 +43,7 @@ fn on_tick(candles, context) {
     fn warmup_pre_loads_candles() {
         let mut engine = Engine::new(STRATEGY).unwrap();
 
-        let historical: Vec<Candle> = (1..=20)
-            .map(|i| make_candle(i as f64, i))
-            .collect();
+        let historical: Vec<Candle> = (1..=20).map(|i| make_candle(i as f64, i)).collect();
         let count = historical.len();
 
         warmup(&mut engine, historical).unwrap();
@@ -57,9 +55,7 @@ fn on_tick(candles, context) {
     fn warmup_followed_by_tick_works() {
         let mut engine = Engine::new(STRATEGY).unwrap();
 
-        let historical: Vec<Candle> = (1..=20)
-            .map(|i| make_candle(i as f64, i))
-            .collect();
+        let historical: Vec<Candle> = (1..=20).map(|i| make_candle(i as f64, i)).collect();
         warmup(&mut engine, historical).unwrap();
 
         let ctx = shared::Context::new(10_000.0);
@@ -67,5 +63,4 @@ fn on_tick(candles, context) {
         assert_eq!(engine.candle_count(), 21);
         assert_eq!(decision.signal, shared::Signal::Hold);
     }
-
 }

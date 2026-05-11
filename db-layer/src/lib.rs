@@ -14,18 +14,8 @@ pub use std::sync::Arc;
 
 /// Re-export the most-used query functions at crate root.
 pub use queries::{
-    close_position,
-    count_candles,
-    count_trades,
-    delete_candles_by_symbol,
-    delete_trades_by_strategy,
-    get_candles,
-    get_candles_before,
-    get_candle_timestamps,
-    get_latest_candle_timestamp,
-    get_open_position,
-    get_trades,
-    insert_candle,
-    insert_trade,
+    close_position, count_candles, count_trades, delete_candles_by_symbol,
+    delete_trades_by_strategy, get_candle_timestamps, get_candles, get_candles_before,
+    get_latest_candle_timestamp, get_open_position, get_trades, insert_candle, insert_trade,
     open_position,
 };

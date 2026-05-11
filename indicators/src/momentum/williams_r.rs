@@ -14,9 +14,12 @@ pub fn williams_r(candles: &[Candle], period: usize) -> Option<f64> {
     }
 
     let slice = &candles[candles.len() - period..];
-    let highest = slice.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
-    let lowest  = slice.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
-    let close   = candles.last()?.close;
+    let highest = slice
+        .iter()
+        .map(|c| c.high)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let lowest = slice.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+    let close = candles.last()?.close;
 
     if (highest - lowest).abs() < 1e-12 {
         return Some(-50.0); // flat market — middle value
@@ -30,7 +33,16 @@ mod tests {
     use super::*;
 
     fn candle(h: f64, l: f64, c: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: l, high: h, low: l, close: c, volume: 1.0, timeframe: "1d".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: l,
+            high: h,
+            low: l,
+            close: c,
+            volume: 1.0,
+            timeframe: "1d".into(),
+        }
     }
 
     #[test]
@@ -58,7 +70,9 @@ mod tests {
 
     #[test]
     fn value_in_range() {
-        let c: Vec<Candle> = (1..=20).map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64)).collect();
+        let c: Vec<Candle> = (1..=20)
+            .map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64))
+            .collect();
         let r = williams_r(&c, 14).unwrap();
         assert!(r >= -100.0 && r <= 0.0);
     }

@@ -13,7 +13,9 @@ impl AnchoredEvaluator for SlopeSegEvaluator {
 
     fn evaluate(&self, candles: &[Candle], buffer_origin_bar: u64, seg: Segment) -> Option<f64> {
         let slice = slice_by_bars(candles, buffer_origin_bar, seg)?;
-        if slice.len() < 2 { return None; }
+        if slice.len() < 2 {
+            return None;
+        }
         let closes: Vec<f64> = slice.iter().map(|c| c.close).collect();
         slope(&closes, closes.len())
     }
@@ -25,14 +27,32 @@ mod tests {
     use shared::Candle;
 
     fn c(close: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: close, high: close, low: close, close, volume: 0.0, timeframe: "1m".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume: 0.0,
+            timeframe: "1m".into(),
+        }
     }
 
     #[test]
     fn positive_slope_on_uptrend_segment() {
         let candles: Vec<Candle> = (0..10).map(|i| c(i as f64)).collect();
         let ev = SlopeSegEvaluator;
-        let s = ev.evaluate(&candles, 0, Segment { start_bar: 2, end_bar: 7 }).unwrap();
+        let s = ev
+            .evaluate(
+                &candles,
+                0,
+                Segment {
+                    start_bar: 2,
+                    end_bar: 7,
+                },
+            )
+            .unwrap();
         assert!((s - 1.0).abs() < 1e-9);
     }
 
@@ -41,7 +61,16 @@ mod tests {
         let candles: Vec<Candle> = (0..5).map(|i| c(i as f64 * 2.0)).collect();
         // origin=100 means candles[0].bar = 100, candles[4].bar = 104.
         let ev = SlopeSegEvaluator;
-        let s = ev.evaluate(&candles, 100, Segment { start_bar: 101, end_bar: 104 }).unwrap();
+        let s = ev
+            .evaluate(
+                &candles,
+                100,
+                Segment {
+                    start_bar: 101,
+                    end_bar: 104,
+                },
+            )
+            .unwrap();
         assert!((s - 2.0).abs() < 1e-9);
     }
 
@@ -49,6 +78,15 @@ mod tests {
     fn out_of_range_returns_none() {
         let candles: Vec<Candle> = (0..3).map(|i| c(i as f64)).collect();
         let ev = SlopeSegEvaluator;
-        assert!(ev.evaluate(&candles, 0, Segment { start_bar: 0, end_bar: 10 }).is_none());
+        assert!(ev
+            .evaluate(
+                &candles,
+                0,
+                Segment {
+                    start_bar: 0,
+                    end_bar: 10
+                }
+            )
+            .is_none());
     }
 }

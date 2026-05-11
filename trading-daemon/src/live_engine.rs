@@ -19,14 +19,19 @@ use crate::{
 
 /// Run a live engine instance for one asset/interval/strategy combination.
 pub async fn run(
-    client:   Arc<SpacetimeClient>,
-    asset:    AssetConfig,
+    client: Arc<SpacetimeClient>,
+    asset: AssetConfig,
     interval: String,
-    cancel:   CancellationToken,
+    cancel: CancellationToken,
 ) -> Result<()> {
     let symbol = asset.symbol.clone();
 
-    info!(symbol, interval, strategy = asset.strategy, "Starting live engine");
+    info!(
+        symbol,
+        interval,
+        strategy = asset.strategy,
+        "Starting live engine"
+    );
 
     // ── Load strategy ──────────────────────────────────────────────────────────
     let strategy_src = std::fs::read_to_string(&asset.strategy)
@@ -52,7 +57,8 @@ pub async fn run(
     );
 
     info!(
-        symbol, interval,
+        symbol,
+        interval,
         balance = asset.balance,
         "Paper executor ready"
     );
@@ -62,7 +68,7 @@ pub async fn run(
     let (tx, mut rx) = mpsc::channel::<Candle>(64);
 
     let sym_filter = symbol.clone();
-    let tf_filter  = interval.clone();
+    let tf_filter = interval.clone();
 
     conn.db.candles().on_insert(move |_ctx, db_candle| {
         if db_candle.symbol != sym_filter || db_candle.timeframe != tf_filter {
@@ -76,12 +82,12 @@ pub async fn run(
         }
         let candle = Candle {
             timestamp: db_candle.timestamp,
-            symbol:    db_candle.symbol.clone(),
-            open:      db_candle.open,
-            high:      db_candle.high,
-            low:       db_candle.low,
-            close:     db_candle.close,
-            volume:    db_candle.volume,
+            symbol: db_candle.symbol.clone(),
+            open: db_candle.open,
+            high: db_candle.high,
+            low: db_candle.low,
+            close: db_candle.close,
+            volume: db_candle.volume,
             timeframe: db_candle.timeframe.clone(),
         };
         if let Err(e) = tx.try_send(candle) {
@@ -89,7 +95,10 @@ pub async fn run(
         }
     });
 
-    info!(symbol, interval, "on_insert callback registered — waiting for new candles");
+    info!(
+        symbol,
+        interval, "on_insert callback registered — waiting for new candles"
+    );
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     // Track the most recent candle so shutdown-liquidation has a mark price.
@@ -178,17 +187,22 @@ fn build_context(
     strategy: &str,
     symbol: &str,
 ) -> Context {
-    let balance  = executor.balance();
+    let balance = executor.balance();
     let position = executor.position().cloned();
-    let equity   = balance + unrealized_pnl(position.as_ref(), last_close);
+    let equity = balance + unrealized_pnl(position.as_ref(), last_close);
     let trades_count = count_trades(conn, strategy, symbol) as u32;
-    Context { balance, equity, position, trades_count }
+    Context {
+        balance,
+        equity,
+        position,
+        trades_count,
+    }
 }
 
 fn unrealized_pnl(position: Option<&Position>, last_close: f64) -> f64 {
     match position {
         Some(p) => match p.side {
-            shared::PositionSide::Long  => (last_close - p.entry_price) * p.size,
+            shared::PositionSide::Long => (last_close - p.entry_price) * p.size,
             shared::PositionSide::Short => (p.entry_price - last_close) * p.size,
         },
         None => 0.0,

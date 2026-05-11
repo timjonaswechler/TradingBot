@@ -16,7 +16,10 @@ use shared::Candle;
 use super::super::{AnchorEvent, Invalidator, SegmentState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrendlineSide { Resistance, Support }
+pub enum TrendlineSide {
+    Resistance,
+    Support,
+}
 
 /// A fitted trendline, parametrised in bar-space: `y(bar) = slope * bar + intercept`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,7 +33,9 @@ pub struct TrendLine {
 }
 
 impl TrendLine {
-    pub fn y_at(&self, bar: u64) -> f64 { self.slope * bar as f64 + self.intercept }
+    pub fn y_at(&self, bar: u64) -> f64 {
+        self.slope * bar as f64 + self.intercept
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -48,7 +53,12 @@ impl TrendlineEvaluator {
         assert!(tolerance > 0.0 && tolerance < 0.5);
         assert!(min_touches >= 3);
         assert!(max_lines >= 1);
-        Self { side, tolerance, min_touches, max_lines }
+        Self {
+            side,
+            tolerance,
+            min_touches,
+            max_lines,
+        }
     }
 
     /// Fit trendlines from the current pivot buffer. `candles` is the per-symbol
@@ -65,12 +75,14 @@ impl TrendlineEvaluator {
         let pts: Vec<(u64, f64)> = pivots
             .iter()
             .filter_map(|ev| match (want_high, ev) {
-                (true, AnchorEvent::PivotHigh { bar, price, .. })  => Some((*bar, *price)),
-                (false, AnchorEvent::PivotLow  { bar, price, .. }) => Some((*bar, *price)),
+                (true, AnchorEvent::PivotHigh { bar, price, .. }) => Some((*bar, *price)),
+                (false, AnchorEvent::PivotLow { bar, price, .. }) => Some((*bar, *price)),
                 _ => None,
             })
             .collect();
-        if pts.len() < self.min_touches as usize { return vec![]; }
+        if pts.len() < self.min_touches as usize {
+            return vec![];
+        }
 
         let n = pts.len();
         let mut candidates: Vec<TrendLine> = Vec::new();
@@ -79,7 +91,9 @@ impl TrendlineEvaluator {
             for j in (i + 1)..n {
                 let (x1, y1) = (pts[i].0 as f64, pts[i].1);
                 let (x2, y2) = (pts[j].0 as f64, pts[j].1);
-                if (x2 - x1).abs() < 1e-9 { continue; }
+                if (x2 - x1).abs() < 1e-9 {
+                    continue;
+                }
                 let slope = (y2 - y1) / (x2 - x1);
                 let intercept = y1 - slope * x1;
 
@@ -91,32 +105,51 @@ impl TrendlineEvaluator {
                     let tol_abs = yk.abs() * self.tolerance;
                     let pierces = match self.side {
                         TrendlineSide::Resistance => yk > line_y + tol_abs,
-                        TrendlineSide::Support    => yk < line_y - tol_abs,
+                        TrendlineSide::Support => yk < line_y - tol_abs,
                     };
-                    if pierces { ok = false; break; }
+                    if pierces {
+                        ok = false;
+                        break;
+                    }
                 }
-                if !ok { continue; }
+                if !ok {
+                    continue;
+                }
 
                 // 2) Count touches across all buffer pivots.
                 let mut touches: u32 = 2;
                 for (k, &(xk, yk)) in pts.iter().enumerate() {
-                    if k == i || k == j { continue; }
+                    if k == i || k == j {
+                        continue;
+                    }
                     let line_y = slope * xk as f64 + intercept;
-                    if yk.abs() < 1e-12 { continue; }
+                    if yk.abs() < 1e-12 {
+                        continue;
+                    }
                     if ((yk - line_y).abs() / yk.abs()) <= self.tolerance {
                         touches += 1;
                     }
                 }
-                if touches < self.min_touches { continue; }
+                if touches < self.min_touches {
+                    continue;
+                }
 
                 // 3) Break-check: no close after the second anchor has crossed the line.
-                if !self.is_unbroken(slope, intercept, pts[j].0, candles, buffer_origin_bar, current_bar) {
+                if !self.is_unbroken(
+                    slope,
+                    intercept,
+                    pts[j].0,
+                    candles,
+                    buffer_origin_bar,
+                    current_bar,
+                ) {
                     continue;
                 }
 
                 candidates.push(TrendLine {
                     side: self.side,
-                    slope, intercept,
+                    slope,
+                    intercept,
                     anchor_start_bar: pts[i].0,
                     anchor_end_bar: pts[j].0,
                     touches,
@@ -127,11 +160,15 @@ impl TrendlineEvaluator {
         // Rank: more touches first; tie-break by slope (steepest for resistance,
         // most-negative for support — i.e. the "tightest" trendline).
         candidates.sort_by(|a, b| {
-            b.touches.cmp(&a.touches).then_with(|| {
-                match self.side {
-                    TrendlineSide::Resistance => b.slope.partial_cmp(&a.slope).unwrap_or(std::cmp::Ordering::Equal),
-                    TrendlineSide::Support    => a.slope.partial_cmp(&b.slope).unwrap_or(std::cmp::Ordering::Equal),
-                }
+            b.touches.cmp(&a.touches).then_with(|| match self.side {
+                TrendlineSide::Resistance => b
+                    .slope
+                    .partial_cmp(&a.slope)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+                TrendlineSide::Support => a
+                    .slope
+                    .partial_cmp(&b.slope)
+                    .unwrap_or(std::cmp::Ordering::Equal),
             })
         });
         candidates.truncate(self.max_lines);
@@ -140,29 +177,44 @@ impl TrendlineEvaluator {
 
     fn is_unbroken(
         &self,
-        slope: f64, intercept: f64,
+        slope: f64,
+        intercept: f64,
         after_bar: u64,
         candles: &[Candle],
         buffer_origin_bar: u64,
         current_bar: u64,
     ) -> bool {
-        if current_bar <= after_bar { return true; }
+        if current_bar <= after_bar {
+            return true;
+        }
         let first = after_bar + 1;
-        let Some(first_idx) = first.checked_sub(buffer_origin_bar) else { return true; };
+        let Some(first_idx) = first.checked_sub(buffer_origin_bar) else {
+            return true;
+        };
         let first_idx = first_idx as usize;
         let last_idx = match current_bar.checked_sub(buffer_origin_bar) {
             Some(v) => (v as usize).min(candles.len().saturating_sub(1)),
             None => return true,
         };
-        if first_idx > last_idx || first_idx >= candles.len() { return true; }
+        if first_idx > last_idx || first_idx >= candles.len() {
+            return true;
+        }
 
         for idx in first_idx..=last_idx {
             let bar = buffer_origin_bar + idx as u64;
             let line_y = slope * bar as f64 + intercept;
             let close = candles[idx].close;
             match self.side {
-                TrendlineSide::Resistance => if close > line_y { return false; },
-                TrendlineSide::Support    => if close < line_y { return false; },
+                TrendlineSide::Resistance => {
+                    if close > line_y {
+                        return false;
+                    }
+                }
+                TrendlineSide::Support => {
+                    if close < line_y {
+                        return false;
+                    }
+                }
             }
         }
         true
@@ -179,7 +231,7 @@ impl Invalidator for TrendlineInvalidator {
         let y = self.0.y_at(bar);
         match self.0.side {
             TrendlineSide::Resistance => c.close <= y,
-            TrendlineSide::Support    => c.close >= y,
+            TrendlineSide::Support => c.close >= y,
         }
     }
 }
@@ -190,14 +242,31 @@ mod tests {
     use shared::Candle;
 
     fn c(close: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: close, high: close, low: close, close, volume: 0.0, timeframe: "1m".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume: 0.0,
+            timeframe: "1m".into(),
+        }
     }
 
     fn push_ph(buf: &mut SegmentState<AnchorEvent>, bar: u64, price: f64) {
-        buf.push(AnchorEvent::PivotHigh { bar, price, volume: 1.0 });
+        buf.push(AnchorEvent::PivotHigh {
+            bar,
+            price,
+            volume: 1.0,
+        });
     }
     fn push_pl(buf: &mut SegmentState<AnchorEvent>, bar: u64, price: f64) {
-        buf.push(AnchorEvent::PivotLow { bar, price, volume: 1.0 });
+        buf.push(AnchorEvent::PivotLow {
+            bar,
+            price,
+            volume: 1.0,
+        });
     }
 
     #[test]
@@ -247,9 +316,16 @@ mod tests {
 
     #[test]
     fn invalidator_detects_break() {
-        let line = TrendLine { side: TrendlineSide::Resistance, slope: 0.0, intercept: 100.0, anchor_start_bar: 10, anchor_end_bar: 30, touches: 3 };
+        let line = TrendLine {
+            side: TrendlineSide::Resistance,
+            slope: 0.0,
+            intercept: 100.0,
+            anchor_start_bar: 10,
+            anchor_end_bar: 30,
+            touches: 3,
+        };
         let inv = TrendlineInvalidator(line);
-        assert!( inv.still_valid(&c(99.0),  50));
+        assert!(inv.still_valid(&c(99.0), 50));
         assert!(!inv.still_valid(&c(101.0), 50));
     }
 }

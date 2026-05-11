@@ -35,12 +35,17 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Seed { config: config_path, from } => {
+        Command::Seed {
+            config: config_path,
+            from,
+        } => {
             let config = Config::load(&config_path)?;
             seed::run(&config, from).await?;
         }
 
-        Command::Run { config: config_path } => {
+        Command::Run {
+            config: config_path,
+        } => {
             run_daemon(&config_path).await?;
         }
     }
@@ -56,10 +61,15 @@ async fn run_daemon(config_path: &str) -> Result<()> {
     }
 
     // ── Connect to SpacetimeDB ─────────────────────────────────────────────────
-    info!(url = config.database.url, module = config.database.module, "Connecting to SpacetimeDB");
-    let client = Arc::new(
-        SpacetimeClient::connect(&config.database.url, &config.database.module)?
+    info!(
+        url = config.database.url,
+        module = config.database.module,
+        "Connecting to SpacetimeDB"
     );
+    let client = Arc::new(SpacetimeClient::connect(
+        &config.database.url,
+        &config.database.module,
+    )?);
     info!("Connected — cache ready");
 
     // ── Spawn one live engine task per (asset × interval) ──────────────────────
@@ -79,10 +89,12 @@ async fn run_daemon(config_path: &str) -> Result<()> {
         for interval in asset.intervals.clone() {
             let client_clone = client.clone();
             let cancel_clone = cancel.clone();
-            let asset_clone  = asset.clone();
+            let asset_clone = asset.clone();
 
             let handle = tokio::spawn(async move {
-                if let Err(e) = live_engine::run(client_clone, asset_clone, interval, cancel_clone).await {
+                if let Err(e) =
+                    live_engine::run(client_clone, asset_clone, interval, cancel_clone).await
+                {
                     tracing::error!(error = %e, "Live engine task failed");
                 }
             });

@@ -13,7 +13,11 @@ pub fn rsi(closes: &[f64], period: usize) -> Option<f64> {
 
     for i in 1..=period {
         let change = closes[i] - closes[i - 1];
-        if change > 0.0 { avg_gain += change; } else { avg_loss += change.abs(); }
+        if change > 0.0 {
+            avg_gain += change;
+        } else {
+            avg_loss += change.abs();
+        }
     }
     avg_gain /= period as f64;
     avg_loss /= period as f64;
@@ -58,8 +62,8 @@ mod tests {
     #[test]
     fn value_in_range() {
         let c = [
-            44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.15,
-            43.61, 44.33, 44.83, 45.10, 45.15, 43.61, 44.33,
+            44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.15, 43.61, 44.33, 44.83, 45.10,
+            45.15, 43.61, 44.33,
         ];
         let r = rsi(&c, 14).unwrap();
         assert!(r >= 0.0 && r <= 100.0);

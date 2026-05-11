@@ -11,7 +11,7 @@ pub enum PositionSide {
 impl std::fmt::Display for PositionSide {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PositionSide::Long  => write!(f, "long"),
+            PositionSide::Long => write!(f, "long"),
             PositionSide::Short => write!(f, "short"),
         }
     }
@@ -39,7 +39,7 @@ impl Position {
     /// - Short: `(entry_price - current_price) * size`
     pub fn unrealised_pnl(&self, current_price: f64) -> f64 {
         match self.side {
-            PositionSide::Long  => (current_price - self.entry_price) * self.size,
+            PositionSide::Long => (current_price - self.entry_price) * self.size,
             PositionSide::Short => (self.entry_price - current_price) * self.size,
         }
     }
@@ -51,12 +51,12 @@ mod tests {
 
     fn long_pos() -> Position {
         Position {
-            symbol:      "AAPL".into(),
-            side:        PositionSide::Long,
+            symbol: "AAPL".into(),
+            side: PositionSide::Long,
             entry_price: 100.0,
-            size:        10.0,
-            entry_time:  0,
-            stop_loss:   None,
+            size: 10.0,
+            entry_time: 0,
+            stop_loss: None,
             take_profit: None,
         }
     }
@@ -73,7 +73,10 @@ mod tests {
 
     #[test]
     fn short_pnl_positive_when_price_falls() {
-        let pos = Position { side: PositionSide::Short, ..long_pos() };
+        let pos = Position {
+            side: PositionSide::Short,
+            ..long_pos()
+        };
         assert_eq!(pos.unrealised_pnl(90.0), 100.0);
     }
 }

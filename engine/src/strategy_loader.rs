@@ -1,5 +1,5 @@
-use std::path::Path;
 use crate::EngineError;
+use std::path::Path;
 
 /// Minimal metadata declared at the top of every `.rhai` strategy file.
 #[derive(Debug, Clone)]
@@ -26,9 +26,9 @@ pub fn validate_strategy_source(source: &str) -> Result<(), EngineError> {
     crate::candle_wrapper::register_types(&mut engine);
     crate::bindings::register_all(&mut engine);
 
-    let ast = engine.compile(source).map_err(|e| {
-        EngineError::Strategy(format!("compile error: {e}"))
-    })?;
+    let ast = engine
+        .compile(source)
+        .map_err(|e| EngineError::Strategy(format!("compile error: {e}")))?;
 
     let has_on_tick = ast.iter_functions().any(|f| f.name == "on_tick");
     if !has_on_tick {
@@ -48,7 +48,10 @@ fn extract_name(source: &str) -> String {
         let trimmed = line.trim();
         if let Some(pos) = trimmed.find("name") {
             let after = trimmed[pos + 4..].trim_start();
-            let after = after.trim_start_matches(':').trim_start_matches('=').trim_start();
+            let after = after
+                .trim_start_matches(':')
+                .trim_start_matches('=')
+                .trim_start();
             if after.starts_with('"') {
                 if let Some(end) = after[1..].find('"') {
                     return after[1..1 + end].to_string();

@@ -13,7 +13,10 @@ pub fn cci(candles: &[Candle], period: usize) -> Option<f64> {
     }
 
     let slice = &candles[candles.len() - period..];
-    let tp: Vec<f64> = slice.iter().map(|c| (c.high + c.low + c.close) / 3.0).collect();
+    let tp: Vec<f64> = slice
+        .iter()
+        .map(|c| (c.high + c.low + c.close) / 3.0)
+        .collect();
 
     let sma = tp.iter().sum::<f64>() / period as f64;
     let mean_dev = tp.iter().map(|t| (t - sma).abs()).sum::<f64>() / period as f64;
@@ -31,12 +34,23 @@ mod tests {
     use super::*;
 
     fn candle(h: f64, l: f64, c: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: l, high: h, low: l, close: c, volume: 1.0, timeframe: "1d".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: l,
+            high: h,
+            low: l,
+            close: c,
+            volume: 1.0,
+            timeframe: "1d".into(),
+        }
     }
 
     #[test]
     fn insufficient_data() {
-        let c: Vec<Candle> = (1..=19).map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64)).collect();
+        let c: Vec<Candle> = (1..=19)
+            .map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64))
+            .collect();
         assert_eq!(cci(&c, 20), None);
     }
 
@@ -48,13 +62,17 @@ mod tests {
 
     #[test]
     fn computes_without_panic() {
-        let c: Vec<Candle> = (1..=30).map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64)).collect();
+        let c: Vec<Candle> = (1..=30)
+            .map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64))
+            .collect();
         assert!(cci(&c, 20).is_some());
     }
 
     #[test]
     fn positive_in_uptrend() {
-        let c: Vec<Candle> = (1..=30).map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64)).collect();
+        let c: Vec<Candle> = (1..=30)
+            .map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64))
+            .collect();
         let r = cci(&c, 20).unwrap();
         assert!(r > 0.0, "CCI {r:.1} should be positive in uptrend");
     }

@@ -16,12 +16,7 @@ pub struct MacdResult {
 /// Input: closes in chronological order (oldest first).
 /// Typical parameters: fast=12, slow=26, signal=9.
 /// Needs at least `slow + signal - 1` bars.
-pub fn macd(
-    closes: &[f64],
-    fast: usize,
-    slow: usize,
-    signal_period: usize,
-) -> Option<MacdResult> {
+pub fn macd(closes: &[f64], fast: usize, slow: usize, signal_period: usize) -> Option<MacdResult> {
     if fast == 0 || slow == 0 || signal_period == 0 || fast >= slow {
         return None;
     }
@@ -47,8 +42,8 @@ pub fn macd(
     let last_macd = *macd_line.last()?;
 
     Some(MacdResult {
-        line:      last_macd,
-        signal:    signal_line,
+        line: last_macd,
+        signal: signal_line,
         histogram: last_macd - signal_line,
     })
 }

@@ -24,35 +24,35 @@ pub struct WarmupResult {
 ///
 /// Warns (but does not fail) when fewer candles are available than requested.
 pub fn warmup_engine(
-    conn:      &DbConnection,
-    engine:    &mut Engine,
-    symbol:    &str,
+    conn: &DbConnection,
+    engine: &mut Engine,
+    symbol: &str,
     timeframe: &str,
     warmup_bars: usize,
 ) -> Result<WarmupResult> {
-    let candles = get_candles_before(
-        conn,
-        symbol,
-        timeframe,
-        i64::MAX,
-        warmup_bars as u32,
-    );
+    let candles = get_candles_before(conn, symbol, timeframe, i64::MAX, warmup_bars as u32);
 
-    let loaded        = candles.len();
+    let loaded = candles.len();
     let high_water_ts = candles.last().map(|c| c.timestamp);
 
     if loaded == 0 {
         warn!(
-            symbol, timeframe, warmup_bars,
+            symbol,
+            timeframe,
+            warmup_bars,
             "No historical candles in DB — engine starts cold. \
              Run `trading-daemon seed` to populate historical data."
         );
-        return Ok(WarmupResult { loaded: 0, high_water_ts: None });
+        return Ok(WarmupResult {
+            loaded: 0,
+            high_water_ts: None,
+        });
     }
 
     if loaded < warmup_bars {
         warn!(
-            symbol, timeframe,
+            symbol,
+            timeframe,
             available = loaded,
             requested = warmup_bars,
             "Fewer candles than requested — engine partially warmed. \
@@ -64,5 +64,8 @@ pub fn warmup_engine(
         .map_err(|e| anyhow::anyhow!("Engine warmup failed: {e}"))?;
 
     info!(symbol, timeframe, loaded, high_water_ts, "Engine warmed up");
-    Ok(WarmupResult { loaded, high_water_ts })
+    Ok(WarmupResult {
+        loaded,
+        high_water_ts,
+    })
 }

@@ -27,63 +27,65 @@ fn integration_enabled() -> bool {
     std::env::var("SPACETIMEDB_INTEGRATION").as_deref() == Ok("1")
 }
 
-const STRAT:  &str = "__daemon_it_strat__";
+const STRAT: &str = "__daemon_it_strat__";
 const SYMBOL: &str = "__DAEMON_IT__";
 
 fn make_candle(ts: i64, close: f64) -> Candle {
     Candle {
         timestamp: ts,
-        symbol:    SYMBOL.into(),
-        open:      close - 0.5,
-        high:      close + 1.0,
-        low:       close - 1.0,
+        symbol: SYMBOL.into(),
+        open: close - 0.5,
+        high: close + 1.0,
+        low: close - 1.0,
         close,
-        volume:    1000.0,
+        volume: 1000.0,
         timeframe: "1d".into(),
     }
 }
 
 fn buy(reason: &str) -> TradeDecision {
     TradeDecision {
-        signal:      Signal::Buy,
-        size:        1.0,
-        stop_loss:   None,
+        signal: Signal::Buy,
+        size: 1.0,
+        stop_loss: None,
         take_profit: None,
-        reason:      Some(reason.into()),
+        reason: Some(reason.into()),
     }
 }
 
 fn sell(reason: &str) -> TradeDecision {
     TradeDecision {
-        signal:      Signal::Sell,
-        size:        0.0,
-        stop_loss:   None,
+        signal: Signal::Sell,
+        size: 0.0,
+        stop_loss: None,
         take_profit: None,
-        reason:      Some(reason.into()),
+        reason: Some(reason.into()),
     }
 }
 
 fn short(reason: &str) -> TradeDecision {
     TradeDecision {
-        signal:      Signal::Short,
-        size:        1.0,
-        stop_loss:   None,
+        signal: Signal::Short,
+        size: 1.0,
+        stop_loss: None,
         take_profit: None,
-        reason:      Some(reason.into()),
+        reason: Some(reason.into()),
     }
 }
 
 fn cover(reason: &str) -> TradeDecision {
     TradeDecision {
-        signal:      Signal::Cover,
-        size:        0.0,
-        stop_loss:   None,
+        signal: Signal::Cover,
+        size: 0.0,
+        stop_loss: None,
         take_profit: None,
-        reason:      Some(reason.into()),
+        reason: Some(reason.into()),
     }
 }
 
-fn hold() -> TradeDecision { TradeDecision::hold() }
+fn hold() -> TradeDecision {
+    TradeDecision::hold()
+}
 
 /// Teardown: nuke any leftover state for our test strategy/symbol.
 fn teardown(conn: &db_layer::DbConnection) {
@@ -117,12 +119,18 @@ async fn paper_executor_full_buy_sell_cycle() {
         10_000.0,
     );
 
-    assert!(executor.position().is_none(), "fresh executor should be flat");
+    assert!(
+        executor.position().is_none(),
+        "fresh executor should be flat"
+    );
     let start_balance = executor.balance();
 
     // ── Candle 1: BUY @ 100 ───────────────────────────────────────────────────
     let c1 = make_candle(1_700_000_000_000, 100.0);
-    executor.handle(&c1, &buy("open")).await.expect("BUY failed");
+    executor
+        .handle(&c1, &buy("open"))
+        .await
+        .expect("BUY failed");
 
     // Position must be set locally.
     let pos = executor.position().cloned().expect("position after BUY");
@@ -130,21 +138,30 @@ async fn paper_executor_full_buy_sell_cycle() {
     assert!(pos.size > 0.0);
 
     // §1.2 proof: live_positions row must be visible in cache.
-    let db_pos = get_open_position(&conn, STRAT, SYMBOL)
-        .expect("live_positions row should exist after BUY");
+    let db_pos =
+        get_open_position(&conn, STRAT, SYMBOL).expect("live_positions row should exist after BUY");
     assert_eq!(db_pos.side, "long");
     assert!((db_pos.entry_price - 100.0).abs() < f64::EPSILON);
 
     // ── Candle 2: HOLD @ 105 (no-op) ──────────────────────────────────────────
     let c2 = make_candle(1_700_086_400_000, 105.0);
     executor.handle(&c2, &hold()).await.expect("HOLD failed");
-    assert!(executor.position().is_some(), "position should survive HOLD");
+    assert!(
+        executor.position().is_some(),
+        "position should survive HOLD"
+    );
 
     // ── Candle 3: SELL @ 110 ──────────────────────────────────────────────────
     let c3 = make_candle(1_700_172_800_000, 110.0);
-    executor.handle(&c3, &sell("close")).await.expect("SELL failed");
+    executor
+        .handle(&c3, &sell("close"))
+        .await
+        .expect("SELL failed");
 
-    assert!(executor.position().is_none(), "position should be cleared after SELL");
+    assert!(
+        executor.position().is_none(),
+        "position should be cleared after SELL"
+    );
 
     // live_positions must be empty — proves §1.2 close path did its job.
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -162,7 +179,10 @@ async fn paper_executor_full_buy_sell_cycle() {
     );
 
     let trades = get_trades(&conn, STRAT, 10);
-    let t = trades.iter().find(|t| t.symbol == SYMBOL).expect("trade for test symbol");
+    let t = trades
+        .iter()
+        .find(|t| t.symbol == SYMBOL)
+        .expect("trade for test symbol");
     let expected_pnl = (110.0 - 100.0) * pos.size;
     assert!(
         (t.pnl - expected_pnl).abs() < 1e-6,
@@ -187,7 +207,9 @@ async fn paper_executor_full_buy_sell_cycle() {
 /// the supplied mark price and records a single `live_trades` row.
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_liquidation_closes_open_position() {
-    if !integration_enabled() { return; }
+    if !integration_enabled() {
+        return;
+    }
 
     let client = SpacetimeClient::connect("http://127.0.0.1:3000", "trading-bot")
         .expect("Failed to connect to SpacetimeDB");
@@ -196,22 +218,27 @@ async fn shutdown_liquidation_closes_open_position() {
     teardown(&conn);
     let trades_before = count_trades(&conn, STRAT, SYMBOL);
 
-    let mut executor = PaperExecutor::new(
-        conn.clone(),
-        STRAT.to_string(),
-        SYMBOL.to_string(),
-        5_000.0,
-    );
+    let mut executor =
+        PaperExecutor::new(conn.clone(), STRAT.to_string(), SYMBOL.to_string(), 5_000.0);
 
     // Open a position, then liquidate at a different price (simulating shutdown).
     let entry = make_candle(1_700_000_000_000, 80.0);
-    executor.handle(&entry, &buy("pre-shutdown")).await.expect("BUY");
+    executor
+        .handle(&entry, &buy("pre-shutdown"))
+        .await
+        .expect("BUY");
     assert!(executor.position().is_some());
 
     let mark = make_candle(1_700_086_400_000, 88.0);
-    executor.liquidate(&mark, "shutdown liquidation").await.expect("liquidate");
+    executor
+        .liquidate(&mark, "shutdown liquidation")
+        .await
+        .expect("liquidate");
 
-    assert!(executor.position().is_none(), "position must be flat after liquidate");
+    assert!(
+        executor.position().is_none(),
+        "position must be flat after liquidate"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert!(
@@ -225,7 +252,10 @@ async fn shutdown_liquidation_closes_open_position() {
     );
 
     // Idempotency: calling liquidate again on a flat executor is a no-op.
-    executor.liquidate(&mark, "second call").await.expect("noop liquidate");
+    executor
+        .liquidate(&mark, "second call")
+        .await
+        .expect("noop liquidate");
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert_eq!(
         count_trades(&conn, STRAT, SYMBOL),
@@ -240,15 +270,17 @@ async fn shutdown_liquidation_closes_open_position() {
 /// `(entry - exit) * size` (price drop → profit).
 #[tokio::test(flavor = "current_thread")]
 async fn short_cover_cycle_profits_on_price_drop() {
-    if !integration_enabled() { return; }
+    if !integration_enabled() {
+        return;
+    }
 
     let client = SpacetimeClient::connect("http://127.0.0.1:3000", "trading-bot")
         .expect("Failed to connect to SpacetimeDB");
     let conn: Arc<db_layer::DbConnection> = client.conn.clone();
 
     teardown(&conn);
-    let trades_before  = count_trades(&conn, STRAT, SYMBOL);
-    let start_balance  = 4_000.0;
+    let trades_before = count_trades(&conn, STRAT, SYMBOL);
+    let start_balance = 4_000.0;
 
     let mut executor = PaperExecutor::new(
         conn.clone(),
@@ -259,7 +291,10 @@ async fn short_cover_cycle_profits_on_price_drop() {
 
     // Enter short at 200, cover at 180 → profit.
     let entry = make_candle(1_700_000_000_000, 200.0);
-    executor.handle(&entry, &short("short entry")).await.expect("SHORT");
+    executor
+        .handle(&entry, &short("short entry"))
+        .await
+        .expect("SHORT");
 
     let pos = executor.position().cloned().expect("position after SHORT");
     assert_eq!(pos.side, shared::PositionSide::Short);
@@ -270,28 +305,37 @@ async fn short_cover_cycle_profits_on_price_drop() {
 
     // A stray SELL while short must be a no-op.
     let mid = make_candle(1_700_086_400_000, 190.0);
-    executor.handle(&mid, &sell("stray sell")).await.expect("SELL no-op");
-    assert!(executor.position().is_some(), "SELL must not close a short position");
+    executor
+        .handle(&mid, &sell("stray sell"))
+        .await
+        .expect("SELL no-op");
+    assert!(
+        executor.position().is_some(),
+        "SELL must not close a short position"
+    );
 
     let exit = make_candle(1_700_172_800_000, 180.0);
-    executor.handle(&exit, &cover("cover")).await.expect("COVER");
+    executor
+        .handle(&exit, &cover("cover"))
+        .await
+        .expect("COVER");
     assert!(executor.position().is_none(), "COVER must flatten");
 
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert!(get_open_position(&conn, STRAT, SYMBOL).is_none());
 
     let trades = get_trades(&conn, STRAT, 10);
-    let t = trades.iter().find(|t| t.symbol == SYMBOL && t.side == "short")
+    let t = trades
+        .iter()
+        .find(|t| t.symbol == SYMBOL && t.side == "short")
         .expect("short trade row");
     let expected_pnl = (200.0 - 180.0) * pos.size;
     assert!(
         (t.pnl - expected_pnl).abs() < 1e-6,
-        "short pnl mismatch: got {}, expected {expected_pnl}", t.pnl,
+        "short pnl mismatch: got {}, expected {expected_pnl}",
+        t.pnl,
     );
-    assert_eq!(
-        count_trades(&conn, STRAT, SYMBOL),
-        trades_before + 1,
-    );
+    assert_eq!(count_trades(&conn, STRAT, SYMBOL), trades_before + 1,);
     assert!(
         (executor.balance() - (start_balance + expected_pnl)).abs() < 1e-6,
         "balance not updated on cover",
@@ -304,7 +348,9 @@ async fn short_cover_cycle_profits_on_price_drop() {
 /// captured a non-`None` position id (via `wait_for_open_position` polling).
 #[tokio::test(flavor = "current_thread")]
 async fn open_position_id_is_captured_before_close() {
-    if !integration_enabled() { return; }
+    if !integration_enabled() {
+        return;
+    }
 
     let client = SpacetimeClient::connect("http://127.0.0.1:3000", "trading-bot")
         .expect("Failed to connect to SpacetimeDB");
@@ -312,12 +358,8 @@ async fn open_position_id_is_captured_before_close() {
 
     teardown(&conn);
 
-    let mut executor = PaperExecutor::new(
-        conn.clone(),
-        STRAT.to_string(),
-        SYMBOL.to_string(),
-        1_000.0,
-    );
+    let mut executor =
+        PaperExecutor::new(conn.clone(), STRAT.to_string(), SYMBOL.to_string(), 1_000.0);
 
     let c = make_candle(1_700_000_000_000, 50.0);
     executor.handle(&c, &buy("race probe")).await.expect("BUY");
@@ -329,7 +371,10 @@ async fn open_position_id_is_captured_before_close() {
 
     // Close it and confirm no orphan.
     let c2 = make_candle(1_700_086_400_000, 55.0);
-    executor.handle(&c2, &sell("race probe close")).await.expect("SELL");
+    executor
+        .handle(&c2, &sell("race probe close"))
+        .await
+        .expect("SELL");
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert!(
         get_open_position(&conn, STRAT, SYMBOL).is_none(),

@@ -25,7 +25,7 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            url:    default_db_url(),
+            url: default_db_url(),
             module: default_db_module(),
         }
     }
@@ -40,7 +40,9 @@ pub struct SeedConfig {
 
 impl Default for SeedConfig {
     fn default() -> Self {
-        Self { from: default_seed_from() }
+        Self {
+            from: default_seed_from(),
+        }
     }
 }
 
@@ -69,11 +71,21 @@ pub struct AssetConfig {
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 
-fn default_db_url()     -> String { "http://127.0.0.1:3000".into() }
-fn default_db_module()  -> String { "trading-bot".into() }
-fn default_seed_from()  -> String { "2020-01-01".into() }
-fn default_balance()    -> f64    { 10_000.0 }
-fn default_liquidate()  -> bool   { true }
+fn default_db_url() -> String {
+    "http://127.0.0.1:3000".into()
+}
+fn default_db_module() -> String {
+    "trading-bot".into()
+}
+fn default_seed_from() -> String {
+    "2020-01-01".into()
+}
+fn default_balance() -> f64 {
+    10_000.0
+}
+fn default_liquidate() -> bool {
+    true
+}
 
 // ── Loader ───────────────────────────────────────────────────────────────────
 

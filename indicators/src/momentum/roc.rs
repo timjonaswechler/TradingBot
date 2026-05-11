@@ -8,7 +8,7 @@ pub fn roc(closes: &[f64], period: usize) -> Option<f64> {
     if period == 0 || closes.len() <= period {
         return None;
     }
-    let current  = *closes.last()?;
+    let current = *closes.last()?;
     let previous = closes[closes.len() - 1 - period];
     if previous.abs() < 1e-12 {
         return None; // division by zero guard

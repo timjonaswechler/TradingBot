@@ -40,11 +40,7 @@ impl SpacetimeClient {
             .with_uri(uri)
             .with_database_name(&db_name)
             // Load a saved token if available so we reconnect as the same identity.
-            .with_token(
-                credentials::File::new(&db_name)
-                    .load()
-                    .unwrap_or_default(),
-            )
+            .with_token(credentials::File::new(&db_name).load().unwrap_or_default())
             .on_connect(move |ctx, identity, token| {
                 info!("Connected to SpacetimeDB as {:?}", identity);
 
@@ -89,7 +85,9 @@ impl SpacetimeClient {
             .map_err(|_| anyhow::anyhow!("Subscription failed before on_applied"))?;
 
         info!("SpacetimeDB cache ready.");
-        Ok(Self { conn: Arc::new(conn) })
+        Ok(Self {
+            conn: Arc::new(conn),
+        })
     }
 
     /// Build a `SpacetimeClient` from environment variables.
@@ -97,10 +95,9 @@ impl SpacetimeClient {
     /// - `SPACETIMEDB_URL`    (default: `http://localhost:3000`)
     /// - `SPACETIMEDB_MODULE` (default: `trading-bot`)
     pub fn from_env() -> anyhow::Result<Self> {
-        let uri = std::env::var("SPACETIMEDB_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:3000".into());
-        let module = std::env::var("SPACETIMEDB_MODULE")
-            .unwrap_or_else(|_| "trading-bot".into());
+        let uri =
+            std::env::var("SPACETIMEDB_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
+        let module = std::env::var("SPACETIMEDB_MODULE").unwrap_or_else(|_| "trading-bot".into());
         Self::connect(&uri, &module)
     }
 }

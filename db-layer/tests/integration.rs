@@ -10,11 +10,9 @@
 /// SPACETIMEDB_INTEGRATION=1 cargo test -p db-layer --test integration -- --nocapture
 /// ```
 use db_layer::{
-    close_position, count_candles,
-    delete_candles_by_symbol, delete_trades_by_strategy,
-    get_candles, get_candles_before, get_open_position, get_trades,
-    insert_candle, insert_trade, open_position,
-    SpacetimeClient,
+    close_position, count_candles, delete_candles_by_symbol, delete_trades_by_strategy,
+    get_candles, get_candles_before, get_open_position, get_trades, insert_candle, insert_trade,
+    open_position, SpacetimeClient,
 };
 use shared::Candle;
 
@@ -28,20 +26,20 @@ fn connect() -> SpacetimeClient {
 }
 
 // Unique prefixes so tests don't interfere with real data.
-const SYM:   &str = "__TEST_CANDLE__";
-const TF:    &str = "1d";
-const PROV:  &str = "__test__";
+const SYM: &str = "__TEST_CANDLE__";
+const TF: &str = "1d";
+const PROV: &str = "__test__";
 const STRAT: &str = "__test_strat__";
 
 fn make_candle(ts: i64, close: f64) -> Candle {
     Candle {
         timestamp: ts,
-        symbol:    SYM.into(),
-        open:      close - 0.5,
-        high:      close + 1.0,
-        low:       close - 1.0,
+        symbol: SYM.into(),
+        open: close - 0.5,
+        high: close + 1.0,
+        low: close - 1.0,
         close,
-        volume:    1000.0,
+        volume: 1000.0,
         timeframe: TF.into(),
     }
 }
@@ -55,8 +53,8 @@ fn test_insert_and_fetch_candles() {
         return;
     }
 
-    let client  = connect();
-    let conn    = &*client.conn;
+    let client = connect();
+    let conn = &*client.conn;
     let ts_base = 1_700_000_000_000_i64;
 
     // Insert 5 candles.
@@ -77,7 +75,10 @@ fn test_insert_and_fetch_candles() {
 
     let candles = get_candles(conn, SYM, TF, 3);
     assert_eq!(candles.len(), 3);
-    assert!(candles[0].timestamp <= candles[1].timestamp, "not chronological");
+    assert!(
+        candles[0].timestamp <= candles[1].timestamp,
+        "not chronological"
+    );
 
     // ── teardown ──
     delete_candles_by_symbol(conn, SYM, PROV).unwrap();
@@ -87,12 +88,14 @@ fn test_insert_and_fetch_candles() {
 
 #[test]
 fn test_get_candles_before() {
-    if !integration_enabled() { return; }
+    if !integration_enabled() {
+        return;
+    }
 
-    let client  = connect();
-    let conn    = &*client.conn;
+    let client = connect();
+    let conn = &*client.conn;
     let ts_base = 1_700_000_000_000_i64;
-    let cutoff  = ts_base + 3 * 86_400_000;
+    let cutoff = ts_base + 3 * 86_400_000;
 
     for i in 0..5_i64 {
         let c = make_candle(ts_base + i * 86_400_000, 100.0 + i as f64);
@@ -117,20 +120,30 @@ fn test_get_candles_before() {
 
 #[test]
 fn test_position_lifecycle() {
-    if !integration_enabled() { return; }
+    if !integration_enabled() {
+        return;
+    }
 
     let client = connect();
-    let conn   = &*client.conn;
+    let conn = &*client.conn;
     let symbol = "__TEST_POS__";
 
-    open_position(conn, STRAT, symbol, "long",
-        100.0, 1.0, 95.0, 115.0,
-        1_700_000_000_000, "integration test",
-    ).unwrap();
+    open_position(
+        conn,
+        STRAT,
+        symbol,
+        "long",
+        100.0,
+        1.0,
+        95.0,
+        115.0,
+        1_700_000_000_000,
+        "integration test",
+    )
+    .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    let pos = get_open_position(conn, STRAT, symbol)
-        .expect("position should exist");
+    let pos = get_open_position(conn, STRAT, symbol).expect("position should exist");
     assert_eq!(pos.symbol, symbol);
     assert_eq!(pos.side, "long");
     assert!((pos.entry_price - 100.0).abs() < f64::EPSILON);
@@ -149,16 +162,29 @@ fn test_position_lifecycle() {
 
 #[test]
 fn test_insert_and_fetch_trade() {
-    if !integration_enabled() { return; }
+    if !integration_enabled() {
+        return;
+    }
 
     let client = connect();
-    let conn   = &*client.conn;
+    let conn = &*client.conn;
 
-    insert_trade(conn, STRAT, "__TEST_TRADE__", "long",
-        100.0, 110.0, 1.0, 10.0, "closed",
-        1_700_000_000_000, 1_700_086_400_000,
-        "integration buy", "integration sell",
-    ).unwrap();
+    insert_trade(
+        conn,
+        STRAT,
+        "__TEST_TRADE__",
+        "long",
+        100.0,
+        110.0,
+        1.0,
+        10.0,
+        "closed",
+        1_700_000_000_000,
+        1_700_086_400_000,
+        "integration buy",
+        "integration sell",
+    )
+    .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let trades = get_trades(conn, STRAT, 10);
@@ -168,7 +194,10 @@ fn test_insert_and_fetch_trade() {
     // ── teardown ──
     delete_trades_by_strategy(conn, STRAT).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(get_trades(conn, STRAT, 10).is_empty(), "teardown left trades");
+    assert!(
+        get_trades(conn, STRAT, 10).is_empty(),
+        "teardown left trades"
+    );
 }
 
 // ── Unit tests (no DB required) ───────────────────────────────────────────────
@@ -186,17 +215,17 @@ fn canonical_id_is_deterministic() {
 fn db_candle_converts_to_shared() {
     use db_layer::{db_candle_to_shared, DbCandle};
     let db = DbCandle {
-        id:           1,
+        id: 1,
         canonical_id: "AAPL_1d_1700000000000".into(),
-        timestamp:    1_700_000_000_000,
-        symbol:       "AAPL".into(),
-        open:         149.5,
-        high:         151.0,
-        low:          149.0,
-        close:        150.0,
-        volume:       1_000_000.0,
-        timeframe:    "1d".into(),
-        provider:     "yahoo".into(),
+        timestamp: 1_700_000_000_000,
+        symbol: "AAPL".into(),
+        open: 149.5,
+        high: 151.0,
+        low: 149.0,
+        close: 150.0,
+        volume: 1_000_000.0,
+        timeframe: "1d".into(),
+        provider: "yahoo".into(),
     };
     let shared = db_candle_to_shared(db);
     assert_eq!(shared.symbol, "AAPL");
@@ -209,15 +238,15 @@ fn db_position_converts_to_shared() {
     use shared::PositionSide;
 
     let db = LivePosition {
-        id:           1,
-        strategy:     "sma_cross".into(),
-        symbol:       "AAPL".into(),
-        side:         "long".into(),
-        entry_price:  100.0,
-        size:         5.0,
-        stop_loss:    95.0,
-        take_profit:  115.0,
-        entry_time:   1_700_000_000_000,
+        id: 1,
+        strategy: "sma_cross".into(),
+        symbol: "AAPL".into(),
+        side: "long".into(),
+        entry_price: 100.0,
+        size: 5.0,
+        stop_loss: 95.0,
+        take_profit: 115.0,
+        entry_time: 1_700_000_000_000,
         entry_reason: "test".into(),
     };
     let (id, strategy, pos) = db_position_to_shared(db);

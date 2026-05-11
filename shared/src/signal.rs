@@ -16,9 +16,9 @@ pub enum Signal {
 impl std::fmt::Display for Signal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Signal::Buy   => write!(f, "BUY"),
-            Signal::Sell  => write!(f, "SELL"),
-            Signal::Hold  => write!(f, "HOLD"),
+            Signal::Buy => write!(f, "BUY"),
+            Signal::Sell => write!(f, "SELL"),
+            Signal::Hold => write!(f, "HOLD"),
             Signal::Short => write!(f, "SHORT"),
             Signal::Cover => write!(f, "COVER"),
         }
@@ -30,12 +30,12 @@ impl std::str::FromStr for Signal {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_uppercase().as_str() {
-            "BUY"   => Ok(Signal::Buy),
-            "SELL"  => Ok(Signal::Sell),
-            "HOLD"  => Ok(Signal::Hold),
+            "BUY" => Ok(Signal::Buy),
+            "SELL" => Ok(Signal::Sell),
+            "HOLD" => Ok(Signal::Hold),
             "SHORT" => Ok(Signal::Short),
             "COVER" => Ok(Signal::Cover),
-            other   => Err(format!("unknown signal: {other}")),
+            other => Err(format!("unknown signal: {other}")),
         }
     }
 }
@@ -64,11 +64,11 @@ impl TradeDecision {
     /// Convenience constructor for a `HOLD` with no extra metadata.
     pub fn hold() -> Self {
         Self {
-            signal:      Signal::Hold,
-            size:        0.0,
-            stop_loss:   None,
+            signal: Signal::Hold,
+            size: 0.0,
+            stop_loss: None,
             take_profit: None,
-            reason:      None,
+            reason: None,
         }
     }
 }
@@ -80,7 +80,13 @@ mod tests {
 
     #[test]
     fn round_trip_display_parse() {
-        for s in [Signal::Buy, Signal::Sell, Signal::Hold, Signal::Short, Signal::Cover] {
+        for s in [
+            Signal::Buy,
+            Signal::Sell,
+            Signal::Hold,
+            Signal::Short,
+            Signal::Cover,
+        ] {
             let parsed = Signal::from_str(&s.to_string()).unwrap();
             assert_eq!(parsed, s);
         }

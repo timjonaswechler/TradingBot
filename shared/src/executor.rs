@@ -27,11 +27,11 @@ pub enum Action {
 /// - Everything else (HOLD, SELL while flat, BUY while short, …) → `Nothing`.
 pub fn plan_action(signal: &Signal, current_side: Option<PositionSide>) -> Action {
     match (signal, current_side) {
-        (Signal::Buy,   None)                       => Action::OpenLong,
-        (Signal::Short, None)                       => Action::OpenShort,
-        (Signal::Sell,  Some(PositionSide::Long))   => Action::Close,
-        (Signal::Cover, Some(PositionSide::Short))  => Action::Close,
-        _                                           => Action::Nothing,
+        (Signal::Buy, None) => Action::OpenLong,
+        (Signal::Short, None) => Action::OpenShort,
+        (Signal::Sell, Some(PositionSide::Long)) => Action::Close,
+        (Signal::Cover, Some(PositionSide::Short)) => Action::Close,
+        _ => Action::Nothing,
     }
 }
 
@@ -41,8 +41,8 @@ pub fn plan_action(signal: &Signal, current_side: Option<PositionSide>) -> Actio
 /// - Short: `(entry - exit) * size`
 pub fn realized_pnl(side: PositionSide, entry: f64, exit: f64, size: f64) -> f64 {
     match side {
-        PositionSide::Long  => (exit  - entry) * size,
-        PositionSide::Short => (entry - exit)  * size,
+        PositionSide::Long => (exit - entry) * size,
+        PositionSide::Short => (entry - exit) * size,
     }
 }
 
@@ -79,26 +79,44 @@ mod tests {
     #[test]
     fn mismatched_signals_do_nothing() {
         // BUY while already long, SELL while flat, COVER while long, etc.
-        assert_eq!(plan_action(&Signal::Buy,   Some(PositionSide::Long)),  Action::Nothing);
-        assert_eq!(plan_action(&Signal::Buy,   Some(PositionSide::Short)), Action::Nothing);
-        assert_eq!(plan_action(&Signal::Sell,  None),                      Action::Nothing);
-        assert_eq!(plan_action(&Signal::Sell,  Some(PositionSide::Short)), Action::Nothing);
-        assert_eq!(plan_action(&Signal::Short, Some(PositionSide::Long)),  Action::Nothing);
-        assert_eq!(plan_action(&Signal::Cover, None),                      Action::Nothing);
-        assert_eq!(plan_action(&Signal::Cover, Some(PositionSide::Long)),  Action::Nothing);
-        assert_eq!(plan_action(&Signal::Hold,  None),                      Action::Nothing);
-        assert_eq!(plan_action(&Signal::Hold,  Some(PositionSide::Long)),  Action::Nothing);
+        assert_eq!(
+            plan_action(&Signal::Buy, Some(PositionSide::Long)),
+            Action::Nothing
+        );
+        assert_eq!(
+            plan_action(&Signal::Buy, Some(PositionSide::Short)),
+            Action::Nothing
+        );
+        assert_eq!(plan_action(&Signal::Sell, None), Action::Nothing);
+        assert_eq!(
+            plan_action(&Signal::Sell, Some(PositionSide::Short)),
+            Action::Nothing
+        );
+        assert_eq!(
+            plan_action(&Signal::Short, Some(PositionSide::Long)),
+            Action::Nothing
+        );
+        assert_eq!(plan_action(&Signal::Cover, None), Action::Nothing);
+        assert_eq!(
+            plan_action(&Signal::Cover, Some(PositionSide::Long)),
+            Action::Nothing
+        );
+        assert_eq!(plan_action(&Signal::Hold, None), Action::Nothing);
+        assert_eq!(
+            plan_action(&Signal::Hold, Some(PositionSide::Long)),
+            Action::Nothing
+        );
     }
 
     #[test]
     fn long_pnl_signs() {
-        assert_eq!(realized_pnl(PositionSide::Long, 100.0, 110.0, 2.0),  20.0);
-        assert_eq!(realized_pnl(PositionSide::Long, 100.0,  90.0, 2.0), -20.0);
+        assert_eq!(realized_pnl(PositionSide::Long, 100.0, 110.0, 2.0), 20.0);
+        assert_eq!(realized_pnl(PositionSide::Long, 100.0, 90.0, 2.0), -20.0);
     }
 
     #[test]
     fn short_pnl_signs() {
-        assert_eq!(realized_pnl(PositionSide::Short, 100.0,  90.0, 2.0),  20.0);
+        assert_eq!(realized_pnl(PositionSide::Short, 100.0, 90.0, 2.0), 20.0);
         assert_eq!(realized_pnl(PositionSide::Short, 100.0, 110.0, 2.0), -20.0);
     }
 }

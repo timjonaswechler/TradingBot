@@ -81,7 +81,7 @@ mod tests {
         let c = [1.0, 2.0, 3.0, 4.0, 5.0];
         // EMA(3) without last bar should equal EMA(3) on c[..4]
         let prev = ema(&c[..4], 3).unwrap();
-        let off  = ema_at(&c, 3, 1).unwrap();
+        let off = ema_at(&c, 3, 1).unwrap();
         assert!((prev - off).abs() < 1e-10);
     }
 }

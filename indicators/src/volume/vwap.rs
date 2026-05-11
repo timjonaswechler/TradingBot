@@ -23,7 +23,16 @@ mod tests {
     use super::*;
 
     fn candle(h: f64, l: f64, c: f64, v: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: l, high: h, low: l, close: c, volume: v, timeframe: "1d".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: l,
+            high: h,
+            low: l,
+            close: c,
+            volume: v,
+            timeframe: "1d".into(),
+        }
     }
 
     #[test]
@@ -47,10 +56,7 @@ mod tests {
     fn higher_volume_bar_weights_more() {
         // Bar1: TP=1.0, vol=1  Bar2: TP=3.0, vol=3
         // VWAP = (1*1 + 3*3)/(1+3) = 10/4 = 2.5
-        let c = vec![
-            candle(1.5, 0.5, 1.0, 1.0),
-            candle(3.5, 2.5, 3.0, 3.0),
-        ];
+        let c = vec![candle(1.5, 0.5, 1.0, 1.0), candle(3.5, 2.5, 3.0, 3.0)];
         let r = vwap(&c).unwrap();
         assert!((r - 2.5).abs() < 1e-10);
     }

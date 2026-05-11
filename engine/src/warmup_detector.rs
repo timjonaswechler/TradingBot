@@ -11,7 +11,7 @@
 ///
 /// Falls back to `DEFAULT_WARMUP` (200) when no indicators are found or
 /// the warmup cannot be resolved.
-use rhai::{AST, Expr, FnCallExpr, Scope};
+use rhai::{Expr, FnCallExpr, Scope, AST};
 
 /// Safe default: covers EMA(200), Ichimoku(52), MACD(26), etc.
 pub const DEFAULT_WARMUP: usize = 200;
@@ -37,7 +37,10 @@ pub fn detect_warmup_period(ast: &AST, scope: &Scope) -> usize {
         if let Expr::FnCall(call, _) = expr {
             // Only care about qualified calls: indicators::xxx(...)
             let is_indicators = !call.namespace.is_empty()
-                && call.namespace.path.first()
+                && call
+                    .namespace
+                    .path
+                    .first()
                     .map(|seg| seg.name.as_str() == "indicators")
                     .unwrap_or(false);
 
@@ -65,15 +68,15 @@ pub fn detect_warmup_period(ast: &AST, scope: &Scope) -> usize {
 
 fn warmup_hint_for_call(call: &FnCallExpr, scope: &Scope) -> Option<usize> {
     fn arg(call: &FnCallExpr, index: usize, scope: &Scope) -> Option<usize> {
-        call.args.get(index).and_then(|expr| resolve_period(expr, scope))
+        call.args
+            .get(index)
+            .and_then(|expr| resolve_period(expr, scope))
     }
 
     match call.name.as_str() {
         // Single-period indicators
-        "sma" | "ema" | "dema" | "tema" | "adx" | "rsi" | "cci" | "stochastic"
-        | "williams_r" | "roc" | "atr" | "mfi" | "slope" | "bollinger" | "keltner" => {
-            arg(call, 1, scope)
-        }
+        "sma" | "ema" | "dema" | "tema" | "adx" | "rsi" | "cci" | "stochastic" | "williams_r"
+        | "roc" | "atr" | "mfi" | "slope" | "bollinger" | "keltner" => arg(call, 1, scope),
 
         // Multi-period indicator
         "macd" => [1usize, 2, 3]
@@ -87,7 +90,12 @@ fn warmup_hint_for_call(call: &FnCallExpr, scope: &Scope) -> Option<usize> {
         "vwap" | "volume_profile" | "pivot_points" | "fibonacci" => Some(0),
 
         // Conservative fallback for future indicators: scan integer args after `candles`.
-        _ => call.args.iter().skip(1).filter_map(|expr| resolve_period(expr, scope)).max(),
+        _ => call
+            .args
+            .iter()
+            .skip(1)
+            .filter_map(|expr| resolve_period(expr, scope))
+            .max(),
     }
 }
 
@@ -112,7 +120,8 @@ fn resolve_period(expr: &Expr, scope: &Scope) -> Option<usize> {
         // Variable tuple: (optional_index, name, namespace, hash)
         Expr::Variable(info, _, _) => {
             let var_name = &info.1;
-            scope.get_value::<i64>(var_name.as_str())
+            scope
+                .get_value::<i64>(var_name.as_str())
                 .filter(|&v| v > 0)
                 .map(|v| v as usize)
         }
@@ -126,8 +135,8 @@ fn resolve_period(expr: &Expr, scope: &Scope) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rhai::Engine as RhaiEngine;
     use crate::{bindings::register_all, candle_wrapper::register_types};
+    use rhai::Engine as RhaiEngine;
 
     fn compile(src: &str) -> (AST, Scope<'static>) {
         let mut engine = RhaiEngine::new();

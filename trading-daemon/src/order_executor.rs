@@ -7,8 +7,11 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use db_layer::{close_position, insert_trade, open_position, get_open_position, DbConnection};
-use shared::{plan_action, realized_pnl as compute_realized_pnl, Action, Candle, Position, PositionSide, TradeDecision};
+use db_layer::{close_position, get_open_position, insert_trade, open_position, DbConnection};
+use shared::{
+    plan_action, realized_pnl as compute_realized_pnl, Action, Candle, Position, PositionSide,
+    TradeDecision,
+};
 
 /// How long to wait for an `open_position` reducer's row to propagate into the
 /// local SDK cache before giving up. Reducers typically land in < 50 ms; we
@@ -18,11 +21,7 @@ const OPEN_POSITION_POLL_INTERVAL: std::time::Duration = std::time::Duration::fr
 
 /// Block until an open position for `(strategy, symbol)` is visible in the
 /// local cache, returning its `id`. Returns `None` on timeout.
-fn wait_for_open_position(
-    conn: &DbConnection,
-    strategy: &str,
-    symbol: &str,
-) -> Option<u64> {
+fn wait_for_open_position(conn: &DbConnection, strategy: &str, symbol: &str) -> Option<u64> {
     let deadline = std::time::Instant::now() + OPEN_POSITION_POLL_TIMEOUT;
     loop {
         if let Some(p) = get_open_position(conn, strategy, symbol) {
@@ -37,7 +36,7 @@ fn wait_for_open_position(
 
 fn side_str(side: PositionSide) -> &'static str {
     match side {
-        PositionSide::Long  => "long",
+        PositionSide::Long => "long",
         PositionSide::Short => "short",
     }
 }
@@ -56,32 +55,26 @@ pub trait OrderExecutor: Send + Sync {
 /// Simulates trades without a real broker.
 /// Persists open positions and completed trades to SpacetimeDB.
 pub struct PaperExecutor {
-    balance:     f64,
-    position:    Option<Position>,
+    balance: f64,
+    position: Option<Position>,
     position_id: Option<u64>,
-    conn:        Arc<DbConnection>,
-    strategy:    String,
-    symbol:      String,
+    conn: Arc<DbConnection>,
+    strategy: String,
+    symbol: String,
 }
 
 impl PaperExecutor {
     /// Create a new paper executor and restore any open position from SpacetimeDB.
-    pub fn new(
-        conn: Arc<DbConnection>,
-        strategy: String,
-        symbol: String,
-        balance: f64,
-    ) -> Self {
-        let (position, position_id) =
-            match get_open_position(&conn, &strategy, &symbol) {
-                Some(db_pos) => {
-                    let id = db_pos.id;
-                    let (_, _, pos) = db_layer::db_position_to_shared(db_pos);
-                    info!(strategy, symbol, side = ?pos.side, "Restored open position from DB");
-                    (Some(pos), Some(id))
-                }
-                None => (None, None),
-            };
+    pub fn new(conn: Arc<DbConnection>, strategy: String, symbol: String, balance: f64) -> Self {
+        let (position, position_id) = match get_open_position(&conn, &strategy, &symbol) {
+            Some(db_pos) => {
+                let id = db_pos.id;
+                let (_, _, pos) = db_layer::db_position_to_shared(db_pos);
+                info!(strategy, symbol, side = ?pos.side, "Restored open position from DB");
+                (Some(pos), Some(id))
+            }
+            None => (None, None),
+        };
 
         Self {
             balance,
@@ -108,27 +101,33 @@ impl PaperExecutor {
             return Ok(());
         }
 
-        let size         = self.balance * decision.size / candle.close;
-        let entry_price  = candle.close;
-        let stop_loss    = decision.stop_loss.unwrap_or(0.0);
-        let take_profit  = decision.take_profit.unwrap_or(0.0);
+        let size = self.balance * decision.size / candle.close;
+        let entry_price = candle.close;
+        let stop_loss = decision.stop_loss.unwrap_or(0.0);
+        let take_profit = decision.take_profit.unwrap_or(0.0);
         let entry_reason = decision.reason.clone().unwrap_or_default();
-        let entry_time   = candle.timestamp;
-        let side_s       = side_str(side).to_string();
-        let strategy     = self.strategy.clone();
-        let symbol       = self.symbol.clone();
-        let conn         = self.conn.clone();
+        let entry_time = candle.timestamp;
+        let side_s = side_str(side).to_string();
+        let strategy = self.strategy.clone();
+        let symbol = self.symbol.clone();
+        let conn = self.conn.clone();
 
         let pos_id = tokio::task::spawn_blocking(move || {
             open_position(
-                &conn, &strategy, &symbol, &side_s,
-                entry_price, size, stop_loss, take_profit,
-                entry_time, &entry_reason,
+                &conn,
+                &strategy,
+                &symbol,
+                &side_s,
+                entry_price,
+                size,
+                stop_loss,
+                take_profit,
+                entry_time,
+                &entry_reason,
             )?;
-            Ok::<Option<u64>, anyhow::Error>(
-                wait_for_open_position(&conn, &strategy, &symbol),
-            )
-        }).await??;
+            Ok::<Option<u64>, anyhow::Error>(wait_for_open_position(&conn, &strategy, &symbol))
+        })
+        .await??;
 
         if pos_id.is_none() {
             warn!(
@@ -139,26 +138,26 @@ impl PaperExecutor {
         }
 
         self.position = Some(Position {
-            symbol:      self.symbol.clone(),
+            symbol: self.symbol.clone(),
             side,
             entry_price,
             size,
-            entry_time:  candle.timestamp,
-            stop_loss:   decision.stop_loss,
+            entry_time: candle.timestamp,
+            stop_loss: decision.stop_loss,
             take_profit: decision.take_profit,
         });
         self.position_id = pos_id;
 
         let tag = match side {
-            PositionSide::Long  => "📈 BUY",
+            PositionSide::Long => "📈 BUY",
             PositionSide::Short => "📉 SHORT",
         };
         info!(
-            symbol  = self.symbol,
-            price   = entry_price,
+            symbol = self.symbol,
+            price = entry_price,
             size,
             balance = self.balance,
-            reason  = decision.reason.as_deref().unwrap_or(""),
+            reason = decision.reason.as_deref().unwrap_or(""),
             "{tag}"
         );
         Ok(())
@@ -177,51 +176,64 @@ impl PaperExecutor {
         let pos = match self.position.take() {
             Some(p) => p,
             None => {
-                warn!(symbol = self.symbol, "Close signal but no open position — ignoring");
+                warn!(
+                    symbol = self.symbol,
+                    "Close signal but no open position — ignoring"
+                );
                 return Ok(());
             }
         };
 
-        let exit_price   = candle.close;
-        let pnl          = compute_realized_pnl(pos.side, pos.entry_price, exit_price, pos.size);
-        let exit_time    = candle.timestamp;
-        let position_id  = self.position_id.take();
-        let strategy     = self.strategy.clone();
-        let symbol       = self.symbol.clone();
-        let conn         = self.conn.clone();
+        let exit_price = candle.close;
+        let pnl = compute_realized_pnl(pos.side, pos.entry_price, exit_price, pos.size);
+        let exit_time = candle.timestamp;
+        let position_id = self.position_id.take();
+        let strategy = self.strategy.clone();
+        let symbol = self.symbol.clone();
+        let conn = self.conn.clone();
         let entry_reason = String::new();
-        let exit_reason  = reason.to_string();
-        let entry_price  = pos.entry_price;
-        let size         = pos.size;
-        let entry_time   = pos.entry_time;
-        let side_s       = side_str(pos.side).to_string();
+        let exit_reason = reason.to_string();
+        let entry_price = pos.entry_price;
+        let size = pos.size;
+        let entry_time = pos.entry_time;
+        let side_s = side_str(pos.side).to_string();
 
         tokio::task::spawn_blocking(move || {
-            let id_to_close = position_id
-                .or_else(|| get_open_position(&conn, &strategy, &symbol).map(|p| p.id));
+            let id_to_close =
+                position_id.or_else(|| get_open_position(&conn, &strategy, &symbol).map(|p| p.id));
             if let Some(id) = id_to_close {
                 close_position(&conn, id)?;
             } else {
                 warn!(symbol, strategy, "No live_positions row found to close");
             }
             insert_trade(
-                &conn, &strategy, &symbol, &side_s,
-                entry_price, exit_price, size, pnl, "closed",
-                entry_time, exit_time,
-                &entry_reason, &exit_reason,
+                &conn,
+                &strategy,
+                &symbol,
+                &side_s,
+                entry_price,
+                exit_price,
+                size,
+                pnl,
+                "closed",
+                entry_time,
+                exit_time,
+                &entry_reason,
+                &exit_reason,
             )
-        }).await??;
+        })
+        .await??;
 
         self.balance += pnl;
 
         let tag = match pos.side {
-            PositionSide::Long  => "📉 SELL",
+            PositionSide::Long => "📉 SELL",
             PositionSide::Short => "📈 COVER",
         };
         info!(
-            symbol  = self.symbol,
-            entry   = pos.entry_price,
-            exit    = exit_price,
+            symbol = self.symbol,
+            entry = pos.entry_price,
+            exit = exit_price,
             pnl,
             balance = self.balance,
             reason,
@@ -238,22 +250,24 @@ impl PaperExecutor {
             None => return Ok(()),
             Some(pos) => match pos.side {
                 PositionSide::Long => {
-                    let hit_sl = pos.stop_loss  .map(|sl| candle.low  <= sl).unwrap_or(false);
+                    let hit_sl = pos.stop_loss.map(|sl| candle.low <= sl).unwrap_or(false);
                     let hit_tp = pos.take_profit.map(|tp| candle.high >= tp).unwrap_or(false);
                     (hit_sl, hit_tp)
                 }
                 PositionSide::Short => {
-                    let hit_sl = pos.stop_loss  .map(|sl| candle.high >= sl).unwrap_or(false);
-                    let hit_tp = pos.take_profit.map(|tp| candle.low  <= tp).unwrap_or(false);
+                    let hit_sl = pos.stop_loss.map(|sl| candle.high >= sl).unwrap_or(false);
+                    let hit_tp = pos.take_profit.map(|tp| candle.low <= tp).unwrap_or(false);
                     (hit_sl, hit_tp)
                 }
             },
         };
 
         if hit_sl {
-            self.close_current_position(candle, "stop-loss triggered").await?;
+            self.close_current_position(candle, "stop-loss triggered")
+                .await?;
         } else if hit_tp {
-            self.close_current_position(candle, "take-profit triggered").await?;
+            self.close_current_position(candle, "take-profit triggered")
+                .await?;
         }
         Ok(())
     }
@@ -270,16 +284,25 @@ impl OrderExecutor for PaperExecutor {
         }
 
         let current_side = self.position.as_ref().map(|p| p.side);
-        let action       = plan_action(&decision.signal, current_side);
+        let action = plan_action(&decision.signal, current_side);
 
         match action {
-            Action::OpenLong  => self.open_new_position(PositionSide::Long,  candle, decision).await?,
-            Action::OpenShort => self.open_new_position(PositionSide::Short, candle, decision).await?,
-            Action::Close     => {
-                let reason = decision.reason.clone().unwrap_or_else(|| "strategy close".into());
+            Action::OpenLong => {
+                self.open_new_position(PositionSide::Long, candle, decision)
+                    .await?
+            }
+            Action::OpenShort => {
+                self.open_new_position(PositionSide::Short, candle, decision)
+                    .await?
+            }
+            Action::Close => {
+                let reason = decision
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "strategy close".into());
                 self.close_current_position(candle, &reason).await?;
             }
-            Action::Nothing   => {
+            Action::Nothing => {
                 // HOLD is the common case; only warn on a real mismatch
                 // (e.g. SELL while flat, BUY while already short).
                 if !matches!(decision.signal, shared::Signal::Hold) {

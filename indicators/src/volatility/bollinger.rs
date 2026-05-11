@@ -1,9 +1,9 @@
 /// Result of Bollinger Bands.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BbResult {
-    pub upper:  f64,
+    pub upper: f64,
     pub middle: f64, // SMA
-    pub lower:  f64,
+    pub lower: f64,
 }
 
 /// Bollinger Bands.
@@ -24,9 +24,9 @@ pub fn bollinger(closes: &[f64], period: usize, std_dev: f64) -> Option<BbResult
     let sd = variance.sqrt();
 
     Some(BbResult {
-        upper:  mean + std_dev * sd,
+        upper: mean + std_dev * sd,
         middle: mean,
-        lower:  mean - std_dev * sd,
+        lower: mean - std_dev * sd,
     })
 }
 

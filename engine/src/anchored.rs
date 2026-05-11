@@ -23,7 +23,11 @@ use crate::error::EngineError;
 
 #[derive(Debug, Clone)]
 pub enum DetectorSpec {
-    Pivot { id: String, left: usize, right: usize },
+    Pivot {
+        id: String,
+        left: usize,
+        right: usize,
+    },
     Session {
         id: String,
         session: SessionId,
@@ -102,10 +106,7 @@ impl AnchoredSpec {
                     .ok_or_else(|| spec_err(format!("detector[{i}] must be a map")))?;
                 let d = parse_detector(&m, i)?;
                 if !detector_ids.insert(d.id().to_string()) {
-                    return Err(spec_err(format!(
-                        "duplicate detector id `{}`",
-                        d.id()
-                    )));
+                    return Err(spec_err(format!("duplicate detector id `{}`", d.id())));
                 }
                 out.detectors.push(d);
             }
@@ -147,7 +148,9 @@ fn spec_err(msg: impl Into<String>) -> EngineError {
     EngineError::Strategy(format!("anchored_config: {}", msg.into()))
 }
 
-fn map_get<'a>(m: &'a Map, k: &str) -> Option<&'a Dynamic> { m.get(k) }
+fn map_get<'a>(m: &'a Map, k: &str) -> Option<&'a Dynamic> {
+    m.get(k)
+}
 
 fn get_str(m: &Map, k: &str, ctx: &str) -> Result<String, EngineError> {
     map_get(m, k)
@@ -176,7 +179,7 @@ fn parse_detector(m: &Map, idx: usize) -> Result<DetectorSpec, EngineError> {
     let kind = get_str(m, "kind", &ctx)?;
     match kind.as_str() {
         "pivot" => {
-            let left  = get_int(m, "left",  &ctx)? as usize;
+            let left = get_int(m, "left", &ctx)? as usize;
             let right = get_int(m, "right", &ctx)? as usize;
             if left < 1 || right < 1 {
                 return Err(spec_err(format!("{ctx}: pivot left/right must be >= 1")));
@@ -185,11 +188,11 @@ fn parse_detector(m: &Map, idx: usize) -> Result<DetectorSpec, EngineError> {
         }
         "session" => {
             let start = get_str(m, "start", &ctx)?;
-            let end   = get_str(m, "end",   &ctx)?;
-            let tz    = get_int(m, "tz",    &ctx)? as i32;
+            let end = get_str(m, "end", &ctx)?;
+            let tz = get_int(m, "tz", &ctx)? as i32;
             let session = match get_str(m, "session", &ctx)?.to_ascii_uppercase().as_str() {
-                "ASIA"    => SessionId::Asia,
-                "LONDON"  => SessionId::London,
+                "ASIA" => SessionId::Asia,
+                "LONDON" => SessionId::London,
                 "NEWYORK" | "NY" | "NEW_YORK" => SessionId::NewYork,
                 other => {
                     if let Ok(n) = other.parse::<u8>() {
@@ -201,7 +204,13 @@ fn parse_detector(m: &Map, idx: usize) -> Result<DetectorSpec, EngineError> {
                     }
                 }
             };
-            Ok(DetectorSpec::Session { id, session, start_local: start, end_local: end, tz_hours: tz })
+            Ok(DetectorSpec::Session {
+                id,
+                session,
+                start_local: start,
+                end_local: end,
+                tz_hours: tz,
+            })
         }
         other => Err(spec_err(format!("{ctx}: unknown detector kind `{other}`"))),
     }
@@ -216,13 +225,17 @@ fn parse_evaluator(m: &Map, idx: usize) -> Result<EvaluatorSpec, EngineError> {
         "trendline" => {
             let side = match get_str(m, "side", &ctx)?.to_ascii_lowercase().as_str() {
                 "resistance" => TrendlineSide::Resistance,
-                "support"    => TrendlineSide::Support,
-                other => return Err(spec_err(format!("{ctx}: side must be resistance|support, got `{other}`"))),
+                "support" => TrendlineSide::Support,
+                other => {
+                    return Err(spec_err(format!(
+                        "{ctx}: side must be resistance|support, got `{other}`"
+                    )))
+                }
             };
             let pivot_buffer = get_int(m, "pivot_buffer", &ctx)? as usize;
-            let tolerance   = get_float(m, "tolerance",   &ctx)?;
-            let min_touches = get_int(m, "min_touches",   &ctx)? as u32;
-            let max_lines   = get_int(m, "max_lines",     &ctx)? as usize;
+            let tolerance = get_float(m, "tolerance", &ctx)?;
+            let min_touches = get_int(m, "min_touches", &ctx)? as u32;
+            let max_lines = get_int(m, "max_lines", &ctx)? as usize;
             if pivot_buffer < 3 {
                 return Err(spec_err(format!("{ctx}: pivot_buffer must be >= 3")));
             }
@@ -236,16 +249,30 @@ fn parse_evaluator(m: &Map, idx: usize) -> Result<EvaluatorSpec, EngineError> {
                 return Err(spec_err(format!("{ctx}: max_lines must be >= 1")));
             }
             Ok(EvaluatorSpec::Trendline {
-                expose_as, side, pivot_source, pivot_buffer, tolerance, min_touches, max_lines,
+                expose_as,
+                side,
+                pivot_source,
+                pivot_buffer,
+                tolerance,
+                min_touches,
+                max_lines,
             })
         }
         "slope_between_pivots" => {
             let side = match get_str(m, "side", &ctx)?.to_ascii_lowercase().as_str() {
                 "high" => PivotKind::High,
-                "low"  => PivotKind::Low,
-                other  => return Err(spec_err(format!("{ctx}: side must be high|low, got `{other}`"))),
+                "low" => PivotKind::Low,
+                other => {
+                    return Err(spec_err(format!(
+                        "{ctx}: side must be high|low, got `{other}`"
+                    )))
+                }
             };
-            Ok(EvaluatorSpec::SlopeBetweenPivots { expose_as, pivot_source, side })
+            Ok(EvaluatorSpec::SlopeBetweenPivots {
+                expose_as,
+                pivot_source,
+                side,
+            })
         }
         other => Err(spec_err(format!("{ctx}: unknown evaluator kind `{other}`"))),
     }
@@ -275,7 +302,7 @@ pub enum AnchoredOutput {
 pub struct AnchoredOutputs {
     pub values: HashMap<String, AnchoredOutput>,
     pub last_pivot_high: HashMap<String, (u64, f64, f64)>, // id -> (bar, price, volume)
-    pub last_pivot_low:  HashMap<String, (u64, f64, f64)>,
+    pub last_pivot_low: HashMap<String, (u64, f64, f64)>,
 }
 
 pub struct AnchoredRuntime {
@@ -298,20 +325,34 @@ impl AnchoredRuntime {
                 EvaluatorSpec::SlopeBetweenPivots { .. } => 2,
             };
             let entry = ring_caps.entry(ev.pivot_source().to_string()).or_insert(1);
-            if cap > *entry { *entry = cap; }
+            if cap > *entry {
+                *entry = cap;
+            }
         }
 
         for d in &spec.detectors {
             let (det, cap_hint): (Box<dyn RollingDetector + Send + Sync>, usize) = match d {
-                DetectorSpec::Pivot { left, right, .. } => {
-                    (Box::new(PivotDetector::new(*left, *right, PivotKind::Both)), 6)
-                }
-                DetectorSpec::Session { session, start_local, end_local, tz_hours, .. } => {
-                    let (s, e) = SessionDetector::parse(&format!("{start_local}-{end_local}"), *tz_hours)
-                        .ok_or_else(|| spec_err(format!(
-                            "session `{}`: invalid window `{}-{}`",
-                            d.id(), start_local, end_local
-                        )))?;
+                DetectorSpec::Pivot { left, right, .. } => (
+                    Box::new(PivotDetector::new(*left, *right, PivotKind::Both)),
+                    6,
+                ),
+                DetectorSpec::Session {
+                    session,
+                    start_local,
+                    end_local,
+                    tz_hours,
+                    ..
+                } => {
+                    let (s, e) =
+                        SessionDetector::parse(&format!("{start_local}-{end_local}"), *tz_hours)
+                            .ok_or_else(|| {
+                                spec_err(format!(
+                                    "session `{}`: invalid window `{}-{}`",
+                                    d.id(),
+                                    start_local,
+                                    end_local
+                                ))
+                            })?;
                     (Box::new(SessionDetector::new(s, e, *session)), 4)
                 }
             };
@@ -341,10 +382,14 @@ impl AnchoredRuntime {
             if let Some(ev) = d.detector.on_candle(candle, bar) {
                 match ev {
                     AnchorEvent::PivotHigh { bar, price, volume } => {
-                        self.outputs.last_pivot_high.insert(d.id.clone(), (bar, price, volume));
+                        self.outputs
+                            .last_pivot_high
+                            .insert(d.id.clone(), (bar, price, volume));
                     }
                     AnchorEvent::PivotLow { bar, price, volume } => {
-                        self.outputs.last_pivot_low.insert(d.id.clone(), (bar, price, volume));
+                        self.outputs
+                            .last_pivot_low
+                            .insert(d.id.clone(), (bar, price, volume));
                     }
                     _ => {}
                 }
@@ -366,38 +411,70 @@ impl AnchoredRuntime {
             let fire = det.fired_this_tick;
 
             match ev {
-                EvaluatorSpec::Trendline { expose_as, side, tolerance, min_touches, max_lines, .. } => {
+                EvaluatorSpec::Trendline {
+                    expose_as,
+                    side,
+                    tolerance,
+                    min_touches,
+                    max_lines,
+                    ..
+                } => {
                     if fire {
-                        let fitter = TrendlineEvaluator::new(*side, *tolerance, *min_touches, *max_lines);
+                        let fitter =
+                            TrendlineEvaluator::new(*side, *tolerance, *min_touches, *max_lines);
                         let fresh = fitter.fit(&det.ring, candles, 0, bar);
-                        let paired: Vec<(TrendLine, TrendlineInvalidator)> =
-                            fresh.iter().map(|l| (*l, TrendlineInvalidator(*l))).collect();
+                        let paired: Vec<(TrendLine, TrendlineInvalidator)> = fresh
+                            .iter()
+                            .map(|l| (*l, TrendlineInvalidator(*l)))
+                            .collect();
                         self.active_trendlines.insert(expose_as.clone(), paired);
                     }
-                    let lines: Vec<TrendLine> = self.active_trendlines
+                    let lines: Vec<TrendLine> = self
+                        .active_trendlines
                         .get(expose_as)
                         .map(|v| v.iter().map(|(l, _)| *l).collect())
                         .unwrap_or_default();
-                    self.outputs.values.insert(expose_as.clone(), AnchoredOutput::Trendlines(lines));
+                    self.outputs
+                        .values
+                        .insert(expose_as.clone(), AnchoredOutput::Trendlines(lines));
                 }
-                EvaluatorSpec::SlopeBetweenPivots { expose_as, side, .. } => {
+                EvaluatorSpec::SlopeBetweenPivots {
+                    expose_as, side, ..
+                } => {
                     if fire {
                         let want_high = matches!(side, PivotKind::High);
-                        let pts: Vec<(u64, f64)> = det.ring.iter().filter_map(|e| match (want_high, e) {
-                            (true,  AnchorEvent::PivotHigh { bar, price, .. }) => Some((*bar, *price)),
-                            (false, AnchorEvent::PivotLow  { bar, price, .. }) => Some((*bar, *price)),
-                            _ => None,
-                        }).collect();
+                        let pts: Vec<(u64, f64)> = det
+                            .ring
+                            .iter()
+                            .filter_map(|e| match (want_high, e) {
+                                (true, AnchorEvent::PivotHigh { bar, price, .. }) => {
+                                    Some((*bar, *price))
+                                }
+                                (false, AnchorEvent::PivotLow { bar, price, .. }) => {
+                                    Some((*bar, *price))
+                                }
+                                _ => None,
+                            })
+                            .collect();
                         let val = if pts.len() >= 2 {
                             let a = pts[pts.len() - 2];
                             let b = pts[pts.len() - 1];
-                            let seg = Segment { start_bar: a.0, end_bar: b.0 };
+                            let seg = Segment {
+                                start_bar: a.0,
+                                end_bar: b.0,
+                            };
                             indicators::anchored::evaluators::SlopeSegEvaluator
                                 .evaluate(candles, 0, seg)
-                        } else { None };
-                        self.outputs.values.insert(expose_as.clone(), AnchoredOutput::Slope(val));
+                        } else {
+                            None
+                        };
+                        self.outputs
+                            .values
+                            .insert(expose_as.clone(), AnchoredOutput::Slope(val));
                     } else if !self.outputs.values.contains_key(expose_as) {
-                        self.outputs.values.insert(expose_as.clone(), AnchoredOutput::Slope(None));
+                        self.outputs
+                            .values
+                            .insert(expose_as.clone(), AnchoredOutput::Slope(None));
                     }
                 }
             }
@@ -411,7 +488,9 @@ impl AnchoredRuntime {
         }
     }
 
-    pub fn outputs(&self) -> &AnchoredOutputs { &self.outputs }
+    pub fn outputs(&self) -> &AnchoredOutputs {
+        &self.outputs
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -425,12 +504,17 @@ mod tests {
 
     fn eval_config(src: &str) -> Result<AnchoredSpec, EngineError> {
         let rhai = RhaiEngine::new();
-        let ast = rhai.compile(src).map_err(|e| EngineError::Strategy(e.to_string()))?;
-        let mut scope = rhai::Scope::new();
-        rhai.run_ast_with_scope(&mut scope, &ast).map_err(|e| EngineError::Strategy(e.to_string()))?;
-        let result: Dynamic = rhai.call_fn(&mut scope, &ast, "anchored_config", ())
+        let ast = rhai
+            .compile(src)
             .map_err(|e| EngineError::Strategy(e.to_string()))?;
-        let map = result.try_cast::<Map>()
+        let mut scope = rhai::Scope::new();
+        rhai.run_ast_with_scope(&mut scope, &ast)
+            .map_err(|e| EngineError::Strategy(e.to_string()))?;
+        let result: Dynamic = rhai
+            .call_fn(&mut scope, &ast, "anchored_config", ())
+            .map_err(|e| EngineError::Strategy(e.to_string()))?;
+        let map = result
+            .try_cast::<Map>()
             .ok_or_else(|| EngineError::Strategy("anchored_config must return a map".into()))?;
         AnchoredSpec::from_rhai_map(map)
     }

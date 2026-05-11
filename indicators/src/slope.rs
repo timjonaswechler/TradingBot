@@ -17,10 +17,14 @@ pub fn slope(closes: &[f64], period: usize) -> Option<f64> {
     let x_mean = (n - 1.0) / 2.0;
     let y_mean = slice.iter().sum::<f64>() / n;
 
-    let (numerator, denominator) = slice.iter().enumerate().fold((0.0f64, 0.0f64), |(num, den), (i, &y)| {
-        let x = i as f64 - x_mean;
-        (num + x * (y - y_mean), den + x * x)
-    });
+    let (numerator, denominator) =
+        slice
+            .iter()
+            .enumerate()
+            .fold((0.0f64, 0.0f64), |(num, den), (i, &y)| {
+                let x = i as f64 - x_mean;
+                (num + x * (y - y_mean), den + x * x)
+            });
 
     if denominator.abs() < 1e-12 {
         return Some(0.0);

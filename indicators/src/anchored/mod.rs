@@ -6,28 +6,63 @@
 
 use shared::Candle;
 
-pub mod ring;
 pub mod detectors;
 pub mod evaluators;
+pub mod ring;
 
 pub use ring::SegmentState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Side { Up, Down }
+pub enum Side {
+    Up,
+    Down,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionId { Asia, London, NewYork, Custom(u8) }
+pub enum SessionId {
+    Asia,
+    London,
+    NewYork,
+    Custom(u8),
+}
 
 /// A point-event emitted by a `RollingDetector`.
 #[derive(Debug, Clone, Copy)]
 pub enum AnchorEvent {
-    PivotHigh { bar: u64, price: f64, volume: f64 },
-    PivotLow  { bar: u64, price: f64, volume: f64 },
-    SessionOpen  { bar: u64, session: SessionId },
-    SessionClose { bar: u64, session: SessionId },
-    RangeContracted { bar: u64, high: f64, low: f64, width_pct: f64 },
-    Sweep { bar: u64, side: Side, extreme: f64 },
-    FvgConfirmed { bar: u64, side: Side, gap: f64 },
+    PivotHigh {
+        bar: u64,
+        price: f64,
+        volume: f64,
+    },
+    PivotLow {
+        bar: u64,
+        price: f64,
+        volume: f64,
+    },
+    SessionOpen {
+        bar: u64,
+        session: SessionId,
+    },
+    SessionClose {
+        bar: u64,
+        session: SessionId,
+    },
+    RangeContracted {
+        bar: u64,
+        high: f64,
+        low: f64,
+        width_pct: f64,
+    },
+    Sweep {
+        bar: u64,
+        side: Side,
+        extreme: f64,
+    },
+    FvgConfirmed {
+        bar: u64,
+        side: Side,
+        gap: f64,
+    },
 }
 
 impl AnchorEvent {
@@ -46,11 +81,18 @@ impl AnchorEvent {
 
 /// A closed interval `[start_bar, end_bar]` on the candle stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Segment { pub start_bar: u64, pub end_bar: u64 }
+pub struct Segment {
+    pub start_bar: u64,
+    pub end_bar: u64,
+}
 
 impl Segment {
-    pub fn len(&self) -> u64 { self.end_bar.saturating_sub(self.start_bar) + 1 }
-    pub fn is_empty(&self) -> bool { self.end_bar < self.start_bar }
+    pub fn len(&self) -> u64 {
+        self.end_bar.saturating_sub(self.start_bar) + 1
+    }
+    pub fn is_empty(&self) -> bool {
+        self.end_bar < self.start_bar
+    }
 }
 
 /// Consumes every candle; may emit an event.
@@ -65,7 +107,12 @@ pub trait RollingDetector {
 /// caller is responsible for passing a buffer that contains `seg.start_bar`.
 pub trait AnchoredEvaluator {
     type Output;
-    fn evaluate(&self, candles: &[Candle], buffer_origin_bar: u64, seg: Segment) -> Option<Self::Output>;
+    fn evaluate(
+        &self,
+        candles: &[Candle],
+        buffer_origin_bar: u64,
+        seg: Segment,
+    ) -> Option<Self::Output>;
 }
 
 /// Cheap per-bar check on an active signal.
@@ -79,9 +126,13 @@ pub(crate) fn slice_by_bars<'a>(
     buffer_origin_bar: u64,
     seg: Segment,
 ) -> Option<&'a [Candle]> {
-    if seg.is_empty() { return None; }
+    if seg.is_empty() {
+        return None;
+    }
     let start = seg.start_bar.checked_sub(buffer_origin_bar)? as usize;
-    let end   = seg.end_bar.checked_sub(buffer_origin_bar)? as usize;
-    if end >= candles.len() { return None; }
+    let end = seg.end_bar.checked_sub(buffer_origin_bar)? as usize;
+    if end >= candles.len() {
+        return None;
+    }
     Some(&candles[start..=end])
 }

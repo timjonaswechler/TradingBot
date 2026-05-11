@@ -34,11 +34,7 @@ impl IndicatorCache {
 ///
 /// Returns `Some(value)` if the cache had a valid entry and the update succeeded.
 /// Returns `None` if a full recompute is needed (cold start).
-pub fn ema_from_cache(
-    cache: &mut IndicatorCache,
-    closes: &[f64],
-    period: usize,
-) -> Option<f64> {
+pub fn ema_from_cache(cache: &mut IndicatorCache, closes: &[f64], period: usize) -> Option<f64> {
     let k = 2.0 / (period as f64 + 1.0);
     let n = closes.len();
 
@@ -64,17 +60,15 @@ pub fn ema_store(cache: &mut IndicatorCache, period: usize, value: f64, n: usize
 
 // ── RSI helpers ──────────────────────────────────────────────────────────────
 
-pub fn rsi_from_cache(
-    cache: &mut IndicatorCache,
-    closes: &[f64],
-    period: usize,
-) -> Option<f64> {
+pub fn rsi_from_cache(cache: &mut IndicatorCache, closes: &[f64], period: usize) -> Option<f64> {
     let n = closes.len();
 
     match cache.rsi.get(&period).copied() {
         Some((ag, al, _pc, last_n)) if last_n == n => {
             // Same data.
-            if al < 1e-12 { return Some(100.0); }
+            if al < 1e-12 {
+                return Some(100.0);
+            }
             Some(100.0 - 100.0 / (1.0 + ag / al))
         }
         Some((ag, al, pc, last_n)) if last_n + 1 == n => {
@@ -86,7 +80,9 @@ pub fn rsi_from_cache(
             let new_ag = (ag * (p - 1.0) + gain) / p;
             let new_al = (al * (p - 1.0) + loss) / p;
             cache.rsi.insert(period, (new_ag, new_al, closes[n - 1], n));
-            if new_al < 1e-12 { return Some(100.0); }
+            if new_al < 1e-12 {
+                return Some(100.0);
+            }
             Some(100.0 - 100.0 / (1.0 + new_ag / new_al))
         }
         _ => None,
@@ -101,7 +97,9 @@ pub fn rsi_store(
     prev_close: f64,
     n: usize,
 ) {
-    cache.rsi.insert(period, (avg_gain, avg_loss, prev_close, n));
+    cache
+        .rsi
+        .insert(period, (avg_gain, avg_loss, prev_close, n));
 }
 
 // ── ATR helpers ──────────────────────────────────────────────────────────────
@@ -119,7 +117,7 @@ pub fn atr_from_cache(
             let cur = &candles[n - 1];
             let tr = (cur.high - cur.low)
                 .max((cur.high - pc).abs())
-                .max((cur.low  - pc).abs());
+                .max((cur.low - pc).abs());
             let p = period as f64;
             let new_val = (val * (p - 1.0) + tr) / p;
             cache.atr.insert(period, (new_val, cur.close, n));
@@ -129,13 +127,7 @@ pub fn atr_from_cache(
     }
 }
 
-pub fn atr_store(
-    cache: &mut IndicatorCache,
-    period: usize,
-    value: f64,
-    prev_close: f64,
-    n: usize,
-) {
+pub fn atr_store(cache: &mut IndicatorCache, period: usize, value: f64, prev_close: f64, n: usize) {
     cache.atr.insert(period, (value, prev_close, n));
 }
 

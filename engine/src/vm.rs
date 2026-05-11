@@ -22,13 +22,13 @@ use crate::{
 /// - **Backtesting** (UI): one fresh `Engine` per backtest run; call `tick`
 ///   for every historical candle in chronological order.
 pub struct Engine {
-    rhai:     RhaiEngine,
-    ast:      AST,
-    scope:    Scope<'static>,
-    candles:  Arc<RwLock<Vec<Candle>>>,
-    cache:    Arc<RwLock<IndicatorCache>>,
+    rhai: RhaiEngine,
+    ast: AST,
+    scope: Scope<'static>,
+    candles: Arc<RwLock<Vec<Candle>>>,
+    cache: Arc<RwLock<IndicatorCache>>,
     anchored: Option<AnchoredRuntime>,
-    state:    Arc<RwLock<HashMap<String, Dynamic>>>,
+    state: Arc<RwLock<HashMap<String, Dynamic>>>,
 }
 
 impl Engine {
@@ -41,15 +41,14 @@ impl Engine {
         register_all(&mut rhai);
 
         // Compile the strategy — catches syntax errors early.
-        let ast = rhai.compile(strategy_src).map_err(|e| {
-            EngineError::Strategy(format!("strategy compile error: {e}"))
-        })?;
+        let ast = rhai
+            .compile(strategy_src)
+            .map_err(|e| EngineError::Strategy(format!("strategy compile error: {e}")))?;
 
         // Execute top-level code (constants, etc.) into a persistent scope.
         let mut scope = Scope::new();
-        rhai.run_ast_with_scope(&mut scope, &ast).map_err(|e| {
-            EngineError::Strategy(format!("strategy init error: {e}"))
-        })?;
+        rhai.run_ast_with_scope(&mut scope, &ast)
+            .map_err(|e| EngineError::Strategy(format!("strategy init error: {e}")))?;
 
         // Verify on_tick is defined by scanning the AST.
         let has_on_tick = ast.iter_functions().any(|f| f.name == "on_tick");
@@ -60,24 +59,39 @@ impl Engine {
         }
 
         // Optional: fn anchored_config() — build the AnchoredRuntime.
-        let anchored = if ast.iter_functions().any(|f| f.name == "anchored_config" && f.params.is_empty()) {
+        let anchored = if ast
+            .iter_functions()
+            .any(|f| f.name == "anchored_config" && f.params.is_empty())
+        {
             let result: Dynamic = rhai
                 .call_fn(&mut scope, &ast, "anchored_config", ())
                 .map_err(|e| EngineError::Strategy(format!("anchored_config error: {e}")))?;
-            let map = result.try_cast::<rhai::Map>().ok_or_else(|| {
-                EngineError::Strategy("anchored_config must return a map".into())
-            })?;
+            let map = result
+                .try_cast::<rhai::Map>()
+                .ok_or_else(|| EngineError::Strategy("anchored_config must return a map".into()))?;
             let spec = AnchoredSpec::from_rhai_map(map)?;
-            if spec.is_empty() { None } else { Some(AnchoredRuntime::from_spec(&spec)?) }
+            if spec.is_empty() {
+                None
+            } else {
+                Some(AnchoredRuntime::from_spec(&spec)?)
+            }
         } else {
             None
         };
 
         let candles = Arc::new(RwLock::new(Vec::new()));
-        let cache   = Arc::new(RwLock::new(IndicatorCache::new()));
-        let state    = Arc::new(RwLock::new(HashMap::new()));
+        let cache = Arc::new(RwLock::new(IndicatorCache::new()));
+        let state = Arc::new(RwLock::new(HashMap::new()));
 
-        Ok(Self { rhai, ast, scope, candles, cache, anchored, state })
+        Ok(Self {
+            rhai,
+            ast,
+            scope,
+            candles,
+            cache,
+            anchored,
+            state,
+        })
     }
 
     /// Feed one candle into the engine and get a trading decision back.
@@ -96,15 +110,18 @@ impl Engine {
         };
 
         // Build Rhai arguments — cheap Arc clones, no candle data copied.
-        let candle_list = CandleList::new(
-            Arc::clone(&self.candles),
-            Arc::clone(&self.cache),
-        );
+        let candle_list = CandleList::new(Arc::clone(&self.candles), Arc::clone(&self.cache));
         let ctx_wrapper = ContextWrapper::new(ctx, outputs, candle.close, Arc::clone(&self.state));
 
         // Call on_tick(candles, context).
-        let result: Dynamic = self.rhai
-            .call_fn(&mut self.scope, &self.ast, "on_tick", (candle_list, ctx_wrapper))
+        let result: Dynamic = self
+            .rhai
+            .call_fn(
+                &mut self.scope,
+                &self.ast,
+                "on_tick",
+                (candle_list, ctx_wrapper),
+            )
             .map_err(|e| EngineError::Strategy(format!("on_tick error: {e}")))?;
 
         parse_trade_decision(result)
@@ -149,13 +166,12 @@ fn parse_trade_decision(result: Dynamic) -> Result<TradeDecision, EngineError> {
         .and_then(|v| v.clone().try_cast::<String>())
         .ok_or_else(|| EngineError::Strategy("missing or invalid `signal` key".into()))?;
 
-    let signal = Signal::from_str(&signal_str)
-        .map_err(|e| EngineError::InvalidSignal(e))?;
+    let signal = Signal::from_str(&signal_str).map_err(|e| EngineError::InvalidSignal(e))?;
 
     // size — optional; defaults to 1.0 for directional signals, 0.0 for HOLD
     let default_size = match signal {
         Signal::Hold => 0.0,
-        _            => 1.0,
+        _ => 1.0,
     };
     let size = map
         .get("size")
@@ -163,11 +179,23 @@ fn parse_trade_decision(result: Dynamic) -> Result<TradeDecision, EngineError> {
         .unwrap_or(default_size);
 
     // Optional fields
-    let stop_loss   = map.get("stop_loss").and_then(|v| v.clone().try_cast::<f64>());
-    let take_profit = map.get("take_profit").and_then(|v| v.clone().try_cast::<f64>());
-    let reason      = map.get("reason").and_then(|v| v.clone().try_cast::<String>());
+    let stop_loss = map
+        .get("stop_loss")
+        .and_then(|v| v.clone().try_cast::<f64>());
+    let take_profit = map
+        .get("take_profit")
+        .and_then(|v| v.clone().try_cast::<f64>());
+    let reason = map
+        .get("reason")
+        .and_then(|v| v.clone().try_cast::<String>());
 
-    Ok(TradeDecision { signal, size, stop_loss, take_profit, reason })
+    Ok(TradeDecision {
+        signal,
+        size,
+        stop_loss,
+        take_profit,
+        reason,
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -180,17 +208,19 @@ mod tests {
     fn make_candle(close: f64, ts: i64) -> Candle {
         Candle {
             timestamp: ts,
-            symbol:    "TEST".into(),
-            open:      close - 0.5,
-            high:      close + 1.0,
-            low:       close - 1.0,
+            symbol: "TEST".into(),
+            open: close - 0.5,
+            high: close + 1.0,
+            low: close - 1.0,
             close,
-            volume:    1000.0,
+            volume: 1000.0,
             timeframe: "1d".into(),
         }
     }
 
-    fn flat_ctx() -> Context { Context::new(10_000.0) }
+    fn flat_ctx() -> Context {
+        Context::new(10_000.0)
+    }
 
     // ── Strategy: always HOLD ─────────────────────────────────────────────
 
@@ -383,12 +413,12 @@ fn on_tick(candles, context) {
 
         let ctx_with_pos = Context {
             position: Some(shared::Position {
-                symbol:      "TEST".into(),
-                side:        PositionSide::Long,
+                symbol: "TEST".into(),
+                side: PositionSide::Long,
                 entry_price: 100.0,
-                size:        10.0,
-                entry_time:  1,
-                stop_loss:   None,
+                size: 10.0,
+                entry_time: 1,
+                stop_loss: None,
                 take_profit: None,
             }),
             ..flat_ctx()
@@ -413,7 +443,9 @@ fn on_tick(candles, context) {
     fn rsi_holds_during_warmup() {
         let mut e = Engine::new(RSI_STRAT).unwrap();
         for i in 0..10i64 {
-            let d = e.tick(make_candle(100.0 + i as f64, i), flat_ctx()).unwrap();
+            let d = e
+                .tick(make_candle(100.0 + i as f64, i), flat_ctx())
+                .unwrap();
             assert_eq!(d.signal, Signal::Hold);
         }
     }
@@ -431,10 +463,16 @@ fn on_tick(candles, context) {{
         let mut e = Engine::new(&src).unwrap();
         let mut last = Signal::Hold;
         for i in 0..ticks {
-            let d = e.tick(make_candle(100.0 + i as f64, i as i64), flat_ctx()).unwrap();
+            let d = e
+                .tick(make_candle(100.0 + i as f64, i as i64), flat_ctx())
+                .unwrap();
             last = d.signal;
         }
-        assert_eq!(last, Signal::Buy, "binding should expose non-unit result for `{expr}` after warmup");
+        assert_eq!(
+            last,
+            Signal::Buy,
+            "binding should expose non-unit result for `{expr}` after warmup"
+        );
     }
 
     macro_rules! indicator_smoke_test {
@@ -454,18 +492,46 @@ fn on_tick(candles, context) {{
     indicator_smoke_test!(adx_binding_smoke, "indicators::adx(candles, 3)", 20);
     indicator_smoke_test!(ichimoku_binding_smoke, "indicators::ichimoku(candles)", 60);
     indicator_smoke_test!(cci_binding_smoke, "indicators::cci(candles, 3)", 10);
-    indicator_smoke_test!(stochastic_binding_smoke, "indicators::stochastic(candles, 3)", 10);
-    indicator_smoke_test!(williams_r_binding_smoke, "indicators::williams_r(candles, 3)", 10);
+    indicator_smoke_test!(
+        stochastic_binding_smoke,
+        "indicators::stochastic(candles, 3)",
+        10
+    );
+    indicator_smoke_test!(
+        williams_r_binding_smoke,
+        "indicators::williams_r(candles, 3)",
+        10
+    );
     indicator_smoke_test!(roc_binding_smoke, "indicators::roc(candles, 3)", 10);
-    indicator_smoke_test!(bollinger_binding_smoke, "indicators::bollinger(candles, 3, 2.0)", 10);
+    indicator_smoke_test!(
+        bollinger_binding_smoke,
+        "indicators::bollinger(candles, 3, 2.0)",
+        10
+    );
     indicator_smoke_test!(atr_binding_smoke, "indicators::atr(candles, 3)", 10);
-    indicator_smoke_test!(keltner_binding_smoke, "indicators::keltner(candles, 3, 2.0)", 10);
+    indicator_smoke_test!(
+        keltner_binding_smoke,
+        "indicators::keltner(candles, 3, 2.0)",
+        10
+    );
     indicator_smoke_test!(obv_binding_smoke, "indicators::obv(candles)", 3);
     indicator_smoke_test!(vwap_binding_smoke, "indicators::vwap(candles)", 3);
     indicator_smoke_test!(mfi_binding_smoke, "indicators::mfi(candles, 3)", 10);
-    indicator_smoke_test!(volume_profile_binding_smoke, "indicators::volume_profile(candles, 4)", 5);
-    indicator_smoke_test!(pivot_points_binding_smoke, "indicators::pivot_points(candles)", 2);
-    indicator_smoke_test!(fibonacci_binding_smoke, "indicators::fibonacci(candles, 90.0, 110.0)", 1);
+    indicator_smoke_test!(
+        volume_profile_binding_smoke,
+        "indicators::volume_profile(candles, 4)",
+        5
+    );
+    indicator_smoke_test!(
+        pivot_points_binding_smoke,
+        "indicators::pivot_points(candles)",
+        2
+    );
+    indicator_smoke_test!(
+        fibonacci_binding_smoke,
+        "indicators::fibonacci(candles, 90.0, 110.0)",
+        1
+    );
     indicator_smoke_test!(slope_binding_smoke, "indicators::slope(candles, 3)", 10);
 
     fn assert_indicator_offset_binding_smoke(expr: &str, ticks: usize) {
@@ -481,10 +547,16 @@ fn on_tick(candles, context) {{
         let mut e = Engine::new(&src).unwrap();
         let mut last = Signal::Hold;
         for i in 0..ticks {
-            let d = e.tick(make_candle(100.0 + i as f64, i as i64), flat_ctx()).unwrap();
+            let d = e
+                .tick(make_candle(100.0 + i as f64, i as i64), flat_ctx())
+                .unwrap();
             last = d.signal;
         }
-        assert_eq!(last, Signal::Buy, "offset binding should expose non-unit result for `{expr}` after warmup");
+        assert_eq!(
+            last,
+            Signal::Buy,
+            "offset binding should expose non-unit result for `{expr}` after warmup"
+        );
     }
 
     macro_rules! indicator_offset_smoke_test {
@@ -496,16 +568,48 @@ fn on_tick(candles, context) {{
         };
     }
 
-    indicator_offset_smoke_test!(adx_offset_binding_smoke, "indicators::adx(candles, 3, 1)", 20);
-    indicator_offset_smoke_test!(ichimoku_offset_binding_smoke, "indicators::ichimoku(candles, 1)", 60);
-    indicator_offset_smoke_test!(stochastic_offset_binding_smoke, "indicators::stochastic(candles, 3, 1)", 10);
-    indicator_offset_smoke_test!(bollinger_offset_binding_smoke, "indicators::bollinger(candles, 3, 2.0, 1)", 10);
-    indicator_offset_smoke_test!(keltner_offset_binding_smoke, "indicators::keltner(candles, 3, 2.0, 1)", 10);
+    indicator_offset_smoke_test!(
+        adx_offset_binding_smoke,
+        "indicators::adx(candles, 3, 1)",
+        20
+    );
+    indicator_offset_smoke_test!(
+        ichimoku_offset_binding_smoke,
+        "indicators::ichimoku(candles, 1)",
+        60
+    );
+    indicator_offset_smoke_test!(
+        stochastic_offset_binding_smoke,
+        "indicators::stochastic(candles, 3, 1)",
+        10
+    );
+    indicator_offset_smoke_test!(
+        bollinger_offset_binding_smoke,
+        "indicators::bollinger(candles, 3, 2.0, 1)",
+        10
+    );
+    indicator_offset_smoke_test!(
+        keltner_offset_binding_smoke,
+        "indicators::keltner(candles, 3, 2.0, 1)",
+        10
+    );
     indicator_offset_smoke_test!(obv_offset_binding_smoke, "indicators::obv(candles, 1)", 3);
     indicator_offset_smoke_test!(vwap_offset_binding_smoke, "indicators::vwap(candles, 1)", 3);
-    indicator_offset_smoke_test!(mfi_offset_binding_smoke, "indicators::mfi(candles, 3, 1)", 10);
-    indicator_offset_smoke_test!(volume_profile_offset_binding_smoke, "indicators::volume_profile(candles, 4, 1)", 5);
-    indicator_offset_smoke_test!(pivot_points_offset_binding_smoke, "indicators::pivot_points(candles, 1)", 3);
+    indicator_offset_smoke_test!(
+        mfi_offset_binding_smoke,
+        "indicators::mfi(candles, 3, 1)",
+        10
+    );
+    indicator_offset_smoke_test!(
+        volume_profile_offset_binding_smoke,
+        "indicators::volume_profile(candles, 4, 1)",
+        5
+    );
+    indicator_offset_smoke_test!(
+        pivot_points_offset_binding_smoke,
+        "indicators::pivot_points(candles, 1)",
+        3
+    );
 
     const OBV_OFFSET_SEMANTICS: &str = r#"
 fn on_tick(candles, context) {
@@ -624,7 +728,16 @@ fn on_tick(candles, context) {
 "#;
 
     fn hlc_candle(h: f64, l: f64, c: f64, ts: i64) -> Candle {
-        Candle { timestamp: ts, symbol: "T".into(), open: c, high: h, low: l, close: c, volume: 1.0, timeframe: "1m".into() }
+        Candle {
+            timestamp: ts,
+            symbol: "T".into(),
+            open: c,
+            high: h,
+            low: l,
+            close: c,
+            volume: 1.0,
+            timeframe: "1m".into(),
+        }
     }
 
     #[test]
@@ -633,28 +746,30 @@ fn on_tick(candles, context) {
         // Build three pivot highs at 100 (bars 2, 7, 12 with left=right=2) then break up at bar 15.
         // Pattern for each high: low, low, HIGH, low, low.
         let seq: &[(f64, f64)] = &[
-            (98.0, 95.0),  // 0
-            (98.0, 95.0),  // 1
-            (100.0, 95.0), // 2  pivot-high candidate
-            (98.0, 95.0),  // 3
-            (98.0, 95.0),  // 4  confirms pivot@2
-            (98.0, 95.0),  // 5
-            (98.0, 95.0),  // 6
-            (100.0, 95.0), // 7  pivot-high candidate
-            (98.0, 95.0),  // 8
-            (98.0, 95.0),  // 9  confirms pivot@7
-            (98.0, 95.0),  // 10
-            (98.0, 95.0),  // 11
-            (100.0, 95.0), // 12 pivot-high candidate
-            (98.0, 95.0),  // 13
-            (98.0, 95.0),  // 14 confirms pivot@12 → trendline becomes active
-            (110.0, 108.0),// 15 close=108 > 100 → BUY
+            (98.0, 95.0),   // 0
+            (98.0, 95.0),   // 1
+            (100.0, 95.0),  // 2  pivot-high candidate
+            (98.0, 95.0),   // 3
+            (98.0, 95.0),   // 4  confirms pivot@2
+            (98.0, 95.0),   // 5
+            (98.0, 95.0),   // 6
+            (100.0, 95.0),  // 7  pivot-high candidate
+            (98.0, 95.0),   // 8
+            (98.0, 95.0),   // 9  confirms pivot@7
+            (98.0, 95.0),   // 10
+            (98.0, 95.0),   // 11
+            (100.0, 95.0),  // 12 pivot-high candidate
+            (98.0, 95.0),   // 13
+            (98.0, 95.0),   // 14 confirms pivot@12 → trendline becomes active
+            (110.0, 108.0), // 15 close=108 > 100 → BUY
         ];
         let mut last = Signal::Hold;
         for (i, &(h, l)) in seq.iter().enumerate() {
             // close = l on pivot bars (to keep them non-breaking), close = 108 on break bar
             let close = if i == 15 { 108.0 } else { l };
-            let d = e.tick(hlc_candle(h, l, close, i as i64), flat_ctx()).unwrap();
+            let d = e
+                .tick(hlc_candle(h, l, close, i as i64), flat_ctx())
+                .unwrap();
             last = d.signal;
         }
         assert_eq!(last, Signal::Buy, "expected breakout BUY on final bar");
@@ -663,9 +778,11 @@ fn on_tick(candles, context) {
     #[test]
     fn trendline_break_strategy_loads() {
         // Loads the actual strategy file from disk — exercises the full spec parse.
-        let src = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../strategies/trendline_break.rhai")
-        ).expect("read trendline_break.rhai");
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../strategies/trendline_break.rhai"
+        ))
+        .expect("read trendline_break.rhai");
         let mut e = Engine::new(&src).expect("engine should load");
         // A single HOLD tick must not crash (no anchored output yet).
         let d = e.tick(make_candle(100.0, 1), flat_ctx()).unwrap();
@@ -684,9 +801,12 @@ fn on_tick(candles, context) {
     fn rsi_sells_in_strong_uptrend() {
         let mut e = Engine::new(RSI_STRAT).unwrap();
         for i in 0..31i64 {
-            e.tick(make_candle(100.0 + i as f64 * 5.0, i), flat_ctx()).unwrap();
+            e.tick(make_candle(100.0 + i as f64 * 5.0, i), flat_ctx())
+                .unwrap();
         }
-        let d = e.tick(make_candle(100.0 + 31.0 * 5.0, 31), flat_ctx()).unwrap();
+        let d = e
+            .tick(make_candle(100.0 + 31.0 * 5.0, 31), flat_ctx())
+            .unwrap();
         assert_eq!(d.signal, Signal::Sell);
     }
 

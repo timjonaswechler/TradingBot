@@ -3,8 +3,8 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name    = "trading-daemon",
-    about   = "Stateful trading daemon — paper trading & live strategy execution",
+    name = "trading-daemon",
+    about = "Stateful trading daemon — paper trading & live strategy execution",
     version
 )]
 pub struct Cli {

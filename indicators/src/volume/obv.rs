@@ -10,7 +10,7 @@ pub fn obv(candles: &[Candle]) -> Option<f64> {
     }
     let mut val = 0.0f64;
     for i in 1..candles.len() {
-        let cur  = &candles[i];
+        let cur = &candles[i];
         let prev = &candles[i - 1];
         if cur.close > prev.close {
             val += cur.volume;
@@ -27,7 +27,16 @@ mod tests {
     use super::*;
 
     fn candle(c: f64, v: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: c, high: c + 0.5, low: c - 0.5, close: c, volume: v, timeframe: "1d".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: c,
+            high: c + 0.5,
+            low: c - 0.5,
+            close: c,
+            volume: v,
+            timeframe: "1d".into(),
+        }
     }
 
     #[test]

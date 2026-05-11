@@ -38,12 +38,12 @@ pub fn candle_to_reducer_args(
 pub fn db_candle_to_shared(c: DbCandle) -> Candle {
     Candle {
         timestamp: c.timestamp,
-        symbol:    c.symbol,
-        open:      c.open,
-        high:      c.high,
-        low:       c.low,
-        close:     c.close,
-        volume:    c.volume,
+        symbol: c.symbol,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
         timeframe: c.timeframe,
     }
 }
@@ -58,12 +58,12 @@ pub fn db_position_to_shared(p: LivePosition) -> (u64, String, Position) {
         PositionSide::Short
     };
     let pos = Position {
-        symbol:      p.symbol,
+        symbol: p.symbol,
         side,
         entry_price: p.entry_price,
-        size:        p.size,
-        entry_time:  p.entry_time,
-        stop_loss:   (p.stop_loss != 0.0).then_some(p.stop_loss),
+        size: p.size,
+        entry_time: p.entry_time,
+        stop_loss: (p.stop_loss != 0.0).then_some(p.stop_loss),
         take_profit: (p.take_profit != 0.0).then_some(p.take_profit),
     };
     (p.id, p.strategy, pos)

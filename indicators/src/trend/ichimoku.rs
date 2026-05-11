@@ -18,8 +18,11 @@ pub struct IchimokuResult {
 fn donchian_mid(candles: &[Candle], period: usize, end: usize) -> Option<f64> {
     let start = end.checked_sub(period)?;
     let slice = &candles[start..end];
-    let high = slice.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
-    let low  = slice.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+    let high = slice
+        .iter()
+        .map(|c| c.high)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let low = slice.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
     Some((high + low) / 2.0)
 }
 
@@ -44,14 +47,20 @@ pub fn ichimoku_custom(
     }
 
     let tenkan = donchian_mid(candles, tenkan_period, n)?;
-    let kijun  = donchian_mid(candles, kijun_period,  n)?;
+    let kijun = donchian_mid(candles, kijun_period, n)?;
     let span_a = (tenkan + kijun) / 2.0;
     let span_b = donchian_mid(candles, senkou_b_period, n)?;
 
     // Chikou = close of current bar (would be plotted 26 bars back)
     let chikou = candles.last()?.close;
 
-    Some(IchimokuResult { tenkan, kijun, span_a, span_b, chikou })
+    Some(IchimokuResult {
+        tenkan,
+        kijun,
+        span_a,
+        span_b,
+        chikou,
+    })
 }
 
 #[cfg(test)]
@@ -59,24 +68,39 @@ mod tests {
     use super::*;
 
     fn candle(h: f64, l: f64, c: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: l, high: h, low: l, close: c, volume: 1.0, timeframe: "1d".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: l,
+            high: h,
+            low: l,
+            close: c,
+            volume: 1.0,
+            timeframe: "1d".into(),
+        }
     }
 
     #[test]
     fn insufficient_data() {
-        let c: Vec<Candle> = (1..=51).map(|i| candle(i as f64 + 1.0, i as f64 - 1.0, i as f64)).collect();
+        let c: Vec<Candle> = (1..=51)
+            .map(|i| candle(i as f64 + 1.0, i as f64 - 1.0, i as f64))
+            .collect();
         assert_eq!(ichimoku(&c), None);
     }
 
     #[test]
     fn computes_without_panic() {
-        let c: Vec<Candle> = (1..=60).map(|i| candle(i as f64 + 1.0, i as f64 - 1.0, i as f64)).collect();
+        let c: Vec<Candle> = (1..=60)
+            .map(|i| candle(i as f64 + 1.0, i as f64 - 1.0, i as f64))
+            .collect();
         assert!(ichimoku(&c).is_some());
     }
 
     #[test]
     fn span_a_is_average_of_tenkan_and_kijun() {
-        let c: Vec<Candle> = (1..=60).map(|i| candle(i as f64 + 1.0, i as f64 - 1.0, i as f64)).collect();
+        let c: Vec<Candle> = (1..=60)
+            .map(|i| candle(i as f64 + 1.0, i as f64 - 1.0, i as f64))
+            .collect();
         let r = ichimoku(&c).unwrap();
         let expected = (r.tenkan + r.kijun) / 2.0;
         assert!((r.span_a - expected).abs() < 1e-10);
@@ -84,7 +108,9 @@ mod tests {
 
     #[test]
     fn chikou_is_last_close() {
-        let c: Vec<Candle> = (1..=60).map(|i| candle(i as f64 + 1.0, i as f64 - 1.0, i as f64)).collect();
+        let c: Vec<Candle> = (1..=60)
+            .map(|i| candle(i as f64 + 1.0, i as f64 - 1.0, i as f64))
+            .collect();
         let r = ichimoku(&c).unwrap();
         assert_eq!(r.chikou, 60.0);
     }

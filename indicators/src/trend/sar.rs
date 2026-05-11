@@ -76,7 +76,16 @@ mod tests {
     use super::*;
 
     fn candle(h: f64, l: f64, c: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: l, high: h, low: l, close: c, volume: 1.0, timeframe: "1d".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: l,
+            high: h,
+            low: l,
+            close: c,
+            volume: 1.0,
+            timeframe: "1d".into(),
+        }
     }
 
     #[test]
@@ -100,6 +109,9 @@ mod tests {
             .collect();
         let s = sar(&candles, 0.02, 0.2).unwrap();
         let last_close = 15.0f64;
-        assert!(s < last_close, "SAR {s} should be below close {last_close} in uptrend");
+        assert!(
+            s < last_close,
+            "SAR {s} should be below close {last_close} in uptrend"
+        );
     }
 }

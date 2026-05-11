@@ -18,13 +18,16 @@ pub fn volume_profile(candles: &[Candle], num_buckets: usize) -> Option<Vec<Volu
         return None;
     }
 
-    let high = candles.iter().map(|c| c.high).fold(f64::NEG_INFINITY, f64::max);
-    let low  = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+    let high = candles
+        .iter()
+        .map(|c| c.high)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let low = candles.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
 
     if (high - low).abs() < 1e-12 {
         // Flat market — all volume in one bucket
         return Some(vec![VolumeProfileBucket {
-            price:  high,
+            price: high,
             volume: candles.iter().map(|c| c.volume).sum(),
         }]);
     }
@@ -34,9 +37,9 @@ pub fn volume_profile(candles: &[Candle], num_buckets: usize) -> Option<Vec<Volu
 
     for c in candles {
         // Distribute candle volume proportionally across the buckets it spans
-        let c_low_idx  = ((c.low  - low) / bucket_size).floor() as usize;
+        let c_low_idx = ((c.low - low) / bucket_size).floor() as usize;
         let c_high_idx = ((c.high - low) / bucket_size).floor() as usize;
-        let c_low_idx  = c_low_idx.min(num_buckets - 1);
+        let c_low_idx = c_low_idx.min(num_buckets - 1);
         let c_high_idx = c_high_idx.min(num_buckets - 1);
 
         let span = (c_high_idx - c_low_idx + 1) as f64;
@@ -46,10 +49,14 @@ pub fn volume_profile(candles: &[Candle], num_buckets: usize) -> Option<Vec<Volu
         }
     }
 
-    let result = buckets.iter().enumerate().map(|(i, &vol)| VolumeProfileBucket {
-        price:  low + (i as f64 + 0.5) * bucket_size,
-        volume: vol,
-    }).collect();
+    let result = buckets
+        .iter()
+        .enumerate()
+        .map(|(i, &vol)| VolumeProfileBucket {
+            price: low + (i as f64 + 0.5) * bucket_size,
+            volume: vol,
+        })
+        .collect();
 
     Some(result)
 }
@@ -59,7 +66,16 @@ mod tests {
     use super::*;
 
     fn candle(h: f64, l: f64, v: f64) -> Candle {
-        Candle { timestamp: 0, symbol: "T".into(), open: l, high: h, low: l, close: (h + l) / 2.0, volume: v, timeframe: "1d".into() }
+        Candle {
+            timestamp: 0,
+            symbol: "T".into(),
+            open: l,
+            high: h,
+            low: l,
+            close: (h + l) / 2.0,
+            volume: v,
+            timeframe: "1d".into(),
+        }
     }
 
     #[test]

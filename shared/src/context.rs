@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::Position;
+use serde::{Deserialize, Serialize};
 
 /// Runtime context passed to the Rhai `on_tick` function on every candle.
 ///
@@ -24,9 +24,9 @@ impl Context {
     /// Create a fresh context with the given starting capital and no open position.
     pub fn new(initial_balance: f64) -> Self {
         Self {
-            balance:      initial_balance,
-            equity:       initial_balance,
-            position:     None,
+            balance: initial_balance,
+            equity: initial_balance,
+            position: None,
             trades_count: 0,
         }
     }
@@ -46,7 +46,7 @@ mod tests {
         let ctx = Context::new(10_000.0);
         assert!(!ctx.has_position());
         assert_eq!(ctx.balance, 10_000.0);
-        assert_eq!(ctx.equity,  10_000.0);
+        assert_eq!(ctx.equity, 10_000.0);
         assert_eq!(ctx.trades_count, 0);
     }
 }

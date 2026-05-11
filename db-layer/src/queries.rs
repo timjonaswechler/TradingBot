@@ -12,10 +12,6 @@ use crate::{
     error::DbError,
     models::{candle_to_reducer_args, db_candle_to_shared},
     module_bindings::{
-        // Table access traits — must be in scope for .candles(), .live_positions(), .live_trades()
-        CandlesTableAccess,
-        LivePositionsTableAccess,
-        LiveTradesTableAccess,
         // Reducer extension traits — must be in scope for .insert_candle(), etc.
         close_position,
         delete_candles_by_symbol,
@@ -23,7 +19,13 @@ use crate::{
         insert_candle,
         insert_trade,
         open_position,
-        DbConnection, LivePosition, LiveTrade,
+        // Table access traits — must be in scope for .candles(), .live_positions(), .live_trades()
+        CandlesTableAccess,
+        DbConnection,
+        LivePosition,
+        LivePositionsTableAccess,
+        LiveTrade,
+        LiveTradesTableAccess,
     },
 };
 
@@ -39,12 +41,7 @@ pub fn insert_candle(conn: &DbConnection, candle: &Candle, provider: &str) -> Re
 
 /// Fetch up to `limit` candles for `symbol` / `timeframe` in chronological order.
 /// Reads from the local cache — no network call.
-pub fn get_candles(
-    conn: &DbConnection,
-    symbol: &str,
-    timeframe: &str,
-    limit: u32,
-) -> Vec<Candle> {
+pub fn get_candles(conn: &DbConnection, symbol: &str, timeframe: &str, limit: u32) -> Vec<Candle> {
     let mut candles: Vec<Candle> = conn
         .db
         .candles()
@@ -258,10 +255,7 @@ pub fn delete_candles_by_symbol(
 
 /// Delete all trades for a given strategy via reducer.
 /// Used in integration test teardown.
-pub fn delete_trades_by_strategy(
-    conn: &DbConnection,
-    strategy: &str,
-) -> Result<(), DbError> {
+pub fn delete_trades_by_strategy(conn: &DbConnection, strategy: &str) -> Result<(), DbError> {
     conn.reducers
         .delete_trades_by_strategy(strategy.to_string())
         .map_err(|e| DbError::ReducerSend(e.to_string()))
