@@ -780,6 +780,47 @@ fn on_tick(candles, context) {
         assert_eq!(last, Signal::Buy);
     }
 
+    const ADX_OFFSET_SEMANTICS: &str = r#"
+fn on_tick(candles, context) {
+    let current = indicators::adx(candles, 3);
+    let previous = indicators::adx(candles, 3, 1);
+
+    let seen = context.state("seen", 0);
+    let last_adx = context.state_f("adx", 0.0);
+    let last_plus_di = context.state_f("plus_di", 0.0);
+    let last_minus_di = context.state_f("minus_di", 0.0);
+
+    let result = if seen == 1 && previous != () {
+        let adx_ok = previous.adx >= last_adx - 0.000001 && previous.adx <= last_adx + 0.000001;
+        let plus_ok = previous.plus_di >= last_plus_di - 0.000001 && previous.plus_di <= last_plus_di + 0.000001;
+        let minus_ok = previous.minus_di >= last_minus_di - 0.000001 && previous.minus_di <= last_minus_di + 0.000001;
+        if adx_ok && plus_ok && minus_ok { "BUY" } else { "SELL" }
+    } else {
+        "HOLD"
+    };
+
+    if current != () {
+        context.set_state_f("adx", current.adx);
+        context.set_state_f("plus_di", current.plus_di);
+        context.set_state_f("minus_di", current.minus_di);
+        context.set_state("seen", 1);
+    }
+
+    #{ signal: result }
+}
+"#;
+
+    #[test]
+    fn adx_offset_matches_previous_tick_values() {
+        let mut e = Engine::new(ADX_OFFSET_SEMANTICS).unwrap();
+        let mut last = Signal::Hold;
+        for (i, close) in [10.0, 11.0, 12.0, 13.0, 12.0, 14.0, 15.0, 14.5].into_iter().enumerate() {
+            let d = e.tick(make_candle(close, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy);
+    }
+
     // ── Anchored: strategy declares pivot+trendline config ────────────────
 
     const ANCHORED: &str = r#"

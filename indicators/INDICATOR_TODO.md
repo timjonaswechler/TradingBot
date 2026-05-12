@@ -155,6 +155,7 @@ Binding-Smoke-Tests auf Engine-Ebene.
 - Offset-Semantik-Tests für `pivot_points`
 - Offset-Semantik-Tests für `bollinger`
 - Offset-Semantik-Tests für `stochastic`
+- Offset-Semantik-Tests für `adx`
 
 ---
 
@@ -178,7 +179,7 @@ Binding-Smoke-Tests auf Engine-Ebene.
 ### P4 — Testlücken schließen
 - [x] Pro exponiertem Rhai-Indicator mindestens ein Binding-Smoke-Test
 - [ ] Semantik-/Edge-Case-Tests für ausgewählte kritische Indicators ergänzen
-- [ ] Offset-Semantik weiter für komplexere Map-/Array-Indikatoren absichern (`adx`, ...)
+- [x] Erste Offset-Semantik-Suite für komplexere Map-/Array-Indikatoren ergänzt (`obv`, `pivot_points`, `bollinger`, `stochastic`, `adx`)
 
 ### P5 — Performance verbessern
 - [ ] Prüfen, welche Voll-Recompute-Indikatoren echte O(1)- oder inkrementelle Pfade bekommen sollten
