@@ -10,6 +10,9 @@ pub struct BbResult {
 ///
 /// `middle` = SMA(period), `upper/lower` = middle +/- `std_dev` * standard deviation.
 ///
+/// Uses the population standard deviation (divisor `n`), which matches the
+/// usual Bollinger Bands convention.
+///
 /// Input: closes in chronological order (oldest first).
 /// Needs at least `period` values.
 pub fn bollinger(closes: &[f64], period: usize, std_dev: f64) -> Option<BbResult> {
@@ -63,5 +66,16 @@ mod tests {
         let width1 = r1.upper - r1.lower;
         let width2 = r2.upper - r2.lower;
         assert!((width2 - 2.0 * width1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn uses_population_standard_deviation() {
+        let r = bollinger(&[1.0, 2.0, 3.0, 4.0, 5.0], 5, 2.0).unwrap();
+        let expected_mean = 3.0;
+        let expected_sd = 2.0_f64.sqrt();
+
+        assert!((r.middle - expected_mean).abs() < 1e-10);
+        assert!((r.upper - (expected_mean + 2.0 * expected_sd)).abs() < 1e-10);
+        assert!((r.lower - (expected_mean - 2.0 * expected_sd)).abs() < 1e-10);
     }
 }

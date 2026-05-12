@@ -701,6 +701,85 @@ fn on_tick(candles, context) {
         assert_eq!(last, Signal::Buy);
     }
 
+    const BOLLINGER_OFFSET_SEMANTICS: &str = r#"
+fn on_tick(candles, context) {
+    let current = indicators::bollinger(candles, 3, 2.0);
+    let previous = indicators::bollinger(candles, 3, 2.0, 1);
+
+    let seen = context.state("seen", 0);
+    let last_upper = context.state_f("upper", 0.0);
+    let last_middle = context.state_f("middle", 0.0);
+    let last_lower = context.state_f("lower", 0.0);
+
+    let result = if seen == 1 && previous != () {
+        let upper_ok = previous.upper >= last_upper - 0.000001 && previous.upper <= last_upper + 0.000001;
+        let middle_ok = previous.middle >= last_middle - 0.000001 && previous.middle <= last_middle + 0.000001;
+        let lower_ok = previous.lower >= last_lower - 0.000001 && previous.lower <= last_lower + 0.000001;
+        if upper_ok && middle_ok && lower_ok { "BUY" } else { "SELL" }
+    } else {
+        "HOLD"
+    };
+
+    if current != () {
+        context.set_state_f("upper", current.upper);
+        context.set_state_f("middle", current.middle);
+        context.set_state_f("lower", current.lower);
+        context.set_state("seen", 1);
+    }
+
+    #{ signal: result }
+}
+"#;
+
+    #[test]
+    fn bollinger_offset_matches_previous_tick_bands() {
+        let mut e = Engine::new(BOLLINGER_OFFSET_SEMANTICS).unwrap();
+        let mut last = Signal::Hold;
+        for (i, close) in [1.0, 2.0, 3.0, 4.0, 5.0].into_iter().enumerate() {
+            let d = e.tick(make_candle(close, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy);
+    }
+
+    const STOCHASTIC_OFFSET_SEMANTICS: &str = r#"
+fn on_tick(candles, context) {
+    let current = indicators::stochastic(candles, 3);
+    let previous = indicators::stochastic(candles, 3, 1);
+
+    let seen = context.state("seen", 0);
+    let last_k = context.state_f("k", 0.0);
+    let last_d = context.state_f("d", 0.0);
+
+    let result = if seen == 1 && previous != () {
+        let k_ok = previous.k >= last_k - 0.000001 && previous.k <= last_k + 0.000001;
+        let d_ok = previous.d >= last_d - 0.000001 && previous.d <= last_d + 0.000001;
+        if k_ok && d_ok { "BUY" } else { "SELL" }
+    } else {
+        "HOLD"
+    };
+
+    if current != () {
+        context.set_state_f("k", current.k);
+        context.set_state_f("d", current.d);
+        context.set_state("seen", 1);
+    }
+
+    #{ signal: result }
+}
+"#;
+
+    #[test]
+    fn stochastic_offset_matches_previous_tick_values() {
+        let mut e = Engine::new(STOCHASTIC_OFFSET_SEMANTICS).unwrap();
+        let mut last = Signal::Hold;
+        for (i, close) in [10.0, 11.0, 12.0, 13.0, 12.5, 14.0].into_iter().enumerate() {
+            let d = e.tick(make_candle(close, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy);
+    }
+
     // ── Anchored: strategy declares pivot+trendline config ────────────────
 
     const ANCHORED: &str = r#"

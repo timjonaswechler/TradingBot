@@ -11,9 +11,16 @@ pub struct StochasticResult {
 
 /// Stochastic Oscillator (%K and %D).
 ///
+/// This implements the common fast stochastic form:
+/// - `%K` = current close's position inside the lookback high/low range
+/// - `%D` = fixed 3-bar SMA of `%K`
+///
+/// TODO(#23)[https://github.com/timjonaswechler/TradingBot/issues/23]: Decide whether the strategy-facing API should stay fast-only or
+/// expose a slow/full stochastic variant for platform parity.
+///
 /// Input: candles in chronological order (oldest first).
 /// `period` is the %K lookback (typically 14).
-/// %D is a 3-bar SMA of %K (fixed).
+/// `%D` is a 3-bar SMA of `%K` (fixed).
 /// Needs at least `period + 2` candles.
 pub fn stochastic(candles: &[Candle], period: usize) -> Option<StochasticResult> {
     let d_period = 3;
@@ -99,5 +106,26 @@ mod tests {
             .collect();
         let r = stochastic(&c, 14).unwrap();
         assert!(r.k > 80.0, "%K {:.1} should be overbought in uptrend", r.k);
+    }
+
+    #[test]
+    fn computes_fast_stochastic_k_and_d_from_last_three_windows() {
+        let c = vec![
+            candle(10.0, 0.0, 5.0),
+            candle(12.0, 2.0, 8.0),
+            candle(14.0, 4.0, 11.0),
+            candle(16.0, 6.0, 14.0),
+            candle(18.0, 8.0, 17.0),
+        ];
+
+        let r = stochastic(&c, 3).unwrap();
+
+        let expected_k1 = 100.0 * (11.0 - 0.0) / (14.0 - 0.0);
+        let expected_k2 = 100.0 * (14.0 - 2.0) / (16.0 - 2.0);
+        let expected_k3 = 100.0 * (17.0 - 4.0) / (18.0 - 4.0);
+        let expected_d = (expected_k1 + expected_k2 + expected_k3) / 3.0;
+
+        assert!((r.k - expected_k3).abs() < 1e-10);
+        assert!((r.d - expected_d).abs() < 1e-10);
     }
 }
