@@ -75,8 +75,20 @@ fn warmup_hint_for_call(call: &FnCallExpr, scope: &Scope) -> Option<usize> {
 
     match call.name.as_str() {
         // Single-period indicators
-        "sma" | "ema" | "dema" | "tema" | "adx" | "rsi" | "cci" | "stochastic" | "williams_r"
+        "sma" | "ema" | "dema" | "tema" | "adx" | "rsi" | "cci" | "williams_r"
         | "roc" | "atr" | "mfi" | "slope" | "bollinger" | "keltner" => arg(call, 1, scope),
+
+        // Stochastic variants
+        "stochastic_fast" => arg(call, 1, scope),
+        "stochastic_slow" => arg(call, 1, scope).map(|p| p + 3),
+        "stochastic_full" => {
+            // Args: candles, period, k_smooth?, d_period?, offset?
+            // Warmup = max(period, k_smooth, d_period)
+            let p = arg(call, 1, scope);
+            let ks = arg(call, 2, scope);
+            let dp = arg(call, 3, scope);
+            [p, ks, dp].into_iter().flatten().max()
+        }
 
         // Multi-period indicator
         "macd" => [1usize, 2, 3]

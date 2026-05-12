@@ -494,7 +494,7 @@ fn on_tick(candles, context) {{
     indicator_smoke_test!(cci_binding_smoke, "indicators::cci(candles, 3)", 10);
     indicator_smoke_test!(
         stochastic_binding_smoke,
-        "indicators::stochastic(candles, 3)",
+        "indicators::stochastic_fast(candles, 3)",
         10
     );
     indicator_smoke_test!(
@@ -580,8 +580,13 @@ fn on_tick(candles, context) {{
     );
     indicator_offset_smoke_test!(
         stochastic_offset_binding_smoke,
-        "indicators::stochastic(candles, 3, 1)",
+        "indicators::stochastic_fast(candles, 3, 1)",
         10
+    );
+    indicator_offset_smoke_test!(
+        sar_offset_binding_smoke,
+        "indicators::sar(candles, 0.02, 0.2, 1)",
+        6
     );
     indicator_offset_smoke_test!(
         bollinger_offset_binding_smoke,
@@ -610,6 +615,32 @@ fn on_tick(candles, context) {{
         "indicators::pivot_points(candles, 1)",
         3
     );
+
+    const SAR_EXPOSES_RICH_STATE: &str = r#"
+fn on_tick(candles, context) {
+    let sar = indicators::sar(candles, 0.02, 0.2);
+    if sar == () {
+        return #{ signal: "HOLD" };
+    }
+
+    if sar.side == "long" && sar.reversed == false && sar.af > 0.0 && sar.ep > sar.value {
+        #{ signal: "BUY" }
+    } else {
+        #{ signal: "SELL" }
+    }
+}
+"#;
+
+    #[test]
+    fn sar_exposes_rich_state_for_strategies() {
+        let mut e = Engine::new(SAR_EXPOSES_RICH_STATE).unwrap();
+        let mut last = Signal::Hold;
+        for i in 1..=6 {
+            let d = e.tick(make_candle(i as f64, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy);
+    }
 
     const ICHIMOKU_CURRENT_KNOWN_SEMANTICS: &str = r#"
 fn on_tick(candles, context) {
@@ -777,8 +808,8 @@ fn on_tick(candles, context) {
 
     const STOCHASTIC_OFFSET_SEMANTICS: &str = r#"
 fn on_tick(candles, context) {
-    let current = indicators::stochastic(candles, 3);
-    let previous = indicators::stochastic(candles, 3, 1);
+    let current = indicators::stochastic_fast(candles, 3);
+    let previous = indicators::stochastic_fast(candles, 3, 1);
 
     let seen = context.state("seen", 0);
     let last_k = context.state_f("k", 0.0);

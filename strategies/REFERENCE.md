@@ -308,8 +308,8 @@ Unless noted otherwise, indicators return `()` when there is insufficient data.
 | `indicators::tema(candles, period, offset)` | `float` or `()` |
 | `indicators::macd(candles, fast, slow, signal)` | `#{ line, signal, histogram }` or `()` |
 | `indicators::macd(candles, fast, slow, signal, offset)` | `#{ line, signal, histogram }` or `()` |
-| `indicators::sar(candles, step, max)` | `float` or `()` |
-| `indicators::sar(candles, step, max, offset)` | `float` or `()` |
+| `indicators::sar(candles, step, max)` | `#{ value, side, reversed, ep, af }` or `()` |
+| `indicators::sar(candles, step, max, offset)` | `#{ value, side, reversed, ep, af }` or `()` |
 | `indicators::adx(candles, period)` | `#{ adx, plus_di, minus_di }` or `()` |
 | `indicators::adx(candles, period, offset)` | `#{ adx, plus_di, minus_di }` or `()` |
 | `indicators::ichimoku(candles)` | `#{ tenkan, kijun, span_a, span_b, chikou }` or `()` |
@@ -323,8 +323,13 @@ Unless noted otherwise, indicators return `()` when there is insufficient data.
 | `indicators::rsi(candles, period, offset)` | `float` or `()` |
 | `indicators::cci(candles, period)` | `float` or `()` |
 | `indicators::cci(candles, period, offset)` | `float` or `()` |
-| `indicators::stochastic(candles, period)` | `#{ k, d }` or `()` |
-| `indicators::stochastic(candles, period, offset)` | `#{ k, d }` or `()` |
+| `indicators::stochastic_fast(candles, period)` | `#{ k, d }` or `()` |
+| `indicators::stochastic_fast(candles, period, offset)` | `#{ k, d }` or `()` |
+| `indicators::stochastic_slow(candles, period)` | `#{ k, d }` or `()` |
+| `indicators::stochastic_slow(candles, period, offset)` | `#{ k, d }` or `()` |
+| `indicators::stochastic_full(candles, period)` | `#{ k, d }` or `()` (k_smooth=3, d_period=3) |
+| `indicators::stochastic_full(candles, period, k_smooth)` | `#{ k, d }` or `()` |
+| `indicators::stochastic_full(candles, period, k_smooth, d_period)` | `#{ k, d }` or `()` |
 | `indicators::williams_r(candles, period)` | `float` or `()` |
 | `indicators::williams_r(candles, period, offset)` | `float` or `()` |
 | `indicators::roc(candles, period)` | `float` or `()` |

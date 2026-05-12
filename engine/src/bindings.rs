@@ -21,7 +21,7 @@ use crate::indicator_cache::{
 };
 
 use indicators::{
-    momentum::{cci::cci, roc::roc, rsi::rsi, stochastic::stochastic, williams_r::williams_r},
+    momentum::{cci::cci, roc::roc, rsi::rsi, stochastic::{stochastic_fast, stochastic_full, stochastic_slow}, williams_r::williams_r},
     slope::slope,
     support_resistance::{fibonacci::fibonacci_retracements, pivot_points::pivot_points},
     trend::{
@@ -176,13 +176,47 @@ pub fn build_indicators_module() -> Module {
     m.set_native_fn(
         "sar",
         |cl: &mut CandleList, step: f64, max: f64| -> RhaiResult {
-            Ok(opt(sar(&candles_slice(cl, 0), step, max)))
+            match sar(&candles_slice(cl, 0), step, max) {
+                None => Ok(Dynamic::UNIT),
+                Some(r) => {
+                    let mut map = rhai::Map::new();
+                    map.insert("value".into(), Dynamic::from(r.value));
+                    map.insert(
+                        "side".into(),
+                        Dynamic::from(match r.side {
+                            indicators::trend::sar::SarSide::Long => "long",
+                            indicators::trend::sar::SarSide::Short => "short",
+                        }),
+                    );
+                    map.insert("reversed".into(), Dynamic::from(r.reversed));
+                    map.insert("ep".into(), Dynamic::from(r.ep));
+                    map.insert("af".into(), Dynamic::from(r.af));
+                    Ok(Dynamic::from_map(map))
+                }
+            }
         },
     );
     m.set_native_fn(
         "sar",
         |cl: &mut CandleList, step: f64, max: f64, offset: INT| -> RhaiResult {
-            Ok(opt(sar(&candles_slice(cl, offset as usize), step, max)))
+            match sar(&candles_slice(cl, offset as usize), step, max) {
+                None => Ok(Dynamic::UNIT),
+                Some(r) => {
+                    let mut map = rhai::Map::new();
+                    map.insert("value".into(), Dynamic::from(r.value));
+                    map.insert(
+                        "side".into(),
+                        Dynamic::from(match r.side {
+                            indicators::trend::sar::SarSide::Long => "long",
+                            indicators::trend::sar::SarSide::Short => "short",
+                        }),
+                    );
+                    map.insert("reversed".into(), Dynamic::from(r.reversed));
+                    map.insert("ep".into(), Dynamic::from(r.ep));
+                    map.insert("af".into(), Dynamic::from(r.af));
+                    Ok(Dynamic::from_map(map))
+                }
+            }
         },
     );
 
@@ -326,10 +360,12 @@ pub fn build_indicators_module() -> Module {
         },
     );
 
+    // ── Stochastic (Fast, Slow, Full) ─────────────────────────────────────
+
     m.set_native_fn(
-        "stochastic",
+        "stochastic_fast",
         |cl: &mut CandleList, period: INT| -> RhaiResult {
-            match stochastic(&candles_slice(cl, 0), period as usize) {
+            match stochastic_fast(&candles_slice(cl, 0), period as usize) {
                 None => Ok(Dynamic::UNIT),
                 Some(r) => {
                     let mut map = rhai::Map::new();
@@ -341,9 +377,95 @@ pub fn build_indicators_module() -> Module {
         },
     );
     m.set_native_fn(
-        "stochastic",
+        "stochastic_fast",
         |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
-            match stochastic(&candles_slice(cl, offset as usize), period as usize) {
+            match stochastic_fast(&candles_slice(cl, offset as usize), period as usize) {
+                None => Ok(Dynamic::UNIT),
+                Some(r) => {
+                    let mut map = rhai::Map::new();
+                    map.insert("k".into(), Dynamic::from(r.k));
+                    map.insert("d".into(), Dynamic::from(r.d));
+                    Ok(Dynamic::from_map(map))
+                }
+            }
+        },
+    );
+
+    m.set_native_fn(
+        "stochastic_slow",
+        |cl: &mut CandleList, period: INT| -> RhaiResult {
+            match stochastic_slow(&candles_slice(cl, 0), period as usize) {
+                None => Ok(Dynamic::UNIT),
+                Some(r) => {
+                    let mut map = rhai::Map::new();
+                    map.insert("k".into(), Dynamic::from(r.k));
+                    map.insert("d".into(), Dynamic::from(r.d));
+                    Ok(Dynamic::from_map(map))
+                }
+            }
+        },
+    );
+    m.set_native_fn(
+        "stochastic_slow",
+        |cl: &mut CandleList, period: INT, offset: INT| -> RhaiResult {
+            match stochastic_slow(&candles_slice(cl, offset as usize), period as usize) {
+                None => Ok(Dynamic::UNIT),
+                Some(r) => {
+                    let mut map = rhai::Map::new();
+                    map.insert("k".into(), Dynamic::from(r.k));
+                    map.insert("d".into(), Dynamic::from(r.d));
+                    Ok(Dynamic::from_map(map))
+                }
+            }
+        },
+    );
+
+    m.set_native_fn(
+        "stochastic_full",
+        |cl: &mut CandleList, period: INT| -> RhaiResult {
+            match stochastic_full(&candles_slice(cl, 0), period as usize, None, None) {
+                None => Ok(Dynamic::UNIT),
+                Some(r) => {
+                    let mut map = rhai::Map::new();
+                    map.insert("k".into(), Dynamic::from(r.k));
+                    map.insert("d".into(), Dynamic::from(r.d));
+                    Ok(Dynamic::from_map(map))
+                }
+            }
+        },
+    );
+    m.set_native_fn(
+        "stochastic_full",
+        |cl: &mut CandleList, period: INT, k_smooth: INT| -> RhaiResult {
+            match stochastic_full(&candles_slice(cl, 0), period as usize, Some(k_smooth as usize), None) {
+                None => Ok(Dynamic::UNIT),
+                Some(r) => {
+                    let mut map = rhai::Map::new();
+                    map.insert("k".into(), Dynamic::from(r.k));
+                    map.insert("d".into(), Dynamic::from(r.d));
+                    Ok(Dynamic::from_map(map))
+                }
+            }
+        },
+    );
+    m.set_native_fn(
+        "stochastic_full",
+        |cl: &mut CandleList, period: INT, k_smooth: INT, d_period: INT| -> RhaiResult {
+            match stochastic_full(&candles_slice(cl, 0), period as usize, Some(k_smooth as usize), Some(d_period as usize)) {
+                None => Ok(Dynamic::UNIT),
+                Some(r) => {
+                    let mut map = rhai::Map::new();
+                    map.insert("k".into(), Dynamic::from(r.k));
+                    map.insert("d".into(), Dynamic::from(r.d));
+                    Ok(Dynamic::from_map(map))
+                }
+            }
+        },
+    );
+    m.set_native_fn(
+        "stochastic_full",
+        |cl: &mut CandleList, period: INT, k_smooth: INT, d_period: INT, offset: INT| -> RhaiResult {
+            match stochastic_full(&candles_slice(cl, offset as usize), period as usize, Some(k_smooth as usize), Some(d_period as usize)) {
                 None => Ok(Dynamic::UNIT),
                 Some(r) => {
                     let mut map = rhai::Map::new();
