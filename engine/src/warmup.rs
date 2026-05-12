@@ -39,6 +39,16 @@ fn on_tick(candles, context) {
 }
 "#;
 
+    const ICHIMOKU_READY_STRATEGY: &str = r#"
+fn on_tick(candles, context) {
+    let ichi = indicators::ichimoku(candles);
+    if ichi == () {
+        return #{ signal: "HOLD" };
+    }
+    #{ signal: "BUY" }
+}
+"#;
+
     #[test]
     fn warmup_pre_loads_candles() {
         let mut engine = Engine::new(STRATEGY).unwrap();
@@ -61,6 +71,32 @@ fn on_tick(candles, context) {
         let ctx = shared::Context::new(10_000.0);
         let decision = engine.tick(make_candle(21.0, 21), ctx).unwrap();
         assert_eq!(engine.candle_count(), 21);
+        assert_eq!(decision.signal, shared::Signal::Hold);
+    }
+
+    #[test]
+    fn ichimoku_is_ready_on_first_live_tick_after_51_warmup_bars() {
+        let mut engine = Engine::new(ICHIMOKU_READY_STRATEGY).unwrap();
+
+        let historical: Vec<Candle> = (1..=51).map(|i| make_candle(i as f64, i)).collect();
+        warmup(&mut engine, historical).unwrap();
+
+        let ctx = shared::Context::new(10_000.0);
+        let decision = engine.tick(make_candle(52.0, 52), ctx).unwrap();
+
+        assert_eq!(decision.signal, shared::Signal::Buy);
+    }
+
+    #[test]
+    fn ichimoku_is_not_ready_on_first_live_tick_after_only_50_warmup_bars() {
+        let mut engine = Engine::new(ICHIMOKU_READY_STRATEGY).unwrap();
+
+        let historical: Vec<Candle> = (1..=50).map(|i| make_candle(i as f64, i)).collect();
+        warmup(&mut engine, historical).unwrap();
+
+        let ctx = shared::Context::new(10_000.0);
+        let decision = engine.tick(make_candle(51.0, 51), ctx).unwrap();
+
         assert_eq!(decision.signal, shared::Signal::Hold);
     }
 }

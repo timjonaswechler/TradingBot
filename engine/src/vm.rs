@@ -611,6 +611,39 @@ fn on_tick(candles, context) {{
         3
     );
 
+    const ICHIMOKU_CURRENT_KNOWN_SEMANTICS: &str = r#"
+fn on_tick(candles, context) {
+    let ichi = indicators::ichimoku(candles);
+    if ichi == () {
+        return #{ signal: "HOLD" };
+    }
+
+    let eps = 0.000001;
+    let tenkan_ok = ichi.tenkan >= 48.0 - eps && ichi.tenkan <= 48.0 + eps;
+    let kijun_ok = ichi.kijun >= 39.5 - eps && ichi.kijun <= 39.5 + eps;
+    let span_a_ok = ichi.span_a >= 43.75 - eps && ichi.span_a <= 43.75 + eps;
+    let span_b_ok = ichi.span_b >= 26.5 - eps && ichi.span_b <= 26.5 + eps;
+    let chikou_ok = ichi.chikou >= candles[1].close - eps && ichi.chikou <= candles[1].close + eps;
+
+    if tenkan_ok && kijun_ok && span_a_ok && span_b_ok && chikou_ok {
+        #{ signal: "BUY" }
+    } else {
+        #{ signal: "SELL" }
+    }
+}
+"#;
+
+    #[test]
+    fn ichimoku_exposes_current_known_values_not_chart_shifted_window_data() {
+        let mut e = Engine::new(ICHIMOKU_CURRENT_KNOWN_SEMANTICS).unwrap();
+        let mut last = Signal::Hold;
+        for i in 1..=52 {
+            let d = e.tick(make_candle(i as f64, i as i64), flat_ctx()).unwrap();
+            last = d.signal;
+        }
+        assert_eq!(last, Signal::Buy);
+    }
+
     const OBV_OFFSET_SEMANTICS: &str = r#"
 fn on_tick(candles, context) {
     let current = indicators::obv(candles);
