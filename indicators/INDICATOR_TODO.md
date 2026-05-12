@@ -21,6 +21,26 @@ Diese Funktionen existieren in Rust, sind aber für `.rhai`-Strategien aktuell n
 - Wollen wir diese überhaupt als öffentliche Strategy-API?
 - Falls ja: direkte Exponierung oder über eine bewusst andere, author-friendly API?
 
+### Beschlossene Langfrist-Richtung für Ichimoku
+Siehe auch Issue `#24`.
+
+- `indicators::ichimoku(candles)` bleibt als kleine, direkte Strategy-API erhalten.
+- Diese Form liefert die **current-known**, unmittelbar nutzbaren Top-Level-Werte:
+  `tenkan`, `kijun`, `span_a`, `span_b`, `chikou`.
+- Langfristig soll eine reichere Overload-Form hinzukommen:
+  `indicators::ichimoku(candles, radius)`.
+- Diese Overload soll **dieselben Top-Level-Werte** behalten und zusätzlich ein
+  Feld `window` exponieren.
+- Ziel-Shape für `window`:
+  - `current`
+  - `past`
+  - `future_cloud`
+  - `meta`
+- Die reichere Fenster-Sicht soll additive Macht liefern, ohne die einfache
+  bestehende API zu verschlechtern.
+- Warmup-Semantik soll vor Implementierung explizit festgelegt werden; das
+  Top-Level-Modell bleibt unabhängig davon weiterhin mit 52 Bars nutzbar.
+
 ---
 
 ## 2) In Rhai exponiert, aber API **noch mit Rest-Inkonsistenz**

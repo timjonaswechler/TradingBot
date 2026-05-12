@@ -28,6 +28,14 @@ fn donchian_mid(candles: &[Candle], period: usize, end: usize) -> Option<f64> {
 
 /// Standard Ichimoku Cloud with default periods (9, 26, 52).
 ///
+/// This returns the current-known, immediately usable Ichimoku values for the
+/// latest bar, not a fully chart-shifted/projected window model.
+///
+/// TODO(#24)[https://github.com/timjonaswechler/TradingBot/issues/24]: Keep
+/// this small top-level API, but consider a richer overload like
+/// `ichimoku(candles, radius)` that adds a `.window` payload with
+/// `current`/`past`/`future_cloud`/`meta`.
+///
 /// Input: candles in chronological order (oldest first).
 /// Needs at least 52 bars.
 pub fn ichimoku(candles: &[Candle]) -> Option<IchimokuResult> {
