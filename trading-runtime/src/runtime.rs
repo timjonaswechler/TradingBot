@@ -1,6 +1,8 @@
 //! Trading runtime entrypoints.
 
-use crate::{plan_execution, PortfolioState, RuntimeEvent, RuntimeStep, StrategyHandler};
+use crate::{
+    plan_execution, ExecutionAction, PortfolioState, RuntimeEvent, RuntimeStep, StrategyHandler,
+};
 use shared::Candle;
 
 /// DB-free trading runtime core for one runtime asset.
@@ -52,8 +54,68 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             .map(|position| position.side);
         let planned = plan_execution(&decision, current_side);
         events.push(RuntimeEvent::ExecutionActionPlanned {
-            action: planned.action,
+            action: planned.action.clone(),
         });
+
+        match planned.action {
+            ExecutionAction::OpenLong {
+                quantity,
+                stop_loss,
+                take_profit,
+            } => {
+                self.portfolio
+                    .open_long_from_flat(&candle, quantity, stop_loss, take_profit)
+                    .expect("planned open long should be executable");
+                let position = self
+                    .portfolio
+                    .open_position
+                    .clone()
+                    .expect("opened long position should exist");
+                events.push(RuntimeEvent::PositionOpened { position });
+                events.push(RuntimeEvent::PortfolioUpdated {
+                    snapshot: self.portfolio.snapshot(candle.close),
+                });
+            }
+            ExecutionAction::CloseLong => {
+                let closed_position = self
+                    .portfolio
+                    .close_long(&candle)
+                    .expect("planned close long should be executable");
+                events.push(RuntimeEvent::PositionClosed { closed_position });
+                events.push(RuntimeEvent::PortfolioUpdated {
+                    snapshot: self.portfolio.snapshot(candle.close),
+                });
+            }
+            ExecutionAction::OpenShort {
+                quantity,
+                stop_loss,
+                take_profit,
+            } => {
+                self.portfolio
+                    .open_short_from_flat(&candle, quantity, stop_loss, take_profit)
+                    .expect("planned open short should be executable");
+                let position = self
+                    .portfolio
+                    .open_position
+                    .clone()
+                    .expect("opened short position should exist");
+                events.push(RuntimeEvent::PositionOpened { position });
+                events.push(RuntimeEvent::PortfolioUpdated {
+                    snapshot: self.portfolio.snapshot(candle.close),
+                });
+            }
+            ExecutionAction::CloseShort => {
+                let closed_position = self
+                    .portfolio
+                    .close_short(&candle)
+                    .expect("planned close short should be executable");
+                events.push(RuntimeEvent::PositionClosed { closed_position });
+                events.push(RuntimeEvent::PortfolioUpdated {
+                    snapshot: self.portfolio.snapshot(candle.close),
+                });
+            }
+            ExecutionAction::Noop | ExecutionAction::ForceClose => {}
+        }
 
         events.push(RuntimeEvent::TradableTickCompleted);
 
