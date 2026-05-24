@@ -3,7 +3,7 @@
 use crate::{
     plan_execution, ExecutionAction, PortfolioState, RuntimeEvent, RuntimeStep, StrategyHandler,
 };
-use shared::Candle;
+use shared::{Candle, PositionSide};
 
 /// DB-free trading runtime core for one runtime asset.
 #[derive(Debug, Clone)]
@@ -139,6 +139,43 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         events.push(RuntimeEvent::TradableTickCompleted);
 
         RuntimeStep::new(events, self.portfolio.snapshot(candle.close))
+    }
+
+    pub fn force_close(&mut self, mark_candle: Candle, reason: impl Into<String>) -> RuntimeStep {
+        let mut events = vec![RuntimeEvent::ForceCloseRequested {
+            candle: mark_candle.clone(),
+            reason: reason.into(),
+        }];
+
+        match self
+            .portfolio
+            .open_position
+            .as_ref()
+            .map(|position| position.side)
+        {
+            Some(PositionSide::Long) => {
+                events.push(RuntimeEvent::ExecutionActionPlanned {
+                    action: ExecutionAction::ForceClose,
+                });
+                let closed_position = self
+                    .portfolio
+                    .close_long(&mark_candle)
+                    .expect("open long position should be force-closeable");
+                events.push(RuntimeEvent::PositionClosed { closed_position });
+                events.push(RuntimeEvent::PortfolioUpdated {
+                    snapshot: self.portfolio.snapshot(mark_candle.close),
+                });
+            }
+            _ => {
+                events.push(RuntimeEvent::ExecutionActionPlanned {
+                    action: ExecutionAction::Noop,
+                });
+            }
+        }
+
+        events.push(RuntimeEvent::ForceCloseCompleted);
+
+        RuntimeStep::new(events, self.portfolio.snapshot(mark_candle.close))
     }
 
     pub fn effective_warmup_bars(&self) -> usize {
