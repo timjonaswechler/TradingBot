@@ -7,6 +7,7 @@ members = [
     "trading-daemon",
     "trading-ui",
     "backtester",
+    "trading-runtime",
 ]
 # spacetimedb-module targets wasm32-unknown-unknown and is built separately.
 # See: just db-build / just db-deploy
