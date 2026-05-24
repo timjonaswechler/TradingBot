@@ -125,7 +125,7 @@ impl PortfolioState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClosedPosition {
     pub position: Position,
     pub exit_price: f64,
@@ -141,7 +141,7 @@ pub enum PortfolioTransitionError {
 }
 
 /// Point-in-time portfolio view returned by runtime steps.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuntimePortfolioSnapshot {
     pub realized_cash_balance: f64,
     pub open_position: Option<Position>,

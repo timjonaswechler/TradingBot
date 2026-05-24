@@ -18,7 +18,7 @@ impl std::fmt::Display for PositionSide {
 }
 
 /// An open trading position (paper or live).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Position {
     pub symbol: String,
     pub side: PositionSide,
