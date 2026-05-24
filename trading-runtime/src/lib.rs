@@ -1,8 +1,15 @@
 //! DB-free Trading Runtime core.
 //!
-//! This crate is intentionally empty at first. It will grow into the shared
-//! runtime boundary for market input, strategy decisions, portfolio transitions,
-//! execution actions, and ordered runtime events.
+//! This crate is the first runtime-core slice for one runtime asset. It owns
+//! strategy-decision planning, runtime-local portfolio state, realized-cash
+//! portfolio transitions, explicit force-close commands, warmup progression,
+//! ordered runner-neutral runtime events, and [`RuntimeStep`] return values.
+//!
+//! This slice intentionally does not include Rhai strategy execution, database
+//! persistence, live-daemon or backtester wiring, real broker execution,
+//! secondary timeframe market views, dynamic risk updates, or stop-loss /
+//! take-profit trigger rules. The old `engine` crate remains only a future donor
+//! for strategy-handling behavior; this crate must stay independent from it.
 
 pub mod decision;
 pub mod events;
