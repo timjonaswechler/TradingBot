@@ -6,8 +6,10 @@
 
 pub mod decision;
 pub mod execution;
+pub mod portfolio;
 
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
 pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
+pub use portfolio::{PortfolioState, RuntimePortfolioSnapshot};
