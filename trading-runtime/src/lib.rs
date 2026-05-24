@@ -12,4 +12,6 @@ pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
 pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
-pub use portfolio::{PortfolioState, RuntimePortfolioSnapshot};
+pub use portfolio::{
+    ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,
+};

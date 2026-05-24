@@ -1,6 +1,6 @@
 //! Runtime-local portfolio state and snapshots.
 
-use shared::Position;
+use shared::{realized_pnl, Candle, Position, PositionSide};
 
 /// Runtime-local portfolio state for one trading session.
 ///
@@ -26,6 +26,118 @@ impl PortfolioState {
     pub fn snapshot(&self, mark_price: f64) -> RuntimePortfolioSnapshot {
         RuntimePortfolioSnapshot::from_state(self, mark_price)
     }
+
+    pub fn open_long_from_flat(
+        &mut self,
+        candle: &Candle,
+        quantity: f64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+    ) -> Result<(), PortfolioTransitionError> {
+        self.open_from_flat(PositionSide::Long, candle, quantity, stop_loss, take_profit)
+    }
+
+    pub fn close_long(
+        &mut self,
+        candle: &Candle,
+    ) -> Result<ClosedPosition, PortfolioTransitionError> {
+        self.close_matching_side(PositionSide::Long, candle)
+    }
+
+    pub fn open_short_from_flat(
+        &mut self,
+        candle: &Candle,
+        quantity: f64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+    ) -> Result<(), PortfolioTransitionError> {
+        self.open_from_flat(
+            PositionSide::Short,
+            candle,
+            quantity,
+            stop_loss,
+            take_profit,
+        )
+    }
+
+    pub fn close_short(
+        &mut self,
+        candle: &Candle,
+    ) -> Result<ClosedPosition, PortfolioTransitionError> {
+        self.close_matching_side(PositionSide::Short, candle)
+    }
+
+    fn open_from_flat(
+        &mut self,
+        side: PositionSide,
+        candle: &Candle,
+        quantity: f64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+    ) -> Result<(), PortfolioTransitionError> {
+        if self.open_position.is_some() {
+            return Err(PortfolioTransitionError::PositionAlreadyOpen);
+        }
+
+        self.open_position = Some(Position {
+            symbol: candle.symbol.clone(),
+            side,
+            entry_price: candle.close,
+            size: quantity,
+            entry_time: candle.timestamp,
+            stop_loss,
+            take_profit,
+        });
+
+        Ok(())
+    }
+
+    fn close_matching_side(
+        &mut self,
+        expected_side: PositionSide,
+        candle: &Candle,
+    ) -> Result<ClosedPosition, PortfolioTransitionError> {
+        let position = self
+            .open_position
+            .take()
+            .ok_or(PortfolioTransitionError::NoOpenPosition)?;
+
+        if position.side != expected_side {
+            self.open_position = Some(position);
+            return Err(PortfolioTransitionError::PositionSideMismatch);
+        }
+
+        let pnl = realized_pnl(
+            position.side,
+            position.entry_price,
+            candle.close,
+            position.size,
+        );
+        self.realized_cash_balance += pnl;
+        self.completed_trade_count += 1;
+
+        Ok(ClosedPosition {
+            position,
+            exit_price: candle.close,
+            exit_time: candle.timestamp,
+            realized_pnl: pnl,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ClosedPosition {
+    pub position: Position,
+    pub exit_price: f64,
+    pub exit_time: i64,
+    pub realized_pnl: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortfolioTransitionError {
+    PositionAlreadyOpen,
+    NoOpenPosition,
+    PositionSideMismatch,
 }
 
 /// Point-in-time portfolio view returned by runtime steps.
@@ -68,6 +180,19 @@ mod tests {
             entry_time: 1_700_000_000_000,
             stop_loss: None,
             take_profit: None,
+        }
+    }
+
+    fn candle(timestamp: i64, close: f64) -> shared::Candle {
+        shared::Candle {
+            timestamp,
+            symbol: "BTC-USD".into(),
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume: 1_000.0,
+            timeframe: "1m".into(),
         }
     }
 
@@ -120,5 +245,80 @@ mod tests {
             Some(PositionSide::Short)
         );
         assert_eq!(snapshot.current_equity, 1_030.0);
+    }
+
+    #[test]
+    fn opening_long_from_flat_creates_position_without_reducing_realized_cash() {
+        let mut state = PortfolioState::new(1_000.0);
+        let candle = candle(1, 100.0);
+
+        state
+            .open_long_from_flat(&candle, 2.0, Some(90.0), Some(120.0))
+            .unwrap();
+
+        let position = state.open_position.as_ref().unwrap();
+        assert_eq!(state.realized_cash_balance, 1_000.0);
+        assert_eq!(state.completed_trade_count, 0);
+        assert_eq!(position.symbol, "BTC-USD");
+        assert_eq!(position.side, PositionSide::Long);
+        assert_eq!(position.entry_price, 100.0);
+        assert_eq!(position.size, 2.0);
+        assert_eq!(position.entry_time, 1);
+        assert_eq!(position.stop_loss, Some(90.0));
+        assert_eq!(position.take_profit, Some(120.0));
+    }
+
+    #[test]
+    fn closing_long_applies_realized_pnl_and_increments_completed_trade_count() {
+        let mut state = PortfolioState::new(1_000.0);
+        state
+            .open_long_from_flat(&candle(1, 100.0), 2.0, None, None)
+            .unwrap();
+
+        let closed = state.close_long(&candle(2, 115.0)).unwrap();
+
+        assert!(state.open_position.is_none());
+        assert_eq!(state.realized_cash_balance, 1_030.0);
+        assert_eq!(state.completed_trade_count, 1);
+        assert_eq!(closed.position.side, PositionSide::Long);
+        assert_eq!(closed.exit_price, 115.0);
+        assert_eq!(closed.exit_time, 2);
+        assert_eq!(closed.realized_pnl, 30.0);
+    }
+
+    #[test]
+    fn opening_short_from_flat_creates_position_without_reducing_realized_cash() {
+        let mut state = PortfolioState::new(1_000.0);
+
+        state
+            .open_short_from_flat(&candle(1, 100.0), 2.0, Some(110.0), Some(80.0))
+            .unwrap();
+
+        let position = state.open_position.as_ref().unwrap();
+        assert_eq!(state.realized_cash_balance, 1_000.0);
+        assert_eq!(state.completed_trade_count, 0);
+        assert_eq!(position.side, PositionSide::Short);
+        assert_eq!(position.entry_price, 100.0);
+        assert_eq!(position.size, 2.0);
+        assert_eq!(position.stop_loss, Some(110.0));
+        assert_eq!(position.take_profit, Some(80.0));
+    }
+
+    #[test]
+    fn closing_short_applies_realized_pnl_and_increments_completed_trade_count() {
+        let mut state = PortfolioState::new(1_000.0);
+        state
+            .open_short_from_flat(&candle(1, 100.0), 2.0, None, None)
+            .unwrap();
+
+        let closed = state.close_short(&candle(2, 85.0)).unwrap();
+
+        assert!(state.open_position.is_none());
+        assert_eq!(state.realized_cash_balance, 1_030.0);
+        assert_eq!(state.completed_trade_count, 1);
+        assert_eq!(closed.position.side, PositionSide::Short);
+        assert_eq!(closed.exit_price, 85.0);
+        assert_eq!(closed.exit_time, 2);
+        assert_eq!(closed.realized_pnl, 30.0);
     }
 }
