@@ -670,3 +670,60 @@ fn force_close_closes_open_long_position_with_ordered_events() {
     assert_eq!(step.portfolio_snapshot.completed_trade_count, 1);
     assert!(step.portfolio_snapshot.open_position.is_none());
 }
+
+#[test]
+fn force_close_closes_open_short_position_with_ordered_events() {
+    let entry_candle = candle(1, 100.0);
+    let mark_candle = candle(2, 85.0);
+    let reason = "shutdown liquidation";
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([StrategyDecision::open_short(2.0)]),
+    );
+    runtime.on_primary_candle(entry_candle.clone());
+    let opened_position = position(
+        PositionSide::Short,
+        entry_candle.timestamp,
+        entry_candle.close,
+        2.0,
+    );
+    let expected_closed = ClosedPosition {
+        position: opened_position,
+        exit_price: mark_candle.close,
+        exit_time: mark_candle.timestamp,
+        realized_pnl: 30.0,
+    };
+    let mut expected_portfolio = PortfolioState::new(1_000.0);
+    expected_portfolio
+        .open_short_from_flat(&entry_candle, 2.0, None, None)
+        .unwrap();
+    expected_portfolio.close_short(&mark_candle).unwrap();
+    let expected_snapshot = expected_portfolio.snapshot(mark_candle.close);
+
+    let step = runtime.force_close(mark_candle.clone(), reason);
+
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::ForceCloseRequested {
+                candle: mark_candle.clone(),
+                reason: reason.into(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::ForceClose,
+            },
+            RuntimeEvent::PositionClosed {
+                closed_position: expected_closed,
+            },
+            RuntimeEvent::PortfolioUpdated {
+                snapshot: expected_snapshot.clone(),
+            },
+            RuntimeEvent::ForceCloseCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert_eq!(step.portfolio_snapshot.realized_cash_balance, 1_030.0);
+    assert_eq!(step.portfolio_snapshot.completed_trade_count, 1);
+    assert!(step.portfolio_snapshot.open_position.is_none());
+}

@@ -166,6 +166,19 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                     snapshot: self.portfolio.snapshot(mark_candle.close),
                 });
             }
+            Some(PositionSide::Short) => {
+                events.push(RuntimeEvent::ExecutionActionPlanned {
+                    action: ExecutionAction::ForceClose,
+                });
+                let closed_position = self
+                    .portfolio
+                    .close_short(&mark_candle)
+                    .expect("open short position should be force-closeable");
+                events.push(RuntimeEvent::PositionClosed { closed_position });
+                events.push(RuntimeEvent::PortfolioUpdated {
+                    snapshot: self.portfolio.snapshot(mark_candle.close),
+                });
+            }
             _ => {
                 events.push(RuntimeEvent::ExecutionActionPlanned {
                     action: ExecutionAction::Noop,
