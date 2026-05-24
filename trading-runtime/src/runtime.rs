@@ -148,46 +148,40 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             reason: reason.into(),
         }];
 
-        match self
+        let closed_position = match self
             .portfolio
             .open_position
             .as_ref()
             .map(|position| position.side)
         {
-            Some(PositionSide::Long) => {
-                events.push(RuntimeEvent::ExecutionActionPlanned {
-                    action: ExecutionAction::ForceClose,
-                });
-                let closed_position = self
-                    .portfolio
+            Some(PositionSide::Long) => Some(
+                self.portfolio
                     .close_long(&mark_candle)
-                    .expect("open long position should be force-closeable");
-                events.push(RuntimeEvent::PositionClosed { closed_position });
-                events.push(RuntimeEvent::PortfolioUpdated {
-                    snapshot: self.portfolio.snapshot(mark_candle.close),
-                });
-            }
-            Some(PositionSide::Short) => {
-                events.push(RuntimeEvent::ExecutionActionPlanned {
-                    action: ExecutionAction::ForceClose,
-                });
-                let closed_position = self
-                    .portfolio
+                    .expect("open long position should be force-closeable"),
+            ),
+            Some(PositionSide::Short) => Some(
+                self.portfolio
                     .close_short(&mark_candle)
-                    .expect("open short position should be force-closeable");
-                events.push(RuntimeEvent::PositionClosed { closed_position });
-                events.push(RuntimeEvent::PortfolioUpdated {
-                    snapshot: self.portfolio.snapshot(mark_candle.close),
-                });
-            }
-            _ => {
-                events.push(RuntimeEvent::ExecutionActionPlanned {
-                    action: ExecutionAction::Noop,
-                });
-                events.push(RuntimeEvent::ForceCloseIgnored {
-                    reason: ForceCloseIgnoredReason::NoOpenPosition,
-                });
-            }
+                    .expect("open short position should be force-closeable"),
+            ),
+            None => None,
+        };
+
+        if let Some(closed_position) = closed_position {
+            events.push(RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::ForceClose,
+            });
+            events.push(RuntimeEvent::PositionClosed { closed_position });
+            events.push(RuntimeEvent::PortfolioUpdated {
+                snapshot: self.portfolio.snapshot(mark_candle.close),
+            });
+        } else {
+            events.push(RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::Noop,
+            });
+            events.push(RuntimeEvent::ForceCloseIgnored {
+                reason: ForceCloseIgnoredReason::NoOpenPosition,
+            });
         }
 
         events.push(RuntimeEvent::ForceCloseCompleted);
