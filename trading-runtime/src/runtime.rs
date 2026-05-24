@@ -1,7 +1,8 @@
 //! Trading runtime entrypoints.
 
 use crate::{
-    plan_execution, ExecutionAction, PortfolioState, RuntimeEvent, RuntimeStep, StrategyHandler,
+    plan_execution, ExecutionAction, ForceCloseIgnoredReason, PortfolioState, RuntimeEvent,
+    RuntimeStep, StrategyHandler,
 };
 use shared::{Candle, PositionSide};
 
@@ -182,6 +183,9 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             _ => {
                 events.push(RuntimeEvent::ExecutionActionPlanned {
                     action: ExecutionAction::Noop,
+                });
+                events.push(RuntimeEvent::ForceCloseIgnored {
+                    reason: ForceCloseIgnoredReason::NoOpenPosition,
                 });
             }
         }

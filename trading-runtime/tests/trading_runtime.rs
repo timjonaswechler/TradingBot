@@ -1,6 +1,6 @@
 use shared::{Position, PositionSide};
 use trading_runtime::{
-    ClosedPosition, ExecutionAction, IgnoredDecisionReason, PortfolioState,
+    ClosedPosition, ExecutionAction, ForceCloseIgnoredReason, IgnoredDecisionReason, PortfolioState,
     PredeterminedStrategyHandler, RuntimeEvent, RuntimePortfolioSnapshot, StrategyDecision,
     StrategyDecisionIntent, TradingRuntime,
 };
@@ -726,4 +726,36 @@ fn force_close_closes_open_short_position_with_ordered_events() {
     assert_eq!(step.portfolio_snapshot.realized_cash_balance, 1_030.0);
     assert_eq!(step.portfolio_snapshot.completed_trade_count, 1);
     assert!(step.portfolio_snapshot.open_position.is_none());
+}
+
+#[test]
+fn force_close_while_flat_emits_ignored_noop_step() {
+    let mark_candle = candle(1, 100.0);
+    let reason = "shutdown liquidation";
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([]),
+    );
+    let expected_snapshot = PortfolioState::new(1_000.0).snapshot(mark_candle.close);
+
+    let step = runtime.force_close(mark_candle.clone(), reason);
+
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::ForceCloseRequested {
+                candle: mark_candle.clone(),
+                reason: reason.into(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::Noop,
+            },
+            RuntimeEvent::ForceCloseIgnored {
+                reason: ForceCloseIgnoredReason::NoOpenPosition,
+            },
+            RuntimeEvent::ForceCloseCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
 }
