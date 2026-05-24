@@ -57,6 +57,10 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             action: planned.action.clone(),
         });
 
+        if let Some(reason) = planned.ignored_reason {
+            events.push(RuntimeEvent::StrategyDecisionIgnored { decision, reason });
+        }
+
         match planned.action {
             ExecutionAction::OpenLong {
                 quantity,
