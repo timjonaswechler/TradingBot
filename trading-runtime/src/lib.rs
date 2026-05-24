@@ -5,7 +5,9 @@
 //! execution actions, and ordered runtime events.
 
 pub mod decision;
+pub mod execution;
 
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
+pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
