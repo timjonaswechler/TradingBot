@@ -93,6 +93,120 @@ fn primary_candle_with_no_warmup_and_hold_while_flat_emits_tradable_noop_step() 
 }
 
 #[test]
+fn positive_warmup_advances_market_progress_without_calling_strategy_until_complete() {
+    let first_warmup = candle(1, 100.0);
+    let second_warmup = candle(2, 101.0);
+    let first_tradable = candle(3, 102.0);
+    let decision = StrategyDecision::open_long(2.0);
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        2,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+
+    let first_step = runtime.on_primary_candle(first_warmup.clone());
+    let second_step = runtime.on_primary_candle(second_warmup.clone());
+    let tradable_step = runtime.on_primary_candle(first_tradable.clone());
+
+    assert_eq!(
+        first_step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: first_warmup.clone(),
+            },
+            RuntimeEvent::WarmupAdvanced {
+                current_primary_candle_count: 1,
+                required_warmup_candles: 2,
+            },
+        ]
+    );
+    assert_eq!(
+        first_step.portfolio_snapshot,
+        PortfolioState::new(1_000.0).snapshot(first_warmup.close)
+    );
+    assert_eq!(
+        second_step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: second_warmup.clone(),
+            },
+            RuntimeEvent::WarmupAdvanced {
+                current_primary_candle_count: 2,
+                required_warmup_candles: 2,
+            },
+            RuntimeEvent::WarmupCompleted {
+                completed_primary_candle_count: 2,
+            },
+        ]
+    );
+    assert_eq!(
+        second_step.portfolio_snapshot,
+        PortfolioState::new(1_000.0).snapshot(second_warmup.close)
+    );
+
+    assert_eq!(
+        tradable_step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: first_tradable.clone(),
+            },
+            RuntimeEvent::TradableTickStarted {
+                candle: first_tradable.clone(),
+            },
+            RuntimeEvent::StrategyDecisionProduced { decision },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::OpenLong {
+                    quantity: 2.0,
+                    stop_loss: None,
+                    take_profit: None,
+                },
+            },
+            RuntimeEvent::PositionOpened {
+                position: position(
+                    PositionSide::Long,
+                    first_tradable.timestamp,
+                    first_tradable.close,
+                    2.0,
+                ),
+            },
+            RuntimeEvent::PortfolioUpdated {
+                snapshot: tradable_step.portfolio_snapshot.clone(),
+            },
+            RuntimeEvent::TradableTickCompleted,
+        ]
+    );
+    assert_eq!(
+        tradable_step
+            .portfolio_snapshot
+            .open_position
+            .as_ref()
+            .map(|p| p.side),
+        Some(PositionSide::Long)
+    );
+}
+
+#[test]
+fn zero_warmup_makes_first_primary_candle_tradable_without_warmup_completed() {
+    let candle = candle(1, 100.0);
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([StrategyDecision::hold()]),
+    );
+
+    let step = runtime.on_primary_candle(candle);
+
+    assert!(!step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::WarmupCompleted { .. })));
+    assert!(step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::TradableTickStarted { .. })));
+}
+
+#[test]
 fn primary_candle_opens_long_from_flat_and_updates_portfolio_snapshot() {
     let candle = candle(1, 100.0);
     let decision = StrategyDecision::open_long(2.0);

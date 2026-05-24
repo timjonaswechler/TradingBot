@@ -35,6 +35,21 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             candle: candle.clone(),
         }];
 
+        if self.primary_candle_count <= self.effective_warmup_bars {
+            events.push(RuntimeEvent::WarmupAdvanced {
+                current_primary_candle_count: self.primary_candle_count,
+                required_warmup_candles: self.effective_warmup_bars,
+            });
+
+            if self.primary_candle_count == self.effective_warmup_bars {
+                events.push(RuntimeEvent::WarmupCompleted {
+                    completed_primary_candle_count: self.primary_candle_count,
+                });
+            }
+
+            return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
+        }
+
         events.push(RuntimeEvent::TradableTickStarted {
             candle: candle.clone(),
         });
