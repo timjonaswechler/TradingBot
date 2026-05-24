@@ -759,3 +759,73 @@ fn force_close_while_flat_emits_ignored_noop_step() {
     );
     assert_eq!(step.portfolio_snapshot, expected_snapshot);
 }
+
+#[test]
+fn force_close_works_while_runtime_is_still_in_warmup() {
+    let restored_entry_candle = candle(1, 100.0);
+    let warmup_candle = candle(2, 105.0);
+    let mark_candle = candle(3, 115.0);
+    let reason = "shutdown liquidation";
+    let mut initial_portfolio = PortfolioState::new(1_000.0);
+    initial_portfolio
+        .open_long_from_flat(&restored_entry_candle, 2.0, None, None)
+        .unwrap();
+    let mut runtime = TradingRuntime::new(
+        initial_portfolio,
+        3,
+        PredeterminedStrategyHandler::from_decisions([StrategyDecision::close_long()]),
+    );
+    let warmup_step = runtime.on_primary_candle(warmup_candle.clone());
+    let expected_closed = ClosedPosition {
+        position: position(
+            PositionSide::Long,
+            restored_entry_candle.timestamp,
+            restored_entry_candle.close,
+            2.0,
+        ),
+        exit_price: mark_candle.close,
+        exit_time: mark_candle.timestamp,
+        realized_pnl: 30.0,
+    };
+    let mut expected_portfolio = PortfolioState::new(1_000.0);
+    expected_portfolio
+        .open_long_from_flat(&restored_entry_candle, 2.0, None, None)
+        .unwrap();
+    expected_portfolio.close_long(&mark_candle).unwrap();
+    let expected_snapshot = expected_portfolio.snapshot(mark_candle.close);
+
+    let step = runtime.force_close(mark_candle.clone(), reason);
+
+    assert_eq!(
+        warmup_step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: warmup_candle.clone(),
+            },
+            RuntimeEvent::WarmupAdvanced {
+                current_primary_candle_count: 1,
+                required_warmup_candles: 3,
+            },
+        ]
+    );
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::ForceCloseRequested {
+                candle: mark_candle.clone(),
+                reason: reason.into(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::ForceClose,
+            },
+            RuntimeEvent::PositionClosed {
+                closed_position: expected_closed,
+            },
+            RuntimeEvent::PortfolioUpdated {
+                snapshot: expected_snapshot.clone(),
+            },
+            RuntimeEvent::ForceCloseCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+}
