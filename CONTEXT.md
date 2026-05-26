@@ -9,7 +9,7 @@ Memory that belongs to one running strategy and persists between ticks. Strategy
 _Avoid_: State, Engine State
 
 **Portfolio State**:
-The canonical trading state of a live or simulated trading session: realized cash balance, open position, and completed trade count. Equity is derived from Portfolio State and current market prices rather than treated as independent account truth.
+The canonical trading state of a live or simulated trading session: realized cash balance, open position, and completed trade count. Equity is derived from Portfolio State and current market prices rather than treated as independent account truth; a run may start from an initial completed trade count and then continue counting completed trades from there.
 _Avoid_: Strategy State, Context State, External Account Snapshot
 
 **Runtime Portfolio Snapshot**:
@@ -33,23 +33,63 @@ A named strategy function that the runtime may call at a defined point in the tr
 _Avoid_: Callback, magic function
 
 **Strategy Decision**:
-The strategy-produced intent for the current Tradable Tick, using explicit direction-aware intents such as HOLD, OPEN_LONG, CLOSE_LONG, OPEN_SHORT, and CLOSE_SHORT. Opening decisions use quantity to mean asset units/contracts, not a balance fraction; a Strategy Decision is interpreted by the Trading Runtime before any portfolio transition occurs.
+The strategy-produced intent for the current Strategy Tick, using explicit direction-aware intents such as HOLD, OPEN_LONG, CLOSE_LONG, OPEN_SHORT, and CLOSE_SHORT. Opening decisions use quantity to mean asset units/contracts, not a balance fraction; a Strategy Decision is interpreted by the Trading Runtime before any portfolio transition occurs.
 _Avoid_: Trade Decision, BUY/SELL when the intended position transition is ambiguous, Execution Action, size when a balance fraction is meant
 
+**Entry Risk Parameters**:
+Optional stop-loss and take-profit prices attached to an opening Strategy Decision. They opt the resulting open position into runtime-managed hard exits; strategies that want to manage exits themselves can omit them.
+_Avoid_: Dynamic Risk Update, Position Patch, soft strategy exit
+
+**Stop-Loss**:
+An Entry Risk Parameter that defines the hard protective price at which the runtime may close an open position to limit adverse movement.
+_Avoid_: Stop signal, soft stop, close reason
+
+**Take-Profit**:
+An Entry Risk Parameter that defines the hard target price at which the runtime may close an open position to capture favorable movement.
+_Avoid_: Target signal, soft target, close reason
+
+**Risk Exit**:
+A portfolio transition that closes an open position because its Stop-Loss or Take-Profit was reached by market movement. A Risk Exit is distinct from a Strategy Decision to close a position.
+_Avoid_: Strategy Exit, manual close
+
+**Strategy Exit**:
+A Strategy Decision that closes an open position because the strategy's own logic chose to exit. Strategy Exits are evaluated during Strategy Ticks and are distinct from runtime-managed Risk Exits.
+_Avoid_: Risk Exit, hard stop, hard target
+
+**Execution Planning**:
+The runtime interpretation step that maps a Strategy Decision and the current Portfolio State to an execution action or an ignored decision. Execution Planning does not by itself change Portfolio State.
+_Avoid_: Execution State Machine when no pending/fill states are meant
+
+**Portfolio Transition**:
+A change to Portfolio State, such as opening a position, closing a position, or applying a Risk Exit. Portfolio Transitions are owned by the Trading Runtime in both live and simulated runs.
+_Avoid_: DB update, backtest metric
+
+**Warmup Requirement**:
+The amount of market history a Trading Runtime needs before Strategy Ticks are allowed. The Trading Runtime determines the Warmup Requirement; runners are responsible for fetching and supplying the required market data.
+_Avoid_: Runner warmup policy, arbitrary startup delay
+
 **Warmup Phase**:
-The non-trading prefix of a run used to give indicators, compute state, and strategy state enough market history before the first Tradable Tick. During Warmup, market history advances but strategy decisions do not create portfolio transitions.
+The strategy-gating prefix of a run used to give indicators, compute state, and strategy state enough market history before the first Tradable Candle. During Warmup, Strategy Decisions and Portfolio Transitions are not produced.
 _Avoid_: Startup delay, manual lookback
+
+**Warmup Input**:
+Market data supplied to satisfy a Warmup Requirement. Warmup Input rebuilds market history, compute state, and strategy state, but must not create Risk Exits, Strategy Ticks, or Portfolio Transitions.
+_Avoid_: Tradable Candle, active market input
+
+**Tradable Candle**:
+A Primary Timeframe candle supplied after Warmup Input is complete and allowed to enter the active trading path. A Tradable Candle may create a Risk Exit or, if no Risk Exit occurs, a Strategy Tick.
+_Avoid_: Warmup Input, historical preload
 
 **Market Data Source**:
 The origin of candles that drive a run. Live trading uses a provider-backed source that fetches new candles over time; backtesting uses a historical source that replays stored candles.
 _Avoid_: Engine, Strategy
 
-**Tradable Tick**:
-A candle/event that is allowed to produce trading decisions after warmup has completed. Both live trading and backtesting should feed tradable ticks through the same strategy evaluation path.
-_Avoid_: Backtest-only tick, Live-only tick
+**Strategy Tick**:
+A Tradable Candle on which the strategy is actually evaluated. Risk Exits can close a position on a Tradable Candle without producing a Strategy Tick.
+_Avoid_: Tradable Candle when the distinction from strategy evaluation matters, Tradable Tick
 
 **Primary Timeframe**:
-The timeframe whose completed candles trigger tradable ticks for a strategy. In a multi-timeframe strategy, only the Primary Timeframe should create trading decisions at first.
+The timeframe whose completed candles can become Tradable Candles for a strategy. In a multi-timeframe strategy, only the Primary Timeframe should create trading decisions at first.
 _Avoid_: Main interval, execution interval
 
 **Secondary Timeframe**:
