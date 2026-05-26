@@ -1,8 +1,8 @@
 //! Ordered, runner-neutral events emitted by the trading runtime.
 
 use crate::{
-    ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RuntimePortfolioSnapshot,
-    StrategyDecision,
+    ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RiskExitTriggered,
+    RuntimePortfolioSnapshot, StrategyDecision,
 };
 use shared::{Candle, Position};
 
@@ -41,6 +41,9 @@ pub enum RuntimeEvent {
     StrategyDecisionIgnored {
         decision: StrategyDecision,
         reason: IgnoredDecisionReason,
+    },
+    RiskExitTriggered {
+        risk_exit: RiskExitTriggered,
     },
     PositionOpened {
         position: Position,

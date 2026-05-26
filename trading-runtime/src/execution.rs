@@ -1,9 +1,9 @@
-//! Pure planning from strategy decisions to runtime execution actions.
+//! Runtime execution action types and pure strategy-decision planning.
 
-use crate::{StrategyDecision, StrategyDecisionIntent};
+use crate::{RiskExitKind, StrategyDecision, StrategyDecisionIntent};
 use shared::PositionSide;
 
-/// Runtime interpretation of a strategy decision or explicit runner command.
+/// Runtime interpretation of a strategy decision or runtime-managed command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExecutionAction {
     Noop,
@@ -19,6 +19,11 @@ pub enum ExecutionAction {
         take_profit: Option<f64>,
     },
     CloseShort,
+    RiskExit {
+        side: PositionSide,
+        selected: RiskExitKind,
+        exit_price: f64,
+    },
     ForceClose,
 }
 

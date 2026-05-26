@@ -1,8 +1,8 @@
 //! Trading runtime entrypoints.
 
 use crate::{
-    plan_execution, ExecutionAction, ExitKind, ForceCloseIgnoredReason, PortfolioState,
-    RuntimeEvent, RuntimeStep, StrategyHandler,
+    evaluate_risk_exit, plan_execution, ExecutionAction, ExitKind, ForceCloseIgnoredReason,
+    PortfolioState, RuntimeEvent, RuntimeStep, StrategyHandler,
 };
 use shared::{Candle, PositionSide};
 
@@ -54,6 +54,47 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         events.push(RuntimeEvent::TradableTickStarted {
             candle: candle.clone(),
         });
+
+        if let Some(risk_exit) = self
+            .portfolio
+            .open_position
+            .as_ref()
+            .and_then(|position| evaluate_risk_exit(position, &candle))
+        {
+            events.push(RuntimeEvent::RiskExitTriggered {
+                risk_exit: risk_exit.clone(),
+            });
+            events.push(RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::RiskExit {
+                    side: risk_exit.side,
+                    selected: risk_exit.selected,
+                    exit_price: risk_exit.exit_price,
+                },
+            });
+
+            let closed_position = match risk_exit.side {
+                PositionSide::Long => self
+                    .portfolio
+                    .close_long_at_price(&candle, risk_exit.exit_price)
+                    .expect("planned long risk exit should be executable"),
+                PositionSide::Short => self
+                    .portfolio
+                    .close_short_at_price(&candle, risk_exit.exit_price)
+                    .expect("planned short risk exit should be executable"),
+            };
+            events.push(RuntimeEvent::PositionClosed {
+                closed_position,
+                exit_kind: ExitKind::RiskExit {
+                    selected: risk_exit.selected,
+                },
+            });
+            events.push(RuntimeEvent::PortfolioUpdated {
+                snapshot: self.portfolio.snapshot(candle.close),
+            });
+            events.push(RuntimeEvent::TradableTickCompleted);
+
+            return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
+        }
 
         let portfolio_before_decision = self.portfolio.snapshot(candle.close);
         let decision = self
@@ -140,7 +181,9 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                     snapshot: self.portfolio.snapshot(candle.close),
                 });
             }
-            ExecutionAction::Noop | ExecutionAction::ForceClose => {}
+            ExecutionAction::Noop
+            | ExecutionAction::RiskExit { .. }
+            | ExecutionAction::ForceClose => {}
         }
 
         events.push(RuntimeEvent::TradableTickCompleted);

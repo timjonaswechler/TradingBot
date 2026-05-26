@@ -1,17 +1,23 @@
-use shared::{Position, PositionSide};
+use shared::{Candle, Position, PositionSide};
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason,
-    PortfolioState, PredeterminedStrategyHandler, RuntimeEvent, RuntimePortfolioSnapshot,
-    StrategyDecision, StrategyDecisionIntent, TradingRuntime,
+    PortfolioState, PredeterminedStrategyHandler, RiskExitKind, RiskExitTriggered, RuntimeEvent,
+    RuntimePortfolioSnapshot, StrategyDecision, StrategyDecisionIntent, StrategyHandler,
+    TradingRuntime,
 };
 
-fn candle(timestamp: i64, close: f64) -> shared::Candle {
-    shared::Candle {
+fn candle(timestamp: i64, close: f64) -> Candle {
+    ohlc_candle(timestamp, close, close, close, close)
+}
+
+fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
+    Candle {
         timestamp,
         symbol: "BTC-USD".into(),
-        open: close,
-        high: close,
-        low: close,
+        open,
+        high,
+        low,
         close,
         volume: 1_000.0,
         timeframe: "1m".into(),
@@ -43,7 +49,7 @@ fn position_with_entry_risk(
 
 fn assert_ignored_step(
     step: trading_runtime::RuntimeStep,
-    candle: shared::Candle,
+    candle: Candle,
     decision: StrategyDecision,
     reason: IgnoredDecisionReason,
     expected_snapshot: RuntimePortfolioSnapshot,
@@ -66,6 +72,193 @@ fn assert_ignored_step(
         ]
     );
     assert_eq!(step.portfolio_snapshot, expected_snapshot);
+}
+
+#[derive(Clone)]
+struct CountingStrategyHandler {
+    calls: Rc<RefCell<usize>>,
+    decisions: VecDeque<StrategyDecision>,
+}
+
+impl CountingStrategyHandler {
+    fn from_decisions(
+        calls: Rc<RefCell<usize>>,
+        decisions: impl IntoIterator<Item = StrategyDecision>,
+    ) -> Self {
+        Self {
+            calls,
+            decisions: decisions.into_iter().collect(),
+        }
+    }
+}
+
+impl StrategyHandler for CountingStrategyHandler {
+    fn next_decision(
+        &mut self,
+        _candle: &Candle,
+        _portfolio: &RuntimePortfolioSnapshot,
+    ) -> StrategyDecision {
+        *self.calls.borrow_mut() += 1;
+        self.decisions
+            .pop_front()
+            .unwrap_or_else(StrategyDecision::hold)
+    }
+}
+
+fn assert_risk_exit_step(
+    open_position: Position,
+    exit_candle: Candle,
+    risk_exit: RiskExitTriggered,
+    expected_realized_pnl: f64,
+    expected_realized_cash_balance: f64,
+) {
+    let expected_closed = ClosedPosition {
+        position: open_position.clone(),
+        exit_price: risk_exit.exit_price,
+        exit_time: exit_candle.timestamp,
+        realized_pnl: expected_realized_pnl,
+    };
+    let expected_snapshot = RuntimePortfolioSnapshot {
+        realized_cash_balance: expected_realized_cash_balance,
+        open_position: None,
+        completed_trade_count: 1,
+        current_equity: expected_realized_cash_balance,
+    };
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position);
+    let strategy_calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::new(
+        portfolio,
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&strategy_calls),
+            [
+                StrategyDecision::close_long(),
+                StrategyDecision::close_short(),
+            ],
+        ),
+    );
+
+    let step = runtime.on_tradable_candle(exit_candle.clone());
+
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: exit_candle.clone(),
+            },
+            RuntimeEvent::TradableTickStarted {
+                candle: exit_candle,
+            },
+            RuntimeEvent::RiskExitTriggered {
+                risk_exit: risk_exit.clone(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::RiskExit {
+                    side: risk_exit.side,
+                    selected: risk_exit.selected,
+                    exit_price: risk_exit.exit_price,
+                },
+            },
+            RuntimeEvent::PositionClosed {
+                closed_position: expected_closed,
+                exit_kind: ExitKind::RiskExit {
+                    selected: risk_exit.selected,
+                },
+            },
+            RuntimeEvent::PortfolioUpdated {
+                snapshot: expected_snapshot.clone(),
+            },
+            RuntimeEvent::TradableTickCompleted,
+        ]
+    );
+    assert_eq!(*strategy_calls.borrow(), 0);
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert!(step.portfolio_snapshot.open_position.is_none());
+    assert_eq!(
+        step.portfolio_snapshot.current_equity,
+        step.portfolio_snapshot.realized_cash_balance
+    );
+}
+
+#[test]
+fn tradable_candle_with_long_stop_loss_risk_exit_closes_before_strategy_tick() {
+    assert_risk_exit_step(
+        position_with_entry_risk(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), None),
+        ohlc_candle(2, 100.0, 105.0, 90.0, 99.0),
+        RiskExitTriggered {
+            side: PositionSide::Long,
+            selected: RiskExitKind::StopLoss,
+            triggered: vec![RiskExitKind::StopLoss],
+            exit_price: 90.0,
+        },
+        -20.0,
+        980.0,
+    );
+}
+
+#[test]
+fn tradable_candle_with_long_take_profit_risk_exit_closes_at_selected_price() {
+    assert_risk_exit_step(
+        position_with_entry_risk(PositionSide::Long, 1, 100.0, 2.0, None, Some(120.0)),
+        ohlc_candle(2, 100.0, 120.0, 95.0, 110.0),
+        RiskExitTriggered {
+            side: PositionSide::Long,
+            selected: RiskExitKind::TakeProfit,
+            triggered: vec![RiskExitKind::TakeProfit],
+            exit_price: 120.0,
+        },
+        40.0,
+        1_040.0,
+    );
+}
+
+#[test]
+fn tradable_candle_with_short_stop_loss_risk_exit_closes_at_selected_price() {
+    assert_risk_exit_step(
+        position_with_entry_risk(PositionSide::Short, 1, 100.0, 2.0, Some(110.0), None),
+        ohlc_candle(2, 100.0, 110.0, 95.0, 105.0),
+        RiskExitTriggered {
+            side: PositionSide::Short,
+            selected: RiskExitKind::StopLoss,
+            triggered: vec![RiskExitKind::StopLoss],
+            exit_price: 110.0,
+        },
+        -20.0,
+        980.0,
+    );
+}
+
+#[test]
+fn tradable_candle_with_short_take_profit_risk_exit_closes_at_selected_price() {
+    assert_risk_exit_step(
+        position_with_entry_risk(PositionSide::Short, 1, 100.0, 2.0, None, Some(80.0)),
+        ohlc_candle(2, 100.0, 105.0, 80.0, 90.0),
+        RiskExitTriggered {
+            side: PositionSide::Short,
+            selected: RiskExitKind::TakeProfit,
+            triggered: vec![RiskExitKind::TakeProfit],
+            exit_price: 80.0,
+        },
+        40.0,
+        1_040.0,
+    );
+}
+
+#[test]
+fn tradable_candle_with_both_intrabar_boundaries_selects_stop_loss_and_reports_both() {
+    assert_risk_exit_step(
+        position_with_entry_risk(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), Some(120.0)),
+        ohlc_candle(2, 100.0, 120.0, 90.0, 110.0),
+        RiskExitTriggered {
+            side: PositionSide::Long,
+            selected: RiskExitKind::StopLoss,
+            triggered: vec![RiskExitKind::StopLoss, RiskExitKind::TakeProfit],
+            exit_price: 90.0,
+        },
+        -20.0,
+        980.0,
+    );
 }
 
 #[test]
@@ -243,6 +436,7 @@ fn warmup_input_crossing_stop_loss_on_initial_open_position_does_not_trade() {
         event,
         RuntimeEvent::StrategyDecisionProduced { .. }
             | RuntimeEvent::ExecutionActionPlanned { .. }
+            | RuntimeEvent::RiskExitTriggered { .. }
             | RuntimeEvent::PositionClosed { .. }
             | RuntimeEvent::PortfolioUpdated { .. }
             | RuntimeEvent::TradableTickStarted { .. }
