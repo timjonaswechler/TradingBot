@@ -537,6 +537,8 @@ mod tests {
         assert!(m.peak_equity > 1_000.0);
     }
 
+    // Legacy donor coverage for the old backtester executor. Runtime-managed
+    // Risk Exit price semantics are source-of-truth in trading-runtime tests.
     #[test]
     fn stop_loss_closes_long() {
         let mut e = InMemoryExecutor::new(1_000.0);
