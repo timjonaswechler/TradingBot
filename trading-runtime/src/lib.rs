@@ -15,6 +15,7 @@ pub mod decision;
 pub mod events;
 pub mod execution;
 pub mod portfolio;
+pub mod risk_exit;
 pub mod runtime;
 pub mod step;
 pub mod strategy;
@@ -27,6 +28,7 @@ pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, Plan
 pub use portfolio::{
     ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,
 };
+pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;
 pub use step::RuntimeStep;
 pub use strategy::{PredeterminedStrategyHandler, StrategyHandler};
