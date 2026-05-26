@@ -68,7 +68,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             .open_position
             .as_ref()
             .map(|position| position.side);
-        let planned = plan_execution(&decision, current_side);
+        let planned = plan_execution(&decision, current_side, candle.close);
         events.push(RuntimeEvent::ExecutionActionPlanned {
             action: planned.action.clone(),
         });

@@ -19,14 +19,25 @@ fn candle(timestamp: i64, close: f64) -> shared::Candle {
 }
 
 fn position(side: PositionSide, entry_time: i64, entry_price: f64, size: f64) -> Position {
+    position_with_entry_risk(side, entry_time, entry_price, size, None, None)
+}
+
+fn position_with_entry_risk(
+    side: PositionSide,
+    entry_time: i64,
+    entry_price: f64,
+    size: f64,
+    stop_loss: Option<f64>,
+    take_profit: Option<f64>,
+) -> Position {
     Position {
         symbol: "BTC-USD".into(),
         side,
         entry_price,
         size,
         entry_time,
-        stop_loss: None,
-        take_profit: None,
+        stop_loss,
+        take_profit,
     }
 }
 
@@ -315,6 +326,213 @@ fn primary_candle_opens_short_from_flat_and_updates_portfolio_snapshot() {
             .as_ref()
             .map(|p| p.side),
         Some(PositionSide::Short)
+    );
+}
+
+#[test]
+fn primary_candle_opens_long_with_valid_entry_risk_boundaries() {
+    let candle = candle(1, 100.0);
+    let decision = StrategyDecision::open_long(2.0).with_entry_risk(Some(90.0), Some(120.0));
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+    let expected_position = position_with_entry_risk(
+        PositionSide::Long,
+        candle.timestamp,
+        candle.close,
+        2.0,
+        Some(90.0),
+        Some(120.0),
+    );
+
+    let step = runtime.on_primary_candle(candle.clone());
+
+    assert!(step.events.contains(&RuntimeEvent::ExecutionActionPlanned {
+        action: ExecutionAction::OpenLong {
+            quantity: 2.0,
+            stop_loss: Some(90.0),
+            take_profit: Some(120.0),
+        },
+    }));
+    assert!(step.events.contains(&RuntimeEvent::PositionOpened {
+        position: expected_position.clone(),
+    }));
+    assert_eq!(
+        step.portfolio_snapshot.open_position,
+        Some(expected_position)
+    );
+}
+
+#[test]
+fn primary_candle_opens_short_with_valid_entry_risk_boundaries() {
+    let candle = candle(1, 100.0);
+    let decision = StrategyDecision::open_short(2.0).with_entry_risk(Some(110.0), Some(80.0));
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+    let expected_position = position_with_entry_risk(
+        PositionSide::Short,
+        candle.timestamp,
+        candle.close,
+        2.0,
+        Some(110.0),
+        Some(80.0),
+    );
+
+    let step = runtime.on_primary_candle(candle.clone());
+
+    assert!(step.events.contains(&RuntimeEvent::ExecutionActionPlanned {
+        action: ExecutionAction::OpenShort {
+            quantity: 2.0,
+            stop_loss: Some(110.0),
+            take_profit: Some(80.0),
+        },
+    }));
+    assert!(step.events.contains(&RuntimeEvent::PositionOpened {
+        position: expected_position.clone(),
+    }));
+    assert_eq!(
+        step.portfolio_snapshot.open_position,
+        Some(expected_position)
+    );
+}
+
+#[test]
+fn primary_candle_opens_with_one_valid_entry_risk_boundary() {
+    for (decision, expected_side, expected_stop_loss, expected_take_profit) in [
+        (
+            StrategyDecision::open_long(2.0).with_entry_risk(Some(90.0), None),
+            PositionSide::Long,
+            Some(90.0),
+            None,
+        ),
+        (
+            StrategyDecision::open_short(2.0).with_entry_risk(None, Some(80.0)),
+            PositionSide::Short,
+            None,
+            Some(80.0),
+        ),
+    ] {
+        let candle = candle(1, 100.0);
+        let mut runtime = TradingRuntime::new(
+            PortfolioState::new(1_000.0),
+            0,
+            PredeterminedStrategyHandler::from_decisions([decision]),
+        );
+
+        let step = runtime.on_primary_candle(candle.clone());
+
+        assert_eq!(
+            step.portfolio_snapshot.open_position,
+            Some(position_with_entry_risk(
+                expected_side,
+                candle.timestamp,
+                candle.close,
+                2.0,
+                expected_stop_loss,
+                expected_take_profit,
+            ))
+        );
+    }
+}
+
+#[test]
+fn primary_candle_ignores_invalid_entry_risk_without_portfolio_transition() {
+    let invalid_decisions = [
+        StrategyDecision::open_long(2.0).with_entry_risk(Some(f64::INFINITY), None),
+        StrategyDecision::open_long(2.0).with_entry_risk(Some(0.0), None),
+        StrategyDecision::open_long(2.0).with_entry_risk(Some(-1.0), None),
+        StrategyDecision::open_long(2.0).with_entry_risk(Some(100.0), None),
+        StrategyDecision::open_long(2.0).with_entry_risk(Some(101.0), None),
+        StrategyDecision::open_long(2.0).with_entry_risk(None, Some(f64::INFINITY)),
+        StrategyDecision::open_long(2.0).with_entry_risk(None, Some(0.0)),
+        StrategyDecision::open_long(2.0).with_entry_risk(None, Some(-1.0)),
+        StrategyDecision::open_long(2.0).with_entry_risk(None, Some(100.0)),
+        StrategyDecision::open_long(2.0).with_entry_risk(None, Some(99.0)),
+        StrategyDecision::open_short(2.0).with_entry_risk(Some(f64::INFINITY), None),
+        StrategyDecision::open_short(2.0).with_entry_risk(Some(0.0), None),
+        StrategyDecision::open_short(2.0).with_entry_risk(Some(-1.0), None),
+        StrategyDecision::open_short(2.0).with_entry_risk(Some(100.0), None),
+        StrategyDecision::open_short(2.0).with_entry_risk(Some(99.0), None),
+        StrategyDecision::open_short(2.0).with_entry_risk(None, Some(f64::INFINITY)),
+        StrategyDecision::open_short(2.0).with_entry_risk(None, Some(0.0)),
+        StrategyDecision::open_short(2.0).with_entry_risk(None, Some(-1.0)),
+        StrategyDecision::open_short(2.0).with_entry_risk(None, Some(100.0)),
+        StrategyDecision::open_short(2.0).with_entry_risk(None, Some(101.0)),
+    ];
+
+    for decision in invalid_decisions {
+        let candle = candle(1, 100.0);
+        let mut runtime = TradingRuntime::new(
+            PortfolioState::new(1_000.0),
+            0,
+            PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+        );
+
+        let step = runtime.on_primary_candle(candle.clone());
+
+        assert_ignored_step(
+            step,
+            candle.clone(),
+            decision,
+            IgnoredDecisionReason::InvalidEntryRisk,
+            PortfolioState::new(1_000.0).snapshot(candle.close),
+        );
+    }
+}
+
+#[test]
+fn invalid_quantity_wins_before_invalid_entry_risk_while_flat() {
+    let candle = candle(1, 100.0);
+    let decision = StrategyDecision::open_long(0.0).with_entry_risk(Some(100.0), Some(99.0));
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+
+    let step = runtime.on_primary_candle(candle.clone());
+
+    assert_ignored_step(
+        step,
+        candle.clone(),
+        decision,
+        IgnoredDecisionReason::InvalidQuantity,
+        PortfolioState::new(1_000.0).snapshot(candle.close),
+    );
+}
+
+#[test]
+fn position_already_open_wins_before_invalid_quantity_or_entry_risk() {
+    let entry_candle = candle(1, 100.0);
+    let invalid_candle = candle(2, 105.0);
+    let decision = StrategyDecision::open_short(0.0).with_entry_risk(Some(0.0), Some(150.0));
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([
+            StrategyDecision::open_long(2.0),
+            decision.clone(),
+        ]),
+    );
+    runtime.on_primary_candle(entry_candle.clone());
+    let mut expected_portfolio = PortfolioState::new(1_000.0);
+    expected_portfolio
+        .open_long_from_flat(&entry_candle, 2.0, None, None)
+        .unwrap();
+
+    let step = runtime.on_primary_candle(invalid_candle.clone());
+
+    assert_ignored_step(
+        step,
+        invalid_candle.clone(),
+        decision,
+        IgnoredDecisionReason::PositionAlreadyOpen,
+        expected_portfolio.snapshot(invalid_candle.close),
     );
 }
 
