@@ -26,6 +26,9 @@ pub enum RuntimeEvent {
     MarketInputAccepted {
         candle: Candle,
     },
+    WarmupInputAccepted {
+        candle: Candle,
+    },
     TradableTickStarted {
         candle: Candle,
     },
@@ -51,11 +54,11 @@ pub enum RuntimeEvent {
     },
     TradableTickCompleted,
     WarmupAdvanced {
-        current_primary_candle_count: usize,
-        required_warmup_candles: usize,
+        current_warmup_input_count: usize,
+        required_warmup_inputs: usize,
     },
     WarmupCompleted {
-        completed_primary_candle_count: usize,
+        completed_warmup_input_count: usize,
     },
     ForceCloseRequested {
         candle: Candle,

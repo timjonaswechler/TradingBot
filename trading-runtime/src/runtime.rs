@@ -10,46 +10,46 @@ use shared::{Candle, PositionSide};
 #[derive(Debug, Clone)]
 pub struct TradingRuntime<S> {
     portfolio: PortfolioState,
-    primary_candle_count: usize,
-    effective_warmup_bars: usize,
+    warmup_input_count: usize,
+    warmup_requirement: usize,
     strategy_handler: S,
 }
 
 impl<S: StrategyHandler> TradingRuntime<S> {
-    pub fn new(
-        portfolio: PortfolioState,
-        effective_warmup_bars: usize,
-        strategy_handler: S,
-    ) -> Self {
+    pub fn new(portfolio: PortfolioState, warmup_requirement: usize, strategy_handler: S) -> Self {
         Self {
             portfolio,
-            primary_candle_count: 0,
-            effective_warmup_bars,
+            warmup_input_count: 0,
+            warmup_requirement,
             strategy_handler,
         }
     }
 
-    pub fn on_primary_candle(&mut self, candle: Candle) -> RuntimeStep {
-        self.primary_candle_count += 1;
+    pub fn on_warmup_input(&mut self, candle: Candle) -> RuntimeStep {
+        self.warmup_input_count += 1;
 
-        let mut events = vec![RuntimeEvent::MarketInputAccepted {
+        let mut events = vec![RuntimeEvent::WarmupInputAccepted {
             candle: candle.clone(),
         }];
 
-        if self.primary_candle_count <= self.effective_warmup_bars {
-            events.push(RuntimeEvent::WarmupAdvanced {
-                current_primary_candle_count: self.primary_candle_count,
-                required_warmup_candles: self.effective_warmup_bars,
+        events.push(RuntimeEvent::WarmupAdvanced {
+            current_warmup_input_count: self.warmup_input_count,
+            required_warmup_inputs: self.warmup_requirement,
+        });
+
+        if self.warmup_input_count == self.warmup_requirement {
+            events.push(RuntimeEvent::WarmupCompleted {
+                completed_warmup_input_count: self.warmup_input_count,
             });
-
-            if self.primary_candle_count == self.effective_warmup_bars {
-                events.push(RuntimeEvent::WarmupCompleted {
-                    completed_primary_candle_count: self.primary_candle_count,
-                });
-            }
-
-            return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
         }
+
+        RuntimeStep::new(events, self.portfolio.snapshot(candle.close))
+    }
+
+    pub fn on_tradable_candle(&mut self, candle: Candle) -> RuntimeStep {
+        let mut events = vec![RuntimeEvent::MarketInputAccepted {
+            candle: candle.clone(),
+        }];
 
         events.push(RuntimeEvent::TradableTickStarted {
             candle: candle.clone(),
@@ -198,7 +198,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         RuntimeStep::new(events, self.portfolio.snapshot(mark_candle.close))
     }
 
-    pub fn effective_warmup_bars(&self) -> usize {
-        self.effective_warmup_bars
+    pub fn warmup_requirement(&self) -> usize {
+        self.warmup_requirement
     }
 }
