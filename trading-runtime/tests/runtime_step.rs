@@ -1,4 +1,4 @@
-use trading_runtime::{RuntimeEvent, RuntimeStep, StrategyDecision};
+use trading_runtime::{ExitKind, RiskExitKind, RuntimeEvent, RuntimeStep, StrategyDecision};
 
 fn candle() -> shared::Candle {
     shared::Candle {
@@ -49,4 +49,24 @@ fn runtime_step_returns_ordered_events_and_current_portfolio_snapshot() {
         ]
     );
     assert_eq!(step.portfolio_snapshot, snapshot);
+}
+
+#[test]
+fn exit_kind_type_surface_represents_risk_exit_selection() {
+    assert_eq!(
+        ExitKind::RiskExit {
+            selected: RiskExitKind::StopLoss,
+        },
+        ExitKind::RiskExit {
+            selected: RiskExitKind::StopLoss,
+        }
+    );
+    assert_ne!(
+        ExitKind::RiskExit {
+            selected: RiskExitKind::StopLoss,
+        },
+        ExitKind::RiskExit {
+            selected: RiskExitKind::TakeProfit,
+        }
+    );
 }

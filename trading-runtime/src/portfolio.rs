@@ -41,7 +41,15 @@ impl PortfolioState {
         &mut self,
         candle: &Candle,
     ) -> Result<ClosedPosition, PortfolioTransitionError> {
-        self.close_matching_side(PositionSide::Long, candle)
+        self.close_long_at_price(candle, candle.close)
+    }
+
+    pub fn close_long_at_price(
+        &mut self,
+        candle: &Candle,
+        exit_price: f64,
+    ) -> Result<ClosedPosition, PortfolioTransitionError> {
+        self.close_matching_side(PositionSide::Long, candle, exit_price)
     }
 
     pub fn open_short_from_flat(
@@ -64,7 +72,15 @@ impl PortfolioState {
         &mut self,
         candle: &Candle,
     ) -> Result<ClosedPosition, PortfolioTransitionError> {
-        self.close_matching_side(PositionSide::Short, candle)
+        self.close_short_at_price(candle, candle.close)
+    }
+
+    pub fn close_short_at_price(
+        &mut self,
+        candle: &Candle,
+        exit_price: f64,
+    ) -> Result<ClosedPosition, PortfolioTransitionError> {
+        self.close_matching_side(PositionSide::Short, candle, exit_price)
     }
 
     fn open_from_flat(
@@ -96,6 +112,7 @@ impl PortfolioState {
         &mut self,
         expected_side: PositionSide,
         candle: &Candle,
+        exit_price: f64,
     ) -> Result<ClosedPosition, PortfolioTransitionError> {
         let position = self
             .open_position
@@ -110,7 +127,7 @@ impl PortfolioState {
         let pnl = realized_pnl(
             position.side,
             position.entry_price,
-            candle.close,
+            exit_price,
             position.size,
         );
         self.realized_cash_balance += pnl;
@@ -118,7 +135,7 @@ impl PortfolioState {
 
         Ok(ClosedPosition {
             position,
-            exit_price: candle.close,
+            exit_price,
             exit_time: candle.timestamp,
             realized_pnl: pnl,
         })
@@ -287,6 +304,28 @@ mod tests {
     }
 
     #[test]
+    fn closing_long_at_explicit_exit_price_uses_that_price_for_pnl_and_snapshot() {
+        let mut state = PortfolioState::new(1_000.0);
+        state
+            .open_long_from_flat(&candle(1, 100.0), 2.0, None, None)
+            .unwrap();
+        let exit_candle = candle(2, 115.0);
+
+        let closed = state.close_long_at_price(&exit_candle, 90.0).unwrap();
+        let snapshot = state.snapshot(exit_candle.close);
+
+        assert!(state.open_position.is_none());
+        assert_eq!(state.realized_cash_balance, 980.0);
+        assert_eq!(state.completed_trade_count, 1);
+        assert_eq!(closed.position.side, PositionSide::Long);
+        assert_eq!(closed.exit_price, 90.0);
+        assert_eq!(closed.exit_time, exit_candle.timestamp);
+        assert_eq!(closed.realized_pnl, -20.0);
+        assert!(snapshot.open_position.is_none());
+        assert_eq!(snapshot.current_equity, snapshot.realized_cash_balance);
+    }
+
+    #[test]
     fn opening_short_from_flat_creates_position_without_reducing_realized_cash() {
         let mut state = PortfolioState::new(1_000.0);
 
@@ -320,5 +359,27 @@ mod tests {
         assert_eq!(closed.exit_price, 85.0);
         assert_eq!(closed.exit_time, 2);
         assert_eq!(closed.realized_pnl, 30.0);
+    }
+
+    #[test]
+    fn closing_short_at_explicit_exit_price_uses_that_price_for_pnl_and_snapshot() {
+        let mut state = PortfolioState::new(1_000.0);
+        state
+            .open_short_from_flat(&candle(1, 100.0), 2.0, None, None)
+            .unwrap();
+        let exit_candle = candle(2, 85.0);
+
+        let closed = state.close_short_at_price(&exit_candle, 110.0).unwrap();
+        let snapshot = state.snapshot(exit_candle.close);
+
+        assert!(state.open_position.is_none());
+        assert_eq!(state.realized_cash_balance, 980.0);
+        assert_eq!(state.completed_trade_count, 1);
+        assert_eq!(closed.position.side, PositionSide::Short);
+        assert_eq!(closed.exit_price, 110.0);
+        assert_eq!(closed.exit_time, exit_candle.timestamp);
+        assert_eq!(closed.realized_pnl, -20.0);
+        assert!(snapshot.open_position.is_none());
+        assert_eq!(snapshot.current_equity, snapshot.realized_cash_balance);
     }
 }

@@ -1,9 +1,9 @@
-//! Pure planning from strategy decisions to runtime execution actions.
+//! Runtime execution action types and pure strategy-decision planning.
 
-use crate::{StrategyDecision, StrategyDecisionIntent};
+use crate::{RiskExitKind, StrategyDecision, StrategyDecisionIntent};
 use shared::PositionSide;
 
-/// Runtime interpretation of a strategy decision or explicit runner command.
+/// Runtime interpretation of a strategy decision or runtime-managed command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExecutionAction {
     Noop,
@@ -19,6 +19,11 @@ pub enum ExecutionAction {
         take_profit: Option<f64>,
     },
     CloseShort,
+    RiskExit {
+        side: PositionSide,
+        selected: RiskExitKind,
+        exit_price: f64,
+    },
     ForceClose,
 }
 
@@ -26,6 +31,7 @@ pub enum ExecutionAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IgnoredDecisionReason {
     InvalidQuantity,
+    InvalidEntryRisk,
     NoMatchingLongPosition,
     NoMatchingShortPosition,
     PositionAlreadyOpen,
@@ -65,15 +71,20 @@ impl PlannedExecution {
 pub fn plan_execution(
     decision: &StrategyDecision,
     current_side: Option<PositionSide>,
+    entry_price: f64,
 ) -> PlannedExecution {
     match decision.intent {
         StrategyDecisionIntent::Hold => PlannedExecution::noop(),
-        StrategyDecisionIntent::OpenLong => plan_open_long(decision, current_side),
+        StrategyDecisionIntent::OpenLong => {
+            plan_open(decision, current_side, PositionSide::Long, entry_price)
+        }
         StrategyDecisionIntent::CloseLong => match current_side {
             Some(PositionSide::Long) => PlannedExecution::action(ExecutionAction::CloseLong),
             _ => PlannedExecution::ignored(IgnoredDecisionReason::NoMatchingLongPosition),
         },
-        StrategyDecisionIntent::OpenShort => plan_open_short(decision, current_side),
+        StrategyDecisionIntent::OpenShort => {
+            plan_open(decision, current_side, PositionSide::Short, entry_price)
+        }
         StrategyDecisionIntent::CloseShort => match current_side {
             Some(PositionSide::Short) => PlannedExecution::action(ExecutionAction::CloseShort),
             _ => PlannedExecution::ignored(IgnoredDecisionReason::NoMatchingShortPosition),
@@ -81,41 +92,85 @@ pub fn plan_execution(
     }
 }
 
-fn plan_open_long(
+fn plan_open(
     decision: &StrategyDecision,
     current_side: Option<PositionSide>,
+    opening_side: PositionSide,
+    entry_price: f64,
 ) -> PlannedExecution {
     if current_side.is_some() {
         return PlannedExecution::ignored(IgnoredDecisionReason::PositionAlreadyOpen);
     }
 
-    match decision.validated_opening_quantity() {
-        Ok(Some(quantity)) => PlannedExecution::action(ExecutionAction::OpenLong {
+    let quantity = match decision.validated_opening_quantity() {
+        Ok(Some(quantity)) => quantity,
+        Ok(None) | Err(_) => {
+            return PlannedExecution::ignored(IgnoredDecisionReason::InvalidQuantity)
+        }
+    };
+
+    if !entry_risk_is_valid(
+        opening_side,
+        entry_price,
+        decision.stop_loss,
+        decision.take_profit,
+    ) {
+        return PlannedExecution::ignored(IgnoredDecisionReason::InvalidEntryRisk);
+    }
+
+    match opening_side {
+        PositionSide::Long => PlannedExecution::action(ExecutionAction::OpenLong {
             quantity,
             stop_loss: decision.stop_loss,
             take_profit: decision.take_profit,
         }),
-        Ok(None) => PlannedExecution::ignored(IgnoredDecisionReason::InvalidQuantity),
-        Err(_) => PlannedExecution::ignored(IgnoredDecisionReason::InvalidQuantity),
+        PositionSide::Short => PlannedExecution::action(ExecutionAction::OpenShort {
+            quantity,
+            stop_loss: decision.stop_loss,
+            take_profit: decision.take_profit,
+        }),
     }
 }
 
-fn plan_open_short(
-    decision: &StrategyDecision,
-    current_side: Option<PositionSide>,
-) -> PlannedExecution {
-    if current_side.is_some() {
-        return PlannedExecution::ignored(IgnoredDecisionReason::PositionAlreadyOpen);
-    }
+fn entry_risk_is_valid(
+    side: PositionSide,
+    entry_price: f64,
+    stop_loss: Option<f64>,
+    take_profit: Option<f64>,
+) -> bool {
+    let stop_loss_is_valid = match stop_loss {
+        Some(stop_loss) => {
+            risk_price_is_valid(stop_loss)
+                && stop_loss_is_on_correct_side(side, stop_loss, entry_price)
+        }
+        None => true,
+    };
+    let take_profit_is_valid = match take_profit {
+        Some(take_profit) => {
+            risk_price_is_valid(take_profit)
+                && take_profit_is_on_correct_side(side, take_profit, entry_price)
+        }
+        None => true,
+    };
 
-    match decision.validated_opening_quantity() {
-        Ok(Some(quantity)) => PlannedExecution::action(ExecutionAction::OpenShort {
-            quantity,
-            stop_loss: decision.stop_loss,
-            take_profit: decision.take_profit,
-        }),
-        Ok(None) => PlannedExecution::ignored(IgnoredDecisionReason::InvalidQuantity),
-        Err(_) => PlannedExecution::ignored(IgnoredDecisionReason::InvalidQuantity),
+    stop_loss_is_valid && take_profit_is_valid
+}
+
+fn risk_price_is_valid(price: f64) -> bool {
+    price.is_finite() && price > 0.0
+}
+
+fn stop_loss_is_on_correct_side(side: PositionSide, stop_loss: f64, entry_price: f64) -> bool {
+    match side {
+        PositionSide::Long => stop_loss < entry_price,
+        PositionSide::Short => stop_loss > entry_price,
+    }
+}
+
+fn take_profit_is_on_correct_side(side: PositionSide, take_profit: f64, entry_price: f64) -> bool {
+    match side {
+        PositionSide::Long => take_profit > entry_price,
+        PositionSide::Short => take_profit < entry_price,
     }
 }
 
@@ -128,7 +183,7 @@ mod tests {
         current_side: Option<PositionSide>,
         expected: PlannedExecution,
     ) {
-        assert_eq!(plan_execution(&decision, current_side), expected);
+        assert_eq!(plan_execution(&decision, current_side, 100.0), expected);
     }
 
     #[test]
@@ -251,5 +306,60 @@ mod tests {
                 PlannedExecution::ignored(IgnoredDecisionReason::InvalidQuantity),
             );
         }
+    }
+
+    #[test]
+    fn invalid_entry_risk_is_ignored_after_quantity_validation() {
+        for decision in [
+            StrategyDecision::open_long(2.0).with_entry_risk(Some(f64::NAN), None),
+            StrategyDecision::open_long(2.0).with_entry_risk(Some(f64::INFINITY), None),
+            StrategyDecision::open_long(2.0).with_entry_risk(Some(0.0), None),
+            StrategyDecision::open_long(2.0).with_entry_risk(Some(-1.0), None),
+            StrategyDecision::open_long(2.0).with_entry_risk(Some(100.0), None),
+            StrategyDecision::open_long(2.0).with_entry_risk(Some(101.0), None),
+            StrategyDecision::open_long(2.0).with_entry_risk(None, Some(f64::NAN)),
+            StrategyDecision::open_long(2.0).with_entry_risk(None, Some(f64::INFINITY)),
+            StrategyDecision::open_long(2.0).with_entry_risk(None, Some(0.0)),
+            StrategyDecision::open_long(2.0).with_entry_risk(None, Some(-1.0)),
+            StrategyDecision::open_long(2.0).with_entry_risk(None, Some(100.0)),
+            StrategyDecision::open_long(2.0).with_entry_risk(None, Some(99.0)),
+            StrategyDecision::open_short(2.0).with_entry_risk(Some(f64::NAN), None),
+            StrategyDecision::open_short(2.0).with_entry_risk(Some(f64::INFINITY), None),
+            StrategyDecision::open_short(2.0).with_entry_risk(Some(0.0), None),
+            StrategyDecision::open_short(2.0).with_entry_risk(Some(-1.0), None),
+            StrategyDecision::open_short(2.0).with_entry_risk(Some(100.0), None),
+            StrategyDecision::open_short(2.0).with_entry_risk(Some(99.0), None),
+            StrategyDecision::open_short(2.0).with_entry_risk(None, Some(f64::NAN)),
+            StrategyDecision::open_short(2.0).with_entry_risk(None, Some(f64::INFINITY)),
+            StrategyDecision::open_short(2.0).with_entry_risk(None, Some(0.0)),
+            StrategyDecision::open_short(2.0).with_entry_risk(None, Some(-1.0)),
+            StrategyDecision::open_short(2.0).with_entry_risk(None, Some(100.0)),
+            StrategyDecision::open_short(2.0).with_entry_risk(None, Some(101.0)),
+        ] {
+            assert_eq!(
+                plan_execution(&decision, None, 100.0),
+                PlannedExecution::ignored(IgnoredDecisionReason::InvalidEntryRisk),
+            );
+        }
+    }
+
+    #[test]
+    fn opening_validation_priority_is_state_then_quantity_then_entry_risk() {
+        assert_eq!(
+            plan_execution(
+                &StrategyDecision::open_long(0.0).with_entry_risk(Some(100.0), None),
+                Some(PositionSide::Short),
+                100.0,
+            ),
+            PlannedExecution::ignored(IgnoredDecisionReason::PositionAlreadyOpen),
+        );
+        assert_eq!(
+            plan_execution(
+                &StrategyDecision::open_long(0.0).with_entry_risk(Some(100.0), None),
+                None,
+                100.0,
+            ),
+            PlannedExecution::ignored(IgnoredDecisionReason::InvalidQuantity),
+        );
     }
 }
