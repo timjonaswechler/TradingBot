@@ -1,8 +1,8 @@
 //! Trading runtime entrypoints.
 
 use crate::{
-    plan_execution, ExecutionAction, ForceCloseIgnoredReason, PortfolioState, RuntimeEvent,
-    RuntimeStep, StrategyHandler,
+    plan_execution, ExecutionAction, ExitKind, ForceCloseIgnoredReason, PortfolioState,
+    RuntimeEvent, RuntimeStep, StrategyHandler,
 };
 use shared::{Candle, PositionSide};
 
@@ -101,7 +101,10 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                     .portfolio
                     .close_long(&candle)
                     .expect("planned close long should be executable");
-                events.push(RuntimeEvent::PositionClosed { closed_position });
+                events.push(RuntimeEvent::PositionClosed {
+                    closed_position,
+                    exit_kind: ExitKind::StrategyExit,
+                });
                 events.push(RuntimeEvent::PortfolioUpdated {
                     snapshot: self.portfolio.snapshot(candle.close),
                 });
@@ -129,7 +132,10 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                     .portfolio
                     .close_short(&candle)
                     .expect("planned close short should be executable");
-                events.push(RuntimeEvent::PositionClosed { closed_position });
+                events.push(RuntimeEvent::PositionClosed {
+                    closed_position,
+                    exit_kind: ExitKind::StrategyExit,
+                });
                 events.push(RuntimeEvent::PortfolioUpdated {
                     snapshot: self.portfolio.snapshot(candle.close),
                 });
@@ -171,7 +177,10 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             events.push(RuntimeEvent::ExecutionActionPlanned {
                 action: ExecutionAction::ForceClose,
             });
-            events.push(RuntimeEvent::PositionClosed { closed_position });
+            events.push(RuntimeEvent::PositionClosed {
+                closed_position,
+                exit_kind: ExitKind::ForceClose,
+            });
             events.push(RuntimeEvent::PortfolioUpdated {
                 snapshot: self.portfolio.snapshot(mark_candle.close),
             });

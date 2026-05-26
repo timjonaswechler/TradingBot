@@ -23,7 +23,7 @@ pub mod strategy;
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
-pub use events::{ForceCloseIgnoredReason, RuntimeEvent};
+pub use events::{ExitKind, ForceCloseIgnoredReason, RuntimeEvent};
 pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
 pub use portfolio::{
     ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,

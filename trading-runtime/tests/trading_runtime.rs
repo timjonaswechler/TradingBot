@@ -1,6 +1,6 @@
 use shared::{Position, PositionSide};
 use trading_runtime::{
-    ClosedPosition, ExecutionAction, ForceCloseIgnoredReason, IgnoredDecisionReason,
+    ClosedPosition, ExecutionAction, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason,
     PortfolioState, PredeterminedStrategyHandler, RuntimeEvent, RuntimePortfolioSnapshot,
     StrategyDecision, StrategyDecisionIntent, TradingRuntime,
 };
@@ -587,6 +587,7 @@ fn primary_candle_closes_long_position_and_realizes_pnl() {
             },
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
+                exit_kind: ExitKind::StrategyExit,
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -819,6 +820,7 @@ fn primary_candle_closes_short_position_and_realizes_pnl() {
             },
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
+                exit_kind: ExitKind::StrategyExit,
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -876,6 +878,7 @@ fn force_close_closes_open_long_position_with_ordered_events() {
             },
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
+                exit_kind: ExitKind::ForceClose,
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -933,6 +936,7 @@ fn force_close_closes_open_short_position_with_ordered_events() {
             },
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
+                exit_kind: ExitKind::ForceClose,
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1038,6 +1042,7 @@ fn force_close_works_while_runtime_is_still_in_warmup() {
             },
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
+                exit_kind: ExitKind::ForceClose,
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
