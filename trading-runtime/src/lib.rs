@@ -26,8 +26,8 @@ pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
 pub use events::{
-    ExitKind, ForceCloseIgnoredReason, RuntimeEvent, SecondaryContextUnavailableReason,
-    StrategyTickBlockedReason,
+    BlockedSecondaryContext, ExitKind, ForceCloseIgnoredReason, RuntimeEvent,
+    SecondaryContextUnavailableReason,
 };
 pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
 pub use market_input::{

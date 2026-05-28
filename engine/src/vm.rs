@@ -878,7 +878,10 @@ fn on_tick(candles, context) {
     fn adx_offset_matches_previous_tick_values() {
         let mut e = Engine::new(ADX_OFFSET_SEMANTICS).unwrap();
         let mut last = Signal::Hold;
-        for (i, close) in [10.0, 11.0, 12.0, 13.0, 12.0, 14.0, 15.0, 14.5].into_iter().enumerate() {
+        for (i, close) in [10.0, 11.0, 12.0, 13.0, 12.0, 14.0, 15.0, 14.5]
+            .into_iter()
+            .enumerate()
+        {
             let d = e.tick(make_candle(close, i as i64), flat_ctx()).unwrap();
             last = d.signal;
         }

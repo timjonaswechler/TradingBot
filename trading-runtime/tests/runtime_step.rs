@@ -1,5 +1,6 @@
 use trading_runtime::{
-    ExitKind, RiskExitKind, RuntimeEvent, RuntimeStep, StrategyDecision, StrategyTickBlockedReason,
+    BlockedSecondaryContext, ExitKind, RiskExitKind, RuntimeEvent, RuntimeStep,
+    SecondaryContextUnavailableReason, StrategyDecision,
 };
 
 fn candle() -> shared::Candle {
@@ -77,9 +78,10 @@ fn blocked_strategy_tick_can_complete_tradable_candle_without_strategy_output() 
             },
             RuntimeEvent::StrategyTickBlocked {
                 candle: candle.clone(),
-                reason: StrategyTickBlockedReason::RequiredSecondaryUnavailable {
+                blocked_contexts: vec![BlockedSecondaryContext {
                     timeframe: "1h".into(),
-                },
+                    reason: SecondaryContextUnavailableReason::Missing,
+                }],
             },
             RuntimeEvent::TradableCandleCompleted,
         ],
@@ -89,9 +91,12 @@ fn blocked_strategy_tick_can_complete_tradable_candle_without_strategy_output() 
     assert!(step.events.iter().any(|event| matches!(
         event,
         RuntimeEvent::StrategyTickBlocked {
-            reason: StrategyTickBlockedReason::RequiredSecondaryUnavailable { timeframe },
+            blocked_contexts,
             ..
-        } if timeframe == "1h"
+        } if blocked_contexts == &vec![BlockedSecondaryContext {
+            timeframe: "1h".into(),
+            reason: SecondaryContextUnavailableReason::Missing,
+        }]
     )));
     assert!(!step.events.iter().any(|event| matches!(
         event,

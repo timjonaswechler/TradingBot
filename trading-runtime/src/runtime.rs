@@ -2,10 +2,10 @@
 
 use crate::market_input::MarketInputTimeframeRole;
 use crate::{
-    evaluate_risk_exit, plan_execution, ExecutionAction, ExitKind, ForceCloseIgnoredReason,
-    MarketInput, MarketState, PortfolioState, RuntimeConfig, RuntimeEvent, RuntimeInputError,
-    RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness, SecondaryTimeframeConfig,
-    StrategyHandler, StrategyTickBlockedReason,
+    evaluate_risk_exit, plan_execution, BlockedSecondaryContext, ExecutionAction, ExitKind,
+    ForceCloseIgnoredReason, MarketInput, MarketState, PortfolioState, RuntimeConfig, RuntimeEvent,
+    RuntimeInputError, RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness,
+    SecondaryTimeframeConfig, StrategyHandler,
 };
 use shared::{Candle, PositionSide};
 use std::collections::HashMap;
@@ -182,10 +182,11 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
         }
 
-        if let Some(blocked_reason) = self.evaluate_secondary_readiness(&candle, &mut events) {
+        let blocked_contexts = self.evaluate_secondary_readiness(&candle, &mut events);
+        if !blocked_contexts.is_empty() {
             events.push(RuntimeEvent::StrategyTickBlocked {
                 candle: candle.clone(),
-                reason: blocked_reason,
+                blocked_contexts,
             });
             events.push(RuntimeEvent::TradableCandleCompleted);
 
@@ -366,22 +367,16 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         &self,
         primary_candle: &Candle,
         events: &mut Vec<RuntimeEvent>,
-    ) -> Option<StrategyTickBlockedReason> {
+    ) -> Vec<BlockedSecondaryContext> {
+        let mut blocked_contexts = Vec::new();
+
         for secondary in self.config.secondary_configs() {
             if let Some(reason) = self.secondary_unavailable_reason(primary_candle, secondary) {
                 match secondary.readiness {
                     SecondaryReadiness::Required => {
-                        return Some(match reason {
-                            SecondaryContextUnavailableReason::Missing => {
-                                StrategyTickBlockedReason::RequiredSecondaryUnavailable {
-                                    timeframe: secondary.timeframe.clone(),
-                                }
-                            }
-                            SecondaryContextUnavailableReason::Stale => {
-                                StrategyTickBlockedReason::RequiredSecondaryStale {
-                                    timeframe: secondary.timeframe.clone(),
-                                }
-                            }
+                        blocked_contexts.push(BlockedSecondaryContext {
+                            timeframe: secondary.timeframe.clone(),
+                            reason,
                         });
                     }
                     SecondaryReadiness::Optional => {
@@ -396,7 +391,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             }
         }
 
-        None
+        blocked_contexts
     }
 
     fn secondary_unavailable_reason(

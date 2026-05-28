@@ -44,22 +44,6 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    pub fn new<A, P, I, T>(runtime_asset: A, primary_timeframe: P, secondary_timeframes: I) -> Self
-    where
-        A: Into<String>,
-        P: Into<String>,
-        I: IntoIterator<Item = T>,
-        T: Into<String>,
-    {
-        Self::with_secondary_configs(
-            runtime_asset,
-            primary_timeframe,
-            secondary_timeframes
-                .into_iter()
-                .map(|timeframe| SecondaryTimeframeConfig::optional(timeframe, 0)),
-        )
-    }
-
     pub fn with_secondary_configs<A, P, I>(
         runtime_asset: A,
         primary_timeframe: P,

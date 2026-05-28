@@ -1,10 +1,11 @@
 use shared::{Candle, Position, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
-    ClosedPosition, ExecutionAction, ExitKind, MarketInput, PortfolioState, RiskExitKind,
-    RiskExitTriggered, RuntimeConfig, RuntimeEvent, RuntimeInputError, RuntimePortfolioSnapshot,
-    SecondaryContextUnavailableReason, SecondaryReadiness, SecondaryTimeframeConfig,
-    StrategyDecision, StrategyHandler, StrategyTickBlockedReason, TradingRuntime,
+    BlockedSecondaryContext, ClosedPosition, ExecutionAction, ExitKind, MarketInput,
+    PortfolioState, RiskExitKind, RiskExitTriggered, RuntimeConfig, RuntimeEvent,
+    RuntimeInputError, RuntimePortfolioSnapshot, SecondaryContextUnavailableReason,
+    SecondaryReadiness, SecondaryTimeframeConfig, StrategyDecision, StrategyHandler,
+    TradingRuntime,
 };
 
 fn candle(timestamp: i64, timeframe: &str, close: f64) -> Candle {
@@ -49,7 +50,11 @@ fn position_with_entry_risk(
 }
 
 fn runtime_config() -> RuntimeConfig {
-    RuntimeConfig::new("BTC-USD", "1m", ["1h"])
+    RuntimeConfig::with_secondary_configs(
+        "BTC-USD",
+        "1m",
+        [SecondaryTimeframeConfig::optional("1h", 0)],
+    )
 }
 
 #[derive(Clone)]
@@ -773,9 +778,10 @@ fn required_secondary_missing_blocks_strategy_tick_after_storing_primary() {
             },
             RuntimeEvent::StrategyTickBlocked {
                 candle: primary.clone(),
-                reason: StrategyTickBlockedReason::RequiredSecondaryUnavailable {
+                blocked_contexts: vec![BlockedSecondaryContext {
                     timeframe: "1h".into(),
-                },
+                    reason: SecondaryContextUnavailableReason::Missing,
+                }],
             },
             RuntimeEvent::TradableCandleCompleted,
         ]
@@ -786,6 +792,46 @@ fn required_secondary_missing_blocks_strategy_tick_after_storing_primary() {
             | RuntimeEvent::StrategyDecisionProduced { .. }
             | RuntimeEvent::ExecutionActionPlanned { .. }
     )));
+}
+
+#[test]
+fn missing_required_secondaries_are_reported_together_when_strategy_tick_is_blocked() {
+    let primary = candle(60_000, "1m", 100.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs(
+            "1m",
+            [
+                SecondaryTimeframeConfig::required("1h", 0),
+                SecondaryTimeframeConfig::required("1d", 0),
+            ],
+        ),
+        PortfolioState::new(1_000.0),
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::open_long(2.0)],
+        ),
+    );
+
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert!(step.events.contains(&RuntimeEvent::StrategyTickBlocked {
+        candle: primary,
+        blocked_contexts: vec![
+            BlockedSecondaryContext {
+                timeframe: "1h".into(),
+                reason: SecondaryContextUnavailableReason::Missing,
+            },
+            BlockedSecondaryContext {
+                timeframe: "1d".into(),
+                reason: SecondaryContextUnavailableReason::Missing,
+            },
+        ],
+    }));
 }
 
 #[test]
@@ -1083,9 +1129,10 @@ fn open_position_without_risk_exit_keeps_missing_required_secondary_as_strategy_
             },
             RuntimeEvent::StrategyTickBlocked {
                 candle: primary.clone(),
-                reason: StrategyTickBlockedReason::RequiredSecondaryUnavailable {
+                blocked_contexts: vec![BlockedSecondaryContext {
                     timeframe: "1h".into(),
-                },
+                    reason: SecondaryContextUnavailableReason::Missing,
+                }],
             },
             RuntimeEvent::TradableCandleCompleted,
         ]
@@ -1143,9 +1190,10 @@ fn coarse_required_secondary_remains_fresh_until_duration_and_tolerance_are_exce
             },
             RuntimeEvent::StrategyTickBlocked {
                 candle: stale_primary.clone(),
-                reason: StrategyTickBlockedReason::RequiredSecondaryStale {
+                blocked_contexts: vec![BlockedSecondaryContext {
                     timeframe: "1h".into(),
-                },
+                    reason: SecondaryContextUnavailableReason::Stale,
+                }],
             },
             RuntimeEvent::TradableCandleCompleted,
         ]
@@ -1293,9 +1341,10 @@ fn fine_secondary_freshness_uses_secondary_duration_not_primary_duration() {
             },
             RuntimeEvent::StrategyTickBlocked {
                 candle: primary.clone(),
-                reason: StrategyTickBlockedReason::RequiredSecondaryStale {
+                blocked_contexts: vec![BlockedSecondaryContext {
                     timeframe: "1m".into(),
-                },
+                    reason: SecondaryContextUnavailableReason::Stale,
+                }],
             },
             RuntimeEvent::TradableCandleCompleted,
         ]

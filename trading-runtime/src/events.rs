@@ -27,11 +27,11 @@ pub enum SecondaryContextUnavailableReason {
     Stale,
 }
 
-/// Why a Primary-Timeframe Tradable Candle did not become a Strategy Tick.
+/// Required Secondary-Timeframe context that blocked a Primary Strategy Tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StrategyTickBlockedReason {
-    RequiredSecondaryUnavailable { timeframe: String },
-    RequiredSecondaryStale { timeframe: String },
+pub struct BlockedSecondaryContext {
+    pub timeframe: String,
+    pub reason: SecondaryContextUnavailableReason,
 }
 
 /// A runner-neutral occurrence emitted by the trading runtime.
@@ -51,7 +51,7 @@ pub enum RuntimeEvent {
     },
     StrategyTickBlocked {
         candle: Candle,
-        reason: StrategyTickBlockedReason,
+        blocked_contexts: Vec<BlockedSecondaryContext>,
     },
     SecondaryContextUnavailable {
         candle: Candle,
