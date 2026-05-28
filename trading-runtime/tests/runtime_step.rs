@@ -1,4 +1,6 @@
-use trading_runtime::{ExitKind, RiskExitKind, RuntimeEvent, RuntimeStep, StrategyDecision};
+use trading_runtime::{
+    ExitKind, RiskExitKind, RuntimeEvent, RuntimeStep, StrategyDecision, StrategyTickBlockedReason,
+};
 
 fn candle() -> shared::Candle {
     shared::Candle {
@@ -18,7 +20,7 @@ fn snapshot() -> trading_runtime::RuntimePortfolioSnapshot {
 }
 
 #[test]
-fn runtime_step_returns_ordered_events_and_current_portfolio_snapshot() {
+fn runtime_step_returns_ordered_strategy_tick_events_and_current_portfolio_snapshot() {
     let candle = candle();
     let snapshot = snapshot();
     let step = RuntimeStep::new(
@@ -26,12 +28,17 @@ fn runtime_step_returns_ordered_events_and_current_portfolio_snapshot() {
             RuntimeEvent::MarketInputAccepted {
                 candle: candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
+                candle: candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
                 candle: candle.clone(),
             },
             RuntimeEvent::StrategyDecisionProduced {
                 decision: StrategyDecision::hold(),
             },
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ],
         snapshot.clone(),
     );
@@ -42,13 +49,54 @@ fn runtime_step_returns_ordered_events_and_current_portfolio_snapshot() {
             RuntimeEvent::MarketInputAccepted {
                 candle: candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted { candle },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted { candle },
             RuntimeEvent::StrategyDecisionProduced {
                 decision: StrategyDecision::hold(),
             },
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(step.portfolio_snapshot, snapshot);
+}
+
+#[test]
+fn blocked_strategy_tick_can_complete_tradable_candle_without_strategy_output() {
+    let candle = candle();
+    let snapshot = snapshot();
+    let step = RuntimeStep::new(
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: candle.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: candle.clone(),
+            },
+            RuntimeEvent::StrategyTickBlocked {
+                candle: candle.clone(),
+                reason: StrategyTickBlockedReason::RequiredSecondaryUnavailable {
+                    timeframe: "1h".into(),
+                },
+            },
+            RuntimeEvent::TradableCandleCompleted,
+        ],
+        snapshot,
+    );
+
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::StrategyTickBlocked {
+            reason: StrategyTickBlockedReason::RequiredSecondaryUnavailable { timeframe },
+            ..
+        } if timeframe == "1h"
+    )));
+    assert!(!step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::StrategyDecisionProduced { .. } | RuntimeEvent::ExecutionActionPlanned { .. }
+    )));
 }
 
 #[test]

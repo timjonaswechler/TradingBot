@@ -20,6 +20,13 @@ pub enum ExitKind {
     ForceClose,
 }
 
+/// Why a Primary-Timeframe Tradable Candle did not become a Strategy Tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StrategyTickBlockedReason {
+    RequiredSecondaryUnavailable { timeframe: String },
+    RequiredSecondaryStale { timeframe: String },
+}
+
 /// A runner-neutral occurrence emitted by the trading runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEvent {
@@ -29,8 +36,15 @@ pub enum RuntimeEvent {
     WarmupInputAccepted {
         candle: Candle,
     },
-    TradableTickStarted {
+    TradableCandleAccepted {
         candle: Candle,
+    },
+    StrategyTickStarted {
+        candle: Candle,
+    },
+    StrategyTickBlocked {
+        candle: Candle,
+        reason: StrategyTickBlockedReason,
     },
     StrategyDecisionProduced {
         decision: StrategyDecision,
@@ -55,7 +69,8 @@ pub enum RuntimeEvent {
     PortfolioUpdated {
         snapshot: RuntimePortfolioSnapshot,
     },
-    TradableTickCompleted,
+    StrategyTickCompleted,
+    TradableCandleCompleted,
     WarmupAdvanced {
         timeframe: String,
         current_warmup_input_count: usize,

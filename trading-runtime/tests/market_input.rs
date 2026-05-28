@@ -82,7 +82,7 @@ impl StrategyHandler for CountingStrategyHandler {
 }
 
 #[test]
-fn completed_primary_market_input_routes_to_existing_tradable_candle_behavior() {
+fn completed_primary_market_input_emits_tradable_candle_and_strategy_tick_events() {
     let primary = candle(1, "1m", 100.0);
     let decision = StrategyDecision::open_long(2.0);
     let calls = Rc::new(RefCell::new(0));
@@ -106,7 +106,10 @@ fn completed_primary_market_input_routes_to_existing_tradable_candle_behavior() 
             RuntimeEvent::MarketInputAccepted {
                 candle: primary.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
                 candle: primary.clone(),
             },
             RuntimeEvent::StrategyDecisionProduced { decision },
@@ -123,7 +126,8 @@ fn completed_primary_market_input_routes_to_existing_tradable_candle_behavior() 
             RuntimeEvent::PortfolioUpdated {
                 snapshot: step.portfolio_snapshot.clone(),
             },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert!(step.portfolio_snapshot.open_position.is_some());
@@ -311,7 +315,7 @@ fn interleaved_completed_primary_and_secondary_inputs_only_evaluate_primary_inpu
     );
     assert!(!first_secondary_step.events.iter().any(|event| matches!(
         event,
-        RuntimeEvent::TradableTickStarted { .. }
+        RuntimeEvent::TradableCandleAccepted { .. }
             | RuntimeEvent::StrategyDecisionProduced { .. }
             | RuntimeEvent::ExecutionActionPlanned { .. }
             | RuntimeEvent::PositionOpened { .. }
@@ -320,7 +324,7 @@ fn interleaved_completed_primary_and_secondary_inputs_only_evaluate_primary_inpu
     )));
     assert!(!second_secondary_step.events.iter().any(|event| matches!(
         event,
-        RuntimeEvent::TradableTickStarted { .. }
+        RuntimeEvent::TradableCandleAccepted { .. }
             | RuntimeEvent::StrategyDecisionProduced { .. }
             | RuntimeEvent::ExecutionActionPlanned { .. }
             | RuntimeEvent::PositionOpened { .. }
@@ -505,7 +509,7 @@ fn completed_primary_before_all_timeframe_warmups_are_satisfied_is_stored_withou
     assert_eq!(early_step.portfolio_snapshot.completed_trade_count, 0);
     assert!(!early_step.events.iter().any(|event| matches!(
         event,
-        RuntimeEvent::TradableTickStarted { .. }
+        RuntimeEvent::TradableCandleAccepted { .. }
             | RuntimeEvent::StrategyDecisionProduced { .. }
             | RuntimeEvent::RiskExitTriggered { .. }
             | RuntimeEvent::PositionClosed { .. }

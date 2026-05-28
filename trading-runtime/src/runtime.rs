@@ -136,7 +136,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             candle: candle.clone(),
         }];
 
-        events.push(RuntimeEvent::TradableTickStarted {
+        events.push(RuntimeEvent::TradableCandleAccepted {
             candle: candle.clone(),
         });
 
@@ -176,10 +176,14 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             events.push(RuntimeEvent::PortfolioUpdated {
                 snapshot: self.portfolio.snapshot(candle.close),
             });
-            events.push(RuntimeEvent::TradableTickCompleted);
+            events.push(RuntimeEvent::TradableCandleCompleted);
 
             return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
         }
+
+        events.push(RuntimeEvent::StrategyTickStarted {
+            candle: candle.clone(),
+        });
 
         let portfolio_before_decision = self.portfolio.snapshot(candle.close);
         let decision = self
@@ -271,7 +275,8 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             | ExecutionAction::ForceClose => {}
         }
 
-        events.push(RuntimeEvent::TradableTickCompleted);
+        events.push(RuntimeEvent::StrategyTickCompleted);
+        events.push(RuntimeEvent::TradableCandleCompleted);
 
         RuntimeStep::new(events, self.portfolio.snapshot(candle.close))
     }

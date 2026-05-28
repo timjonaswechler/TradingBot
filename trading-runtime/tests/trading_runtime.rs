@@ -60,7 +60,10 @@ fn assert_ignored_step(
             RuntimeEvent::MarketInputAccepted {
                 candle: candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted { candle },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted { candle },
             RuntimeEvent::StrategyDecisionProduced {
                 decision: decision.clone(),
             },
@@ -68,7 +71,8 @@ fn assert_ignored_step(
                 action: ExecutionAction::Noop,
             },
             RuntimeEvent::StrategyDecisionIgnored { decision, reason },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(step.portfolio_snapshot, expected_snapshot);
@@ -147,7 +151,7 @@ fn assert_risk_exit_step(
             RuntimeEvent::MarketInputAccepted {
                 candle: exit_candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
                 candle: exit_candle,
             },
             RuntimeEvent::RiskExitTriggered {
@@ -169,7 +173,7 @@ fn assert_risk_exit_step(
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
             },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(*strategy_calls.borrow(), 0);
@@ -262,7 +266,7 @@ fn tradable_candle_with_both_intrabar_boundaries_selects_stop_loss_and_reports_b
 }
 
 #[test]
-fn tradable_candle_with_no_warmup_and_hold_while_flat_emits_tradable_noop_step() {
+fn tradable_candle_with_no_warmup_and_hold_while_flat_emits_strategy_tick_noop_step() {
     let candle = candle(1, 100.0);
     let mut runtime = TradingRuntime::new(
         PortfolioState::new(1_000.0),
@@ -278,7 +282,10 @@ fn tradable_candle_with_no_warmup_and_hold_while_flat_emits_tradable_noop_step()
             RuntimeEvent::MarketInputAccepted {
                 candle: candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
+                candle: candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
                 candle: candle.clone(),
             },
             RuntimeEvent::StrategyDecisionProduced {
@@ -287,7 +294,8 @@ fn tradable_candle_with_no_warmup_and_hold_while_flat_emits_tradable_noop_step()
             RuntimeEvent::ExecutionActionPlanned {
                 action: ExecutionAction::Noop,
             },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(
@@ -368,7 +376,10 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
             RuntimeEvent::MarketInputAccepted {
                 candle: first_tradable.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
+                candle: first_tradable.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
                 candle: first_tradable.clone(),
             },
             RuntimeEvent::StrategyDecisionProduced { decision },
@@ -390,7 +401,8 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
             RuntimeEvent::PortfolioUpdated {
                 snapshot: tradable_step.portfolio_snapshot.clone(),
             },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(
@@ -444,7 +456,7 @@ fn warmup_input_crossing_stop_loss_on_initial_open_position_does_not_trade() {
             | RuntimeEvent::RiskExitTriggered { .. }
             | RuntimeEvent::PositionClosed { .. }
             | RuntimeEvent::PortfolioUpdated { .. }
-            | RuntimeEvent::TradableTickStarted { .. }
+            | RuntimeEvent::TradableCandleAccepted { .. }
     )));
 }
 
@@ -466,7 +478,7 @@ fn zero_warmup_makes_first_tradable_candle_tradable_without_warmup_completed() {
     assert!(step
         .events
         .iter()
-        .any(|event| matches!(event, RuntimeEvent::TradableTickStarted { .. })));
+        .any(|event| matches!(event, RuntimeEvent::TradableCandleAccepted { .. })));
 }
 
 #[test]
@@ -493,7 +505,10 @@ fn tradable_candle_opens_long_from_flat_and_updates_portfolio_snapshot() {
             RuntimeEvent::MarketInputAccepted {
                 candle: candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
+                candle: candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
                 candle: candle.clone(),
             },
             RuntimeEvent::StrategyDecisionProduced { decision },
@@ -510,7 +525,8 @@ fn tradable_candle_opens_long_from_flat_and_updates_portfolio_snapshot() {
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
             },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(step.portfolio_snapshot, expected_snapshot);
@@ -549,7 +565,10 @@ fn tradable_candle_opens_short_from_flat_and_updates_portfolio_snapshot() {
             RuntimeEvent::MarketInputAccepted {
                 candle: candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
+                candle: candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
                 candle: candle.clone(),
             },
             RuntimeEvent::StrategyDecisionProduced { decision },
@@ -566,7 +585,8 @@ fn tradable_candle_opens_short_from_flat_and_updates_portfolio_snapshot() {
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
             },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(step.portfolio_snapshot, expected_snapshot);
@@ -828,7 +848,10 @@ fn tradable_candle_closes_long_position_and_realizes_pnl() {
             RuntimeEvent::MarketInputAccepted {
                 candle: exit_candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
+                candle: exit_candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
                 candle: exit_candle.clone(),
             },
             RuntimeEvent::StrategyDecisionProduced {
@@ -844,7 +867,8 @@ fn tradable_candle_closes_long_position_and_realizes_pnl() {
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
             },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(step.portfolio_snapshot, expected_snapshot);
@@ -1061,7 +1085,10 @@ fn tradable_candle_closes_short_position_and_realizes_pnl() {
             RuntimeEvent::MarketInputAccepted {
                 candle: exit_candle.clone(),
             },
-            RuntimeEvent::TradableTickStarted {
+            RuntimeEvent::TradableCandleAccepted {
+                candle: exit_candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
                 candle: exit_candle.clone(),
             },
             RuntimeEvent::StrategyDecisionProduced {
@@ -1077,7 +1104,8 @@ fn tradable_candle_closes_short_position_and_realizes_pnl() {
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
             },
-            RuntimeEvent::TradableTickCompleted,
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
         ]
     );
     assert_eq!(step.portfolio_snapshot, expected_snapshot);

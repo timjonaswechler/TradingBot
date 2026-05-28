@@ -106,8 +106,10 @@ fn execution_action_event(step: &RuntimeStep) -> &ExecutionAction {
 fn assert_no_strategy_tick_events(step: &RuntimeStep) {
     assert!(step.events.iter().all(|event| !matches!(
         event,
-        RuntimeEvent::StrategyDecisionProduced { .. }
+        RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
             | RuntimeEvent::StrategyDecisionIgnored { .. }
+            | RuntimeEvent::StrategyTickCompleted
     )));
 }
 
@@ -269,7 +271,9 @@ fn regression_warmup_input_crossing_stop_loss_does_not_close_or_emit_risk_exit()
             | RuntimeEvent::ExecutionActionPlanned { .. }
             | RuntimeEvent::PositionClosed { .. }
             | RuntimeEvent::PortfolioUpdated { .. }
-            | RuntimeEvent::TradableTickStarted { .. }
+            | RuntimeEvent::TradableCandleAccepted { .. }
+            | RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyTickCompleted
     )));
     assert_eq!(step.portfolio_snapshot.open_position, Some(open_position));
     assert_eq!(step.portfolio_snapshot.completed_trade_count, 0);
