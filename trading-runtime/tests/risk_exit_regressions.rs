@@ -1,9 +1,9 @@
 use shared::{Candle, Position, PositionSide};
 use std::{cell::RefCell, rc::Rc};
 use trading_runtime::{
-    ClosedPosition, ExecutionAction, ExitKind, PortfolioState, RiskExitKind, RiskExitTriggered,
-    RuntimeEvent, RuntimePortfolioSnapshot, RuntimeStep, StrategyDecision, StrategyHandler,
-    TradingRuntime,
+    ClosedPosition, ExecutionAction, ExitKind, MarketInput, PortfolioState, RiskExitKind,
+    RiskExitTriggered, RuntimeEvent, RuntimePortfolioSnapshot, RuntimeStep, StrategyDecision,
+    StrategyHandler, TradingRuntime,
 };
 
 fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
@@ -17,6 +17,15 @@ fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Ca
         volume: 1_000.0,
         timeframe: "1m".into(),
     }
+}
+
+fn completed_primary_step<S: StrategyHandler>(
+    runtime: &mut TradingRuntime<S>,
+    candle: Candle,
+) -> RuntimeStep {
+    runtime
+        .on_market_input(MarketInput::CompletedCandle(candle))
+        .expect("completed primary candle should be accepted")
 }
 
 fn position_with_entry_risk(
@@ -119,7 +128,7 @@ fn regression_long_stop_loss_uses_stop_price_not_legacy_candle_close() {
     let exit_candle = ohlc_candle(2, 100.0, 105.0, 90.0, 88.0);
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position.clone(), 0);
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         risk_exit_event(&step),
@@ -162,7 +171,7 @@ fn regression_short_stop_loss_uses_stop_price_not_legacy_candle_close() {
     let exit_candle = ohlc_candle(2, 100.0, 110.0, 95.0, 115.0);
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position.clone(), 0);
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         risk_exit_event(&step),
@@ -197,7 +206,7 @@ fn regression_take_profit_uses_target_price_not_legacy_candle_close() {
     let exit_candle = ohlc_candle(2, 100.0, 120.0, 95.0, 112.0);
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position, 0);
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         risk_exit_event(&step),
@@ -230,7 +239,7 @@ fn regression_both_intrabar_boundaries_select_stop_loss_and_expose_both_triggere
     let exit_candle = ohlc_candle(2, 100.0, 120.0, 90.0, 110.0);
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position, 0);
 
-    let step = runtime.on_tradable_candle(exit_candle);
+    let step = completed_primary_step(&mut runtime, exit_candle);
 
     assert_eq!(
         risk_exit_event(&step),
@@ -289,7 +298,7 @@ fn regression_first_tradable_candle_after_warmup_can_close_breached_stop_before_
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position, 1);
 
     let warmup_step = runtime.on_warmup_input(warmup_candle);
-    let tradable_step = runtime.on_tradable_candle(first_tradable_candle.clone());
+    let tradable_step = completed_primary_step(&mut runtime, first_tradable_candle.clone());
 
     assert!(warmup_step.portfolio_snapshot.open_position.is_some());
     assert_eq!(

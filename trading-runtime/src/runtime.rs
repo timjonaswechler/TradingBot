@@ -71,7 +71,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             (MarketInput::WarmupCandle(candle), _) => Ok(self.on_warmup_input(candle)),
             (MarketInput::CompletedCandle(candle), MarketInputTimeframeRole::Primary) => {
                 if self.is_warmup_complete() {
-                    Ok(self.on_tradable_candle(candle))
+                    Ok(self.handle_completed_primary_after_warmup(candle))
                 } else {
                     Ok(self.on_completed_primary_before_warmup_complete(candle))
                 }
@@ -130,7 +130,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         RuntimeStep::new(events, self.portfolio.snapshot(candle.close))
     }
 
-    pub fn on_tradable_candle(&mut self, candle: Candle) -> RuntimeStep {
+    fn handle_completed_primary_after_warmup(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
 
         let mut events = vec![RuntimeEvent::MarketInputAccepted {

@@ -2,9 +2,9 @@ use shared::{Candle, Position, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason,
-    PortfolioState, PredeterminedStrategyHandler, RiskExitKind, RiskExitTriggered, RuntimeEvent,
-    RuntimePortfolioSnapshot, StrategyDecision, StrategyDecisionIntent, StrategyHandler,
-    TradingRuntime,
+    MarketInput, PortfolioState, PredeterminedStrategyHandler, RiskExitKind, RiskExitTriggered,
+    RuntimeEvent, RuntimePortfolioSnapshot, StrategyDecision, StrategyDecisionIntent,
+    StrategyHandler, TradingRuntime,
 };
 
 fn candle(timestamp: i64, close: f64) -> Candle {
@@ -26,6 +26,15 @@ fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Ca
 
 fn position(side: PositionSide, entry_time: i64, entry_price: f64, size: f64) -> Position {
     position_with_entry_risk(side, entry_time, entry_price, size, None, None)
+}
+
+fn completed_primary_step<S: StrategyHandler>(
+    runtime: &mut TradingRuntime<S>,
+    candle: Candle,
+) -> trading_runtime::RuntimeStep {
+    runtime
+        .on_market_input(MarketInput::CompletedCandle(candle))
+        .expect("completed primary candle should be accepted")
 }
 
 fn position_with_entry_risk(
@@ -143,7 +152,7 @@ fn assert_risk_exit_step(
         ),
     );
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         step.events,
@@ -274,7 +283,7 @@ fn tradable_candle_with_no_warmup_and_hold_while_flat_emits_strategy_tick_noop_s
         PredeterminedStrategyHandler::from_decisions([StrategyDecision::hold()]),
     );
 
-    let step = runtime.on_tradable_candle(candle.clone());
+    let step = completed_primary_step(&mut runtime, candle.clone());
 
     assert_eq!(
         step.events,
@@ -329,7 +338,7 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
 
     let first_step = runtime.on_warmup_input(first_warmup.clone());
     let second_step = runtime.on_warmup_input(second_warmup.clone());
-    let tradable_step = runtime.on_tradable_candle(first_tradable.clone());
+    let tradable_step = completed_primary_step(&mut runtime, first_tradable.clone());
 
     assert_eq!(
         first_step.events,
@@ -469,7 +478,7 @@ fn zero_warmup_makes_first_tradable_candle_tradable_without_warmup_completed() {
         PredeterminedStrategyHandler::from_decisions([StrategyDecision::hold()]),
     );
 
-    let step = runtime.on_tradable_candle(candle);
+    let step = completed_primary_step(&mut runtime, candle);
 
     assert!(!step
         .events
@@ -497,7 +506,7 @@ fn tradable_candle_opens_long_from_flat_and_updates_portfolio_snapshot() {
         .unwrap();
     let expected_snapshot = expected_portfolio.snapshot(candle.close);
 
-    let step = runtime.on_tradable_candle(candle.clone());
+    let step = completed_primary_step(&mut runtime, candle.clone());
 
     assert_eq!(
         step.events,
@@ -557,7 +566,7 @@ fn tradable_candle_opens_short_from_flat_and_updates_portfolio_snapshot() {
         .unwrap();
     let expected_snapshot = expected_portfolio.snapshot(candle.close);
 
-    let step = runtime.on_tradable_candle(candle.clone());
+    let step = completed_primary_step(&mut runtime, candle.clone());
 
     assert_eq!(
         step.events,
@@ -619,7 +628,7 @@ fn tradable_candle_opens_long_with_valid_entry_risk_boundaries() {
         Some(120.0),
     );
 
-    let step = runtime.on_tradable_candle(candle.clone());
+    let step = completed_primary_step(&mut runtime, candle.clone());
 
     assert!(step.events.contains(&RuntimeEvent::ExecutionActionPlanned {
         action: ExecutionAction::OpenLong {
@@ -655,7 +664,7 @@ fn tradable_candle_opens_short_with_valid_entry_risk_boundaries() {
         Some(80.0),
     );
 
-    let step = runtime.on_tradable_candle(candle.clone());
+    let step = completed_primary_step(&mut runtime, candle.clone());
 
     assert!(step.events.contains(&RuntimeEvent::ExecutionActionPlanned {
         action: ExecutionAction::OpenShort {
@@ -696,7 +705,7 @@ fn tradable_candle_opens_with_one_valid_entry_risk_boundary() {
             PredeterminedStrategyHandler::from_decisions([decision]),
         );
 
-        let step = runtime.on_tradable_candle(candle.clone());
+        let step = completed_primary_step(&mut runtime, candle.clone());
 
         assert_eq!(
             step.portfolio_snapshot.open_position,
@@ -745,7 +754,7 @@ fn tradable_candle_ignores_invalid_entry_risk_without_portfolio_transition() {
             PredeterminedStrategyHandler::from_decisions([decision.clone()]),
         );
 
-        let step = runtime.on_tradable_candle(candle.clone());
+        let step = completed_primary_step(&mut runtime, candle.clone());
 
         assert_ignored_step(
             step,
@@ -767,7 +776,7 @@ fn invalid_quantity_wins_before_invalid_entry_risk_while_flat() {
         PredeterminedStrategyHandler::from_decisions([decision.clone()]),
     );
 
-    let step = runtime.on_tradable_candle(candle.clone());
+    let step = completed_primary_step(&mut runtime, candle.clone());
 
     assert_ignored_step(
         step,
@@ -791,13 +800,13 @@ fn position_already_open_wins_before_invalid_quantity_or_entry_risk() {
             decision.clone(),
         ]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let mut expected_portfolio = PortfolioState::new(1_000.0);
     expected_portfolio
         .open_long_from_flat(&entry_candle, 2.0, None, None)
         .unwrap();
 
-    let step = runtime.on_tradable_candle(invalid_candle.clone());
+    let step = completed_primary_step(&mut runtime, invalid_candle.clone());
 
     assert_ignored_step(
         step,
@@ -820,7 +829,7 @@ fn tradable_candle_closes_long_position_and_realizes_pnl() {
             StrategyDecision::close_long(),
         ]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let opened_position = position(
         PositionSide::Long,
         entry_candle.timestamp,
@@ -840,7 +849,7 @@ fn tradable_candle_closes_long_position_and_realizes_pnl() {
     expected_portfolio.close_long(&exit_candle).unwrap();
     let expected_snapshot = expected_portfolio.snapshot(exit_candle.close);
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         step.events,
@@ -892,7 +901,7 @@ fn tradable_candle_ignores_invalid_opening_quantities_without_portfolio_transiti
             PredeterminedStrategyHandler::from_decisions([decision.clone()]),
         );
 
-        let step = runtime.on_tradable_candle(candle.clone());
+        let step = completed_primary_step(&mut runtime, candle.clone());
 
         assert_ignored_step(
             step,
@@ -914,7 +923,7 @@ fn tradable_candle_ignores_close_decision_while_flat_without_portfolio_transitio
         PredeterminedStrategyHandler::from_decisions([decision.clone()]),
     );
 
-    let step = runtime.on_tradable_candle(candle.clone());
+    let step = completed_primary_step(&mut runtime, candle.clone());
 
     assert_ignored_step(
         step,
@@ -938,13 +947,13 @@ fn tradable_candle_ignores_close_long_while_short_without_portfolio_transition()
             decision.clone(),
         ]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let mut expected_portfolio = PortfolioState::new(1_000.0);
     expected_portfolio
         .open_short_from_flat(&entry_candle, 2.0, None, None)
         .unwrap();
 
-    let step = runtime.on_tradable_candle(invalid_candle.clone());
+    let step = completed_primary_step(&mut runtime, invalid_candle.clone());
 
     assert_ignored_step(
         step,
@@ -968,13 +977,13 @@ fn tradable_candle_ignores_close_short_while_long_without_portfolio_transition()
             decision.clone(),
         ]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let mut expected_portfolio = PortfolioState::new(1_000.0);
     expected_portfolio
         .open_long_from_flat(&entry_candle, 2.0, None, None)
         .unwrap();
 
-    let step = runtime.on_tradable_candle(invalid_candle.clone());
+    let step = completed_primary_step(&mut runtime, invalid_candle.clone());
 
     assert_ignored_step(
         step,
@@ -998,13 +1007,13 @@ fn tradable_candle_ignores_open_long_while_already_long_without_portfolio_transi
             decision.clone(),
         ]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let mut expected_portfolio = PortfolioState::new(1_000.0);
     expected_portfolio
         .open_long_from_flat(&entry_candle, 2.0, None, None)
         .unwrap();
 
-    let step = runtime.on_tradable_candle(invalid_candle.clone());
+    let step = completed_primary_step(&mut runtime, invalid_candle.clone());
 
     assert_ignored_step(
         step,
@@ -1028,13 +1037,13 @@ fn tradable_candle_ignores_open_short_while_already_short_without_portfolio_tran
             decision.clone(),
         ]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let mut expected_portfolio = PortfolioState::new(1_000.0);
     expected_portfolio
         .open_short_from_flat(&entry_candle, 2.0, None, None)
         .unwrap();
 
-    let step = runtime.on_tradable_candle(invalid_candle.clone());
+    let step = completed_primary_step(&mut runtime, invalid_candle.clone());
 
     assert_ignored_step(
         step,
@@ -1057,7 +1066,7 @@ fn tradable_candle_closes_short_position_and_realizes_pnl() {
             StrategyDecision::close_short(),
         ]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let opened_position = position(
         PositionSide::Short,
         entry_candle.timestamp,
@@ -1077,7 +1086,7 @@ fn tradable_candle_closes_short_position_and_realizes_pnl() {
     expected_portfolio.close_short(&exit_candle).unwrap();
     let expected_snapshot = expected_portfolio.snapshot(exit_candle.close);
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         step.events,
@@ -1124,7 +1133,7 @@ fn force_close_closes_open_long_position_with_ordered_events() {
         0,
         PredeterminedStrategyHandler::from_decisions([StrategyDecision::open_long(2.0)]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let opened_position = position(
         PositionSide::Long,
         entry_candle.timestamp,
@@ -1182,7 +1191,7 @@ fn force_close_closes_open_short_position_with_ordered_events() {
         0,
         PredeterminedStrategyHandler::from_decisions([StrategyDecision::open_short(2.0)]),
     );
-    runtime.on_tradable_candle(entry_candle.clone());
+    completed_primary_step(&mut runtime, entry_candle.clone());
     let opened_position = position(
         PositionSide::Short,
         entry_candle.timestamp,
