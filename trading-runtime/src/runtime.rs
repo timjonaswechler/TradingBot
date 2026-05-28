@@ -1,14 +1,17 @@
 //! Trading runtime entrypoints.
 
+use crate::market_input::MarketInputTimeframeRole;
 use crate::{
     evaluate_risk_exit, plan_execution, ExecutionAction, ExitKind, ForceCloseIgnoredReason,
-    PortfolioState, RuntimeEvent, RuntimeStep, StrategyHandler,
+    MarketInput, PortfolioState, RuntimeConfig, RuntimeEvent, RuntimeInputError, RuntimeStep,
+    StrategyHandler,
 };
 use shared::{Candle, PositionSide};
 
 /// DB-free trading runtime core for one runtime asset.
 #[derive(Debug, Clone)]
 pub struct TradingRuntime<S> {
+    config: RuntimeConfig,
     portfolio: PortfolioState,
     warmup_input_count: usize,
     warmup_requirement: usize,
@@ -17,12 +20,58 @@ pub struct TradingRuntime<S> {
 
 impl<S: StrategyHandler> TradingRuntime<S> {
     pub fn new(portfolio: PortfolioState, warmup_requirement: usize, strategy_handler: S) -> Self {
+        Self::with_config(
+            RuntimeConfig::single_timeframe("BTC-USD", "1m"),
+            portfolio,
+            warmup_requirement,
+            strategy_handler,
+        )
+    }
+
+    pub fn with_config(
+        config: RuntimeConfig,
+        portfolio: PortfolioState,
+        warmup_requirement: usize,
+        strategy_handler: S,
+    ) -> Self {
         Self {
+            config,
             portfolio,
             warmup_input_count: 0,
             warmup_requirement,
             strategy_handler,
         }
+    }
+
+    pub fn on_market_input(
+        &mut self,
+        input: MarketInput,
+    ) -> Result<RuntimeStep, RuntimeInputError> {
+        let role = self
+            .config
+            .classify_timeframe(&input.candle().timeframe)
+            .ok_or_else(|| RuntimeInputError::UnknownTimeframe {
+                timeframe: input.candle().timeframe.clone(),
+            })?;
+
+        match (input, role) {
+            (MarketInput::WarmupCandle(candle), _) => Ok(self.on_warmup_input(candle)),
+            (MarketInput::CompletedCandle(candle), MarketInputTimeframeRole::Primary) => {
+                Ok(self.on_tradable_candle(candle))
+            }
+            (MarketInput::CompletedCandle(candle), MarketInputTimeframeRole::Secondary) => {
+                Ok(self.on_secondary_completed_candle(candle))
+            }
+        }
+    }
+
+    fn on_secondary_completed_candle(&mut self, candle: Candle) -> RuntimeStep {
+        RuntimeStep::new(
+            vec![RuntimeEvent::MarketInputAccepted {
+                candle: candle.clone(),
+            }],
+            self.portfolio.snapshot(candle.close),
+        )
     }
 
     pub fn on_warmup_input(&mut self, candle: Candle) -> RuntimeStep {
