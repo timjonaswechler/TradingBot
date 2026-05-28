@@ -75,8 +75,8 @@ fn warmup_hint_for_call(call: &FnCallExpr, scope: &Scope) -> Option<usize> {
 
     match call.name.as_str() {
         // Single-period indicators
-        "sma" | "ema" | "dema" | "tema" | "adx" | "rsi" | "cci" | "williams_r"
-        | "roc" | "atr" | "mfi" | "slope" | "bollinger" | "keltner" => arg(call, 1, scope),
+        "sma" | "ema" | "dema" | "tema" | "adx" | "rsi" | "cci" | "williams_r" | "roc" | "atr"
+        | "mfi" | "slope" | "bollinger" | "keltner" => arg(call, 1, scope),
 
         // Stochastic variants
         "stochastic_fast" => arg(call, 1, scope),

@@ -1,6 +1,6 @@
-//! Strategy-produced decisions for a tradable runtime tick.
+//! Strategy-produced decisions for a Strategy Tick.
 
-/// Direction-aware strategy intent for one tradable tick.
+/// Direction-aware strategy intent for one Strategy Tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StrategyDecisionIntent {
     Hold,

@@ -1,3 +1,4 @@
+use crate::Timeframe;
 use serde::{Deserialize, Serialize};
 
 /// A single OHLCV candlestick.
@@ -17,8 +18,8 @@ pub struct Candle {
     pub close: f64,
     /// Fractional-safe volume (covers stocks + crypto).
     pub volume: f64,
-    /// Timeframe string, e.g. `"1m"`, `"5m"`, `"1h"`, `"1d"`.
-    pub timeframe: String,
+    /// Canonical candle timeframe, e.g. `1m`, `5m`, `1h`, `1d`.
+    pub timeframe: Timeframe,
 }
 
 impl Candle {
@@ -46,7 +47,7 @@ mod tests {
             low: 90.0,
             close: 105.0,
             volume: 1_000.0,
-            timeframe: "1d".into(),
+            timeframe: Timeframe::days(1),
         }
     }
 

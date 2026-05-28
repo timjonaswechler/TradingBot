@@ -14,6 +14,8 @@
 pub mod decision;
 pub mod events;
 pub mod execution;
+pub mod market_input;
+pub mod market_state;
 pub mod portfolio;
 pub mod risk_exit;
 pub mod runtime;
@@ -23,12 +25,20 @@ pub mod strategy;
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
-pub use events::{ExitKind, ForceCloseIgnoredReason, RuntimeEvent};
+pub use events::{
+    BlockedSecondaryContext, ExitKind, ForceCloseIgnoredReason, RuntimeEvent,
+    SecondaryContextUnavailableReason,
+};
 pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
+pub use market_input::{
+    MarketInput, RuntimeConfig, RuntimeInputError, SecondaryReadiness, SecondaryTimeframeConfig,
+};
+pub use market_state::MarketState;
 pub use portfolio::{
     ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,
 };
 pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;
+pub use shared::{Timeframe, TimeframeParseError, TimeframeUnit};
 pub use step::RuntimeStep;
 pub use strategy::{PredeterminedStrategyHandler, StrategyHandler};

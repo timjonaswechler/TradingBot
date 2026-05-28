@@ -3,7 +3,7 @@
 /// The generated `module_bindings::Candle`, `LivePosition`, `LiveTrade` structs
 /// are the canonical DB types.  `shared::Candle` / `shared::Position` are the
 /// lightweight in-memory types used by the engine and backtester.
-use shared::{Candle, Position, PositionSide};
+use shared::{Candle, Position, PositionSide, Timeframe};
 
 use crate::module_bindings::{Candle as DbCandle, LivePosition};
 
@@ -21,7 +21,7 @@ pub fn candle_to_reducer_args(
     provider: &str,
 ) -> (String, i64, String, f64, f64, f64, f64, f64, String, String) {
     (
-        canonical_id(&c.symbol, &c.timeframe, c.timestamp),
+        canonical_id(&c.symbol, &c.timeframe.to_string(), c.timestamp),
         c.timestamp,
         c.symbol.clone(),
         c.open,
@@ -29,7 +29,7 @@ pub fn candle_to_reducer_args(
         c.low,
         c.close,
         c.volume,
-        c.timeframe.clone(),
+        c.timeframe.to_string(),
         provider.to_string(),
     )
 }
@@ -44,7 +44,10 @@ pub fn db_candle_to_shared(c: DbCandle) -> Candle {
         low: c.low,
         close: c.close,
         volume: c.volume,
-        timeframe: c.timeframe,
+        timeframe: c
+            .timeframe
+            .parse::<Timeframe>()
+            .expect("DB candle timeframe should be canonical"),
     }
 }
 

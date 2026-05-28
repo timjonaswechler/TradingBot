@@ -21,7 +21,13 @@ use crate::indicator_cache::{
 };
 
 use indicators::{
-    momentum::{cci::cci, roc::roc, rsi::rsi, stochastic::{stochastic_fast, stochastic_full, stochastic_slow}, williams_r::williams_r},
+    momentum::{
+        cci::cci,
+        roc::roc,
+        rsi::rsi,
+        stochastic::{stochastic_fast, stochastic_full, stochastic_slow},
+        williams_r::williams_r,
+    },
     slope::slope,
     support_resistance::{fibonacci::fibonacci_retracements, pivot_points::pivot_points},
     trend::{
@@ -437,7 +443,12 @@ pub fn build_indicators_module() -> Module {
     m.set_native_fn(
         "stochastic_full",
         |cl: &mut CandleList, period: INT, k_smooth: INT| -> RhaiResult {
-            match stochastic_full(&candles_slice(cl, 0), period as usize, Some(k_smooth as usize), None) {
+            match stochastic_full(
+                &candles_slice(cl, 0),
+                period as usize,
+                Some(k_smooth as usize),
+                None,
+            ) {
                 None => Ok(Dynamic::UNIT),
                 Some(r) => {
                     let mut map = rhai::Map::new();
@@ -451,7 +462,12 @@ pub fn build_indicators_module() -> Module {
     m.set_native_fn(
         "stochastic_full",
         |cl: &mut CandleList, period: INT, k_smooth: INT, d_period: INT| -> RhaiResult {
-            match stochastic_full(&candles_slice(cl, 0), period as usize, Some(k_smooth as usize), Some(d_period as usize)) {
+            match stochastic_full(
+                &candles_slice(cl, 0),
+                period as usize,
+                Some(k_smooth as usize),
+                Some(d_period as usize),
+            ) {
                 None => Ok(Dynamic::UNIT),
                 Some(r) => {
                     let mut map = rhai::Map::new();
@@ -464,8 +480,18 @@ pub fn build_indicators_module() -> Module {
     );
     m.set_native_fn(
         "stochastic_full",
-        |cl: &mut CandleList, period: INT, k_smooth: INT, d_period: INT, offset: INT| -> RhaiResult {
-            match stochastic_full(&candles_slice(cl, offset as usize), period as usize, Some(k_smooth as usize), Some(d_period as usize)) {
+        |cl: &mut CandleList,
+         period: INT,
+         k_smooth: INT,
+         d_period: INT,
+         offset: INT|
+         -> RhaiResult {
+            match stochastic_full(
+                &candles_slice(cl, offset as usize),
+                period as usize,
+                Some(k_smooth as usize),
+                Some(d_period as usize),
+            ) {
                 None => Ok(Dynamic::UNIT),
                 Some(r) => {
                     let mut map = rhai::Map::new();

@@ -107,7 +107,7 @@ mod tests {
             low: l,
             close: (h + l) / 2.0,
             volume: 1.0,
-            timeframe: "1m".into(),
+            timeframe: "1m".parse().unwrap(),
         }
     }
 
@@ -148,7 +148,7 @@ mod tests {
                 low: l,
                 close: l,
                 volume: 1.0,
-                timeframe: "1m".into(),
+                timeframe: "1m".parse().unwrap(),
             };
             if let Some(ev) = det.on_candle(&c, i as u64) {
                 hits.push(ev);

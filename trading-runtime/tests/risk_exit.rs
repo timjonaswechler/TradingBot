@@ -1,4 +1,4 @@
-use shared::{Candle, Position, PositionSide};
+use shared::{Candle, Position, PositionSide, Timeframe};
 use trading_runtime::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 
 fn position(side: PositionSide, stop_loss: Option<f64>, take_profit: Option<f64>) -> Position {
@@ -22,7 +22,7 @@ fn candle(open: f64, high: f64, low: f64, close: f64) -> Candle {
         low,
         close,
         volume: 1_000.0,
-        timeframe: "1m".into(),
+        timeframe: Timeframe::minutes(1),
     }
 }
 

@@ -84,6 +84,10 @@ _Avoid_: Warmup Input, historical preload
 The origin of candles that drive a run. Live trading uses a provider-backed source that fetches new candles over time; backtesting uses a historical source that replays stored candles.
 _Avoid_: Engine, Strategy
 
+**Candle Timestamp**:
+The timestamp that identifies a completed candle at the close/end boundary of its interval. Trading Runtime freshness checks, Market State ordering, and Strategy Tick timing interpret Candle Timestamps as close timestamps; provider adapters that receive open timestamps must normalize them before runtime ingestion.
+_Avoid_: Open timestamp, provider raw timestamp when runtime semantics are meant
+
 **Strategy Tick**:
 A Tradable Candle on which the strategy is actually evaluated. Risk Exits can close a position on a Tradable Candle without producing a Strategy Tick. A Tradable Candle can also fail to produce a Strategy Tick when required market context is unavailable.
 _Avoid_: Tradable Candle when the distinction from strategy evaluation matters, Tradable Tick

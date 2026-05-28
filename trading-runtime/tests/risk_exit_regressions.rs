@@ -1,9 +1,9 @@
-use shared::{Candle, Position, PositionSide};
+use shared::{Candle, Position, PositionSide, Timeframe};
 use std::{cell::RefCell, rc::Rc};
 use trading_runtime::{
-    ClosedPosition, ExecutionAction, ExitKind, PortfolioState, RiskExitKind, RiskExitTriggered,
-    RuntimeEvent, RuntimePortfolioSnapshot, RuntimeStep, StrategyDecision, StrategyHandler,
-    TradingRuntime,
+    ClosedPosition, ExecutionAction, ExitKind, MarketInput, PortfolioState, RiskExitKind,
+    RiskExitTriggered, RuntimeEvent, RuntimePortfolioSnapshot, RuntimeStep, StrategyDecision,
+    StrategyHandler, TradingRuntime,
 };
 
 fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
@@ -15,8 +15,17 @@ fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Ca
         low,
         close,
         volume: 1_000.0,
-        timeframe: "1m".into(),
+        timeframe: Timeframe::minutes(1),
     }
+}
+
+fn completed_primary_step<S: StrategyHandler>(
+    runtime: &mut TradingRuntime<S>,
+    candle: Candle,
+) -> RuntimeStep {
+    runtime
+        .on_market_input(MarketInput::CompletedCandle(candle))
+        .expect("completed primary candle should be accepted")
 }
 
 fn position_with_entry_risk(
@@ -106,8 +115,10 @@ fn execution_action_event(step: &RuntimeStep) -> &ExecutionAction {
 fn assert_no_strategy_tick_events(step: &RuntimeStep) {
     assert!(step.events.iter().all(|event| !matches!(
         event,
-        RuntimeEvent::StrategyDecisionProduced { .. }
+        RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
             | RuntimeEvent::StrategyDecisionIgnored { .. }
+            | RuntimeEvent::StrategyTickCompleted
     )));
 }
 
@@ -117,7 +128,7 @@ fn regression_long_stop_loss_uses_stop_price_not_legacy_candle_close() {
     let exit_candle = ohlc_candle(2, 100.0, 105.0, 90.0, 88.0);
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position.clone(), 0);
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         risk_exit_event(&step),
@@ -160,7 +171,7 @@ fn regression_short_stop_loss_uses_stop_price_not_legacy_candle_close() {
     let exit_candle = ohlc_candle(2, 100.0, 110.0, 95.0, 115.0);
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position.clone(), 0);
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         risk_exit_event(&step),
@@ -195,7 +206,7 @@ fn regression_take_profit_uses_target_price_not_legacy_candle_close() {
     let exit_candle = ohlc_candle(2, 100.0, 120.0, 95.0, 112.0);
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position, 0);
 
-    let step = runtime.on_tradable_candle(exit_candle.clone());
+    let step = completed_primary_step(&mut runtime, exit_candle.clone());
 
     assert_eq!(
         risk_exit_event(&step),
@@ -228,7 +239,7 @@ fn regression_both_intrabar_boundaries_select_stop_loss_and_expose_both_triggere
     let exit_candle = ohlc_candle(2, 100.0, 120.0, 90.0, 110.0);
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position, 0);
 
-    let step = runtime.on_tradable_candle(exit_candle);
+    let step = completed_primary_step(&mut runtime, exit_candle);
 
     assert_eq!(
         risk_exit_event(&step),
@@ -269,7 +280,9 @@ fn regression_warmup_input_crossing_stop_loss_does_not_close_or_emit_risk_exit()
             | RuntimeEvent::ExecutionActionPlanned { .. }
             | RuntimeEvent::PositionClosed { .. }
             | RuntimeEvent::PortfolioUpdated { .. }
-            | RuntimeEvent::TradableTickStarted { .. }
+            | RuntimeEvent::TradableCandleAccepted { .. }
+            | RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyTickCompleted
     )));
     assert_eq!(step.portfolio_snapshot.open_position, Some(open_position));
     assert_eq!(step.portfolio_snapshot.completed_trade_count, 0);
@@ -285,7 +298,7 @@ fn regression_first_tradable_candle_after_warmup_can_close_breached_stop_before_
     let (mut runtime, strategy_calls) = runtime_with_open_position(open_position, 1);
 
     let warmup_step = runtime.on_warmup_input(warmup_candle);
-    let tradable_step = runtime.on_tradable_candle(first_tradable_candle.clone());
+    let tradable_step = completed_primary_step(&mut runtime, first_tradable_candle.clone());
 
     assert!(warmup_step.portfolio_snapshot.open_position.is_some());
     assert_eq!(

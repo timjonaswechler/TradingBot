@@ -92,7 +92,11 @@ pub fn sar(candles: &[Candle], step: f64, max: f64) -> Option<SarResult> {
 
     Some(SarResult {
         value: sar,
-        side: if is_long { SarSide::Long } else { SarSide::Short },
+        side: if is_long {
+            SarSide::Long
+        } else {
+            SarSide::Short
+        },
         reversed,
         ep,
         af,
@@ -112,7 +116,7 @@ mod tests {
             low: l,
             close: c,
             volume: 1.0,
-            timeframe: "1d".into(),
+            timeframe: "1d".parse().unwrap(),
         }
     }
 

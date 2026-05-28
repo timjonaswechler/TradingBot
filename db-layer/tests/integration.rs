@@ -14,7 +14,7 @@ use db_layer::{
     get_candles, get_candles_before, get_open_position, get_trades, insert_candle, insert_trade,
     open_position, SpacetimeClient,
 };
-use shared::Candle;
+use shared::{Candle, Timeframe};
 
 fn integration_enabled() -> bool {
     std::env::var("SPACETIMEDB_INTEGRATION").as_deref() == Ok("1")
@@ -40,7 +40,7 @@ fn make_candle(ts: i64, close: f64) -> Candle {
         low: close - 1.0,
         close,
         volume: 1000.0,
-        timeframe: TF.into(),
+        timeframe: TF.parse::<Timeframe>().unwrap(),
     }
 }
 
@@ -224,7 +224,7 @@ fn db_candle_converts_to_shared() {
         low: 149.0,
         close: 150.0,
         volume: 1_000_000.0,
-        timeframe: "1d".into(),
+        timeframe: "1d".parse().unwrap(),
         provider: "yahoo".into(),
     };
     let shared = db_candle_to_shared(db);

@@ -1,5 +1,6 @@
 # Build output
 /target/
+.pi/
 .claude
 # Cargo lock is committed for binaries, kept for reproducibility
 # Cargo.lock  ← intentionally NOT ignored (workspace with binaries)

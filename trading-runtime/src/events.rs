@@ -2,9 +2,9 @@
 
 use crate::{
     ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RiskExitTriggered,
-    RuntimePortfolioSnapshot, StrategyDecision,
+    RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision,
 };
-use shared::{Candle, Position};
+use shared::{Candle, Position, Timeframe};
 
 /// Why an explicit runner force-close command did not close a position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,20 @@ pub enum ExitKind {
     ForceClose,
 }
 
+/// Why Secondary-Timeframe context is unavailable for a Primary Strategy Tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecondaryContextUnavailableReason {
+    Missing,
+    Stale,
+}
+
+/// Required Secondary-Timeframe context that blocked a Primary Strategy Tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedSecondaryContext {
+    pub timeframe: Timeframe,
+    pub reason: SecondaryContextUnavailableReason,
+}
+
 /// A runner-neutral occurrence emitted by the trading runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEvent {
@@ -29,8 +43,21 @@ pub enum RuntimeEvent {
     WarmupInputAccepted {
         candle: Candle,
     },
-    TradableTickStarted {
+    TradableCandleAccepted {
         candle: Candle,
+    },
+    StrategyTickStarted {
+        candle: Candle,
+    },
+    StrategyTickBlocked {
+        candle: Candle,
+        blocked_contexts: Vec<BlockedSecondaryContext>,
+    },
+    SecondaryContextUnavailable {
+        candle: Candle,
+        timeframe: Timeframe,
+        readiness: SecondaryReadiness,
+        reason: SecondaryContextUnavailableReason,
     },
     StrategyDecisionProduced {
         decision: StrategyDecision,
@@ -55,13 +82,16 @@ pub enum RuntimeEvent {
     PortfolioUpdated {
         snapshot: RuntimePortfolioSnapshot,
     },
-    TradableTickCompleted,
+    StrategyTickCompleted,
+    TradableCandleCompleted,
     WarmupAdvanced {
+        timeframe: Timeframe,
         current_warmup_input_count: usize,
         required_warmup_inputs: usize,
     },
     WarmupCompleted {
-        completed_warmup_input_count: usize,
+        completed_timeframes: Vec<Timeframe>,
+        required_warmup_inputs: usize,
     },
     ForceCloseRequested {
         candle: Candle,

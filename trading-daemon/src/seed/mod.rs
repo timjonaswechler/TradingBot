@@ -112,10 +112,14 @@ async fn seed_one(
     // Fetch the full requested range from Yahoo, then drop timestamps we
     // already have in the cache. This lets us backfill older history when
     // the user passes a `--from` earlier than our oldest stored bar.
-    let existing = count_candles(&*conn, symbol, interval);
-    let existing_ts = get_candle_timestamps(&*conn, symbol, interval);
+    let canonical_interval = yahoo::interval_timeframe(interval)?.to_string();
+    let existing = count_candles(&*conn, symbol, &canonical_interval);
+    let existing_ts = get_candle_timestamps(&*conn, symbol, &canonical_interval);
 
-    info!(symbol, interval, existing, from_ms, "Seeding");
+    info!(
+        symbol,
+        interval, canonical_interval, existing, from_ms, "Seeding"
+    );
 
     let candles = yahoo::fetch_candles(http, symbol, interval, from_ms).await?;
 
