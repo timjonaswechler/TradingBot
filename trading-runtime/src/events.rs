@@ -2,7 +2,7 @@
 
 use crate::{
     ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RiskExitTriggered,
-    RuntimePortfolioSnapshot, StrategyDecision,
+    RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision,
 };
 use shared::{Candle, Position};
 
@@ -18,6 +18,13 @@ pub enum ExitKind {
     StrategyExit,
     RiskExit { selected: RiskExitKind },
     ForceClose,
+}
+
+/// Why Secondary-Timeframe context is unavailable for a Primary Strategy Tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecondaryContextUnavailableReason {
+    Missing,
+    Stale,
 }
 
 /// Why a Primary-Timeframe Tradable Candle did not become a Strategy Tick.
@@ -45,6 +52,12 @@ pub enum RuntimeEvent {
     StrategyTickBlocked {
         candle: Candle,
         reason: StrategyTickBlockedReason,
+    },
+    SecondaryContextUnavailable {
+        candle: Candle,
+        timeframe: String,
+        readiness: SecondaryReadiness,
+        reason: SecondaryContextUnavailableReason,
     },
     StrategyDecisionProduced {
         decision: StrategyDecision,

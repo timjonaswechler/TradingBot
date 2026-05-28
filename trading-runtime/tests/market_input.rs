@@ -2,7 +2,9 @@ use shared::{Candle, Position, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     ExecutionAction, MarketInput, PortfolioState, RuntimeConfig, RuntimeEvent, RuntimeInputError,
-    RuntimePortfolioSnapshot, StrategyDecision, StrategyHandler, TradingRuntime,
+    RuntimePortfolioSnapshot, SecondaryContextUnavailableReason, SecondaryReadiness,
+    SecondaryTimeframeConfig, StrategyDecision, StrategyHandler, StrategyTickBlockedReason,
+    TradingRuntime,
 };
 
 fn candle(timestamp: i64, timeframe: &str, close: f64) -> Candle {
@@ -108,6 +110,12 @@ fn completed_primary_market_input_emits_tradable_candle_and_strategy_tick_events
             },
             RuntimeEvent::TradableCandleAccepted {
                 candle: primary.clone(),
+            },
+            RuntimeEvent::SecondaryContextUnavailable {
+                candle: primary.clone(),
+                timeframe: "1h".into(),
+                readiness: SecondaryReadiness::Optional,
+                reason: SecondaryContextUnavailableReason::Missing,
             },
             RuntimeEvent::StrategyTickStarted {
                 candle: primary.clone(),
@@ -724,4 +732,261 @@ fn unknown_timeframe_error_leaves_existing_market_state_histories_unchanged() {
     assert_eq!(runtime.market_history("1m"), Some(&primary_before[..]));
     assert_eq!(runtime.market_history("1h"), Some(&secondary_before[..]));
     assert_eq!(runtime.market_history("5m"), None);
+}
+
+fn runtime_config_with_secondary_configs(
+    primary_timeframe: &str,
+    secondary_timeframes: impl IntoIterator<Item = SecondaryTimeframeConfig>,
+) -> RuntimeConfig {
+    RuntimeConfig::with_secondary_configs("BTC-USD", primary_timeframe, secondary_timeframes)
+}
+
+#[test]
+fn required_secondary_missing_blocks_strategy_tick_after_storing_primary() {
+    let primary = candle(60_000, "1m", 100.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        PortfolioState::new(1_000.0),
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::open_long(2.0)],
+        ),
+    );
+
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(runtime.market_history("1m"), Some(&[primary.clone()][..]));
+    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::StrategyTickBlocked {
+                candle: primary.clone(),
+                reason: StrategyTickBlockedReason::RequiredSecondaryUnavailable {
+                    timeframe: "1h".into(),
+                },
+            },
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert!(!step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::ExecutionActionPlanned { .. }
+    )));
+}
+
+#[test]
+fn coarse_required_secondary_remains_fresh_until_duration_and_tolerance_are_exceeded() {
+    let secondary = candle(0, "1h", 100.0);
+    let fresh_primary = candle(3_600_000, "1m", 101.0);
+    let stale_primary = candle(7_200_001, "1m", 102.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 1)]),
+        PortfolioState::new(1_000.0),
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::hold(), StrategyDecision::open_long(2.0)],
+        ),
+    );
+
+    runtime
+        .on_market_input(MarketInput::CompletedCandle(secondary.clone()))
+        .unwrap();
+    let fresh_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(fresh_primary.clone()))
+        .unwrap();
+    let stale_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(stale_primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 1);
+    assert!(fresh_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+    assert_eq!(
+        stale_step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: stale_primary.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: stale_primary.clone(),
+            },
+            RuntimeEvent::StrategyTickBlocked {
+                candle: stale_primary.clone(),
+                reason: StrategyTickBlockedReason::RequiredSecondaryStale {
+                    timeframe: "1h".into(),
+                },
+            },
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert_eq!(
+        runtime.market_history("1m"),
+        Some(&[fresh_primary, stale_primary][..])
+    );
+    assert_eq!(runtime.market_history("1h"), Some(&[secondary][..]));
+}
+
+#[test]
+fn optional_secondary_stale_emits_diagnostic_but_allows_same_strategy_tick() {
+    let secondary = candle(0, "1h", 100.0);
+    let primary = candle(3_600_001, "1m", 101.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::optional("1h", 0)]),
+        PortfolioState::new(1_000.0),
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::open_long(2.0)],
+        ),
+    );
+
+    runtime
+        .on_market_input(MarketInput::CompletedCandle(secondary.clone()))
+        .unwrap();
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 1);
+    assert!(step
+        .events
+        .contains(&RuntimeEvent::SecondaryContextUnavailable {
+            candle: primary.clone(),
+            timeframe: "1h".into(),
+            readiness: SecondaryReadiness::Optional,
+            reason: SecondaryContextUnavailableReason::Stale,
+        }));
+    assert!(step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+    assert!(step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::PositionOpened { .. })));
+    assert!(!step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyTickBlocked { .. })));
+}
+
+#[test]
+fn required_and_optional_secondary_differ_for_the_same_stale_context() {
+    let secondary = candle(0, "1h", 100.0);
+    let primary = candle(3_600_001, "1m", 101.0);
+    let required_calls = Rc::new(RefCell::new(0));
+    let optional_calls = Rc::new(RefCell::new(0));
+    let mut required_runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        PortfolioState::new(1_000.0),
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&required_calls),
+            [StrategyDecision::open_long(2.0)],
+        ),
+    );
+    let mut optional_runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::optional("1h", 0)]),
+        PortfolioState::new(1_000.0),
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&optional_calls),
+            [StrategyDecision::open_long(2.0)],
+        ),
+    );
+
+    required_runtime
+        .on_market_input(MarketInput::CompletedCandle(secondary.clone()))
+        .unwrap();
+    optional_runtime
+        .on_market_input(MarketInput::CompletedCandle(secondary))
+        .unwrap();
+    let required_step = required_runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+    let optional_step = optional_runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    assert_eq!(*required_calls.borrow(), 0);
+    assert!(required_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyTickBlocked { .. })));
+    assert!(required_step.portfolio_snapshot.open_position.is_none());
+
+    assert_eq!(*optional_calls.borrow(), 1);
+    assert!(optional_step
+        .events
+        .contains(&RuntimeEvent::SecondaryContextUnavailable {
+            candle: primary,
+            timeframe: "1h".into(),
+            readiness: SecondaryReadiness::Optional,
+            reason: SecondaryContextUnavailableReason::Stale,
+        }));
+    assert!(optional_step.portfolio_snapshot.open_position.is_some());
+}
+
+#[test]
+fn fine_secondary_freshness_uses_secondary_duration_not_primary_duration() {
+    let secondary = candle(60_000, "1m", 100.0);
+    let primary = candle(180_001, "1h", 101.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1h", [SecondaryTimeframeConfig::required("1m", 1)]),
+        PortfolioState::new(1_000.0),
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::open_long(2.0)],
+        ),
+    );
+
+    runtime
+        .on_market_input(MarketInput::CompletedCandle(secondary.clone()))
+        .unwrap();
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::StrategyTickBlocked {
+                candle: primary.clone(),
+                reason: StrategyTickBlockedReason::RequiredSecondaryStale {
+                    timeframe: "1m".into(),
+                },
+            },
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert_eq!(runtime.market_history("1h"), Some(&[primary][..]));
+    assert_eq!(runtime.market_history("1m"), Some(&[secondary][..]));
 }

@@ -4,7 +4,8 @@ use crate::market_input::MarketInputTimeframeRole;
 use crate::{
     evaluate_risk_exit, plan_execution, ExecutionAction, ExitKind, ForceCloseIgnoredReason,
     MarketInput, MarketState, PortfolioState, RuntimeConfig, RuntimeEvent, RuntimeInputError,
-    RuntimeStep, StrategyHandler,
+    RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness, SecondaryTimeframeConfig,
+    StrategyHandler, StrategyTickBlockedReason,
 };
 use shared::{Candle, PositionSide};
 use std::collections::HashMap;
@@ -181,6 +182,16 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
         }
 
+        if let Some(blocked_reason) = self.evaluate_secondary_readiness(&candle, &mut events) {
+            events.push(RuntimeEvent::StrategyTickBlocked {
+                candle: candle.clone(),
+                reason: blocked_reason,
+            });
+            events.push(RuntimeEvent::TradableCandleCompleted);
+
+            return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
+        }
+
         events.push(RuntimeEvent::StrategyTickStarted {
             candle: candle.clone(),
         });
@@ -351,8 +362,88 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             })
     }
 
+    fn evaluate_secondary_readiness(
+        &self,
+        primary_candle: &Candle,
+        events: &mut Vec<RuntimeEvent>,
+    ) -> Option<StrategyTickBlockedReason> {
+        for secondary in self.config.secondary_configs() {
+            if let Some(reason) = self.secondary_unavailable_reason(primary_candle, secondary) {
+                match secondary.readiness {
+                    SecondaryReadiness::Required => {
+                        return Some(match reason {
+                            SecondaryContextUnavailableReason::Missing => {
+                                StrategyTickBlockedReason::RequiredSecondaryUnavailable {
+                                    timeframe: secondary.timeframe.clone(),
+                                }
+                            }
+                            SecondaryContextUnavailableReason::Stale => {
+                                StrategyTickBlockedReason::RequiredSecondaryStale {
+                                    timeframe: secondary.timeframe.clone(),
+                                }
+                            }
+                        });
+                    }
+                    SecondaryReadiness::Optional => {
+                        events.push(RuntimeEvent::SecondaryContextUnavailable {
+                            candle: primary_candle.clone(),
+                            timeframe: secondary.timeframe.clone(),
+                            readiness: secondary.readiness,
+                            reason,
+                        });
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn secondary_unavailable_reason(
+        &self,
+        primary_candle: &Candle,
+        secondary: &SecondaryTimeframeConfig,
+    ) -> Option<SecondaryContextUnavailableReason> {
+        let Some(latest_secondary) = self
+            .market_state
+            .latest_completed_candle(&secondary.timeframe)
+        else {
+            return Some(SecondaryContextUnavailableReason::Missing);
+        };
+        let Some(duration_ms) = timeframe_duration_ms(&secondary.timeframe) else {
+            return Some(SecondaryContextUnavailableReason::Stale);
+        };
+        let allowed_until = latest_secondary.timestamp.saturating_add(
+            duration_ms.saturating_mul(i64::from(secondary.max_missing_candles) + 1),
+        );
+
+        (primary_candle.timestamp > allowed_until)
+            .then_some(SecondaryContextUnavailableReason::Stale)
+    }
+
     /// Inspect a configured timeframe's chronological Market State history.
     pub fn market_history(&self, timeframe: &str) -> Option<&[Candle]> {
         self.market_state.history(timeframe)
     }
+}
+
+fn timeframe_duration_ms(timeframe: &str) -> Option<i64> {
+    let (number, unit) = split_timeframe(timeframe)?;
+    let multiplier = match unit {
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        "wk" | "w" => 7 * 86_400_000,
+        _ => return None,
+    };
+
+    number.checked_mul(multiplier)
+}
+
+fn split_timeframe(timeframe: &str) -> Option<(i64, &str)> {
+    let first_unit_index = timeframe
+        .char_indices()
+        .find_map(|(index, character)| (!character.is_ascii_digit()).then_some(index))?;
+    let number = timeframe[..first_unit_index].parse::<i64>().ok()?;
+    (number > 0).then_some((number, &timeframe[first_unit_index..]))
 }

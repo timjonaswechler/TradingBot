@@ -25,9 +25,14 @@ pub mod strategy;
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
-pub use events::{ExitKind, ForceCloseIgnoredReason, RuntimeEvent, StrategyTickBlockedReason};
+pub use events::{
+    ExitKind, ForceCloseIgnoredReason, RuntimeEvent, SecondaryContextUnavailableReason,
+    StrategyTickBlockedReason,
+};
 pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
-pub use market_input::{MarketInput, RuntimeConfig, RuntimeInputError};
+pub use market_input::{
+    MarketInput, RuntimeConfig, RuntimeInputError, SecondaryReadiness, SecondaryTimeframeConfig,
+};
 pub use market_state::MarketState;
 pub use portfolio::{
     ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,

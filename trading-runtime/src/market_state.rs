@@ -14,8 +14,10 @@ impl MarketState {
     pub(crate) fn from_config(config: &RuntimeConfig) -> Self {
         let mut histories = HashMap::new();
         histories.insert(config.primary_timeframe.clone(), Vec::new());
-        for timeframe in &config.secondary_timeframes {
-            histories.entry(timeframe.clone()).or_insert_with(Vec::new);
+        for secondary in &config.secondary_timeframes {
+            histories
+                .entry(secondary.timeframe.clone())
+                .or_insert_with(Vec::new);
         }
 
         Self { histories }
@@ -41,5 +43,11 @@ impl MarketState {
         self.histories
             .get(timeframe)
             .map(|history| history.as_slice())
+    }
+
+    pub(crate) fn latest_completed_candle(&self, timeframe: &str) -> Option<&Candle> {
+        self.histories
+            .get(timeframe)
+            .and_then(|history| history.last())
     }
 }
