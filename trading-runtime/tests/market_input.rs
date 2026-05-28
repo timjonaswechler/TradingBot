@@ -1,10 +1,10 @@
 use shared::{Candle, Position, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
-    ExecutionAction, MarketInput, PortfolioState, RuntimeConfig, RuntimeEvent, RuntimeInputError,
-    RuntimePortfolioSnapshot, SecondaryContextUnavailableReason, SecondaryReadiness,
-    SecondaryTimeframeConfig, StrategyDecision, StrategyHandler, StrategyTickBlockedReason,
-    TradingRuntime,
+    ClosedPosition, ExecutionAction, ExitKind, MarketInput, PortfolioState, RiskExitKind,
+    RiskExitTriggered, RuntimeConfig, RuntimeEvent, RuntimeInputError, RuntimePortfolioSnapshot,
+    SecondaryContextUnavailableReason, SecondaryReadiness, SecondaryTimeframeConfig,
+    StrategyDecision, StrategyHandler, StrategyTickBlockedReason, TradingRuntime,
 };
 
 fn candle(timestamp: i64, timeframe: &str, close: f64) -> Candle {
@@ -785,6 +785,319 @@ fn required_secondary_missing_blocks_strategy_tick_after_storing_primary() {
         RuntimeEvent::StrategyTickStarted { .. }
             | RuntimeEvent::StrategyDecisionProduced { .. }
             | RuntimeEvent::ExecutionActionPlanned { .. }
+    )));
+}
+
+#[test]
+fn long_risk_exit_closes_before_missing_required_secondary_can_block_strategy_tick() {
+    let primary = ohlc_candle(60_000, "1m", 100.0, 105.0, 90.0, 99.0);
+    let open_position = position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), None);
+    let calls = Rc::new(RefCell::new(0));
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        portfolio,
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::close_long()],
+        ),
+    );
+
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    let risk_exit = RiskExitTriggered {
+        side: PositionSide::Long,
+        selected: RiskExitKind::StopLoss,
+        triggered: vec![RiskExitKind::StopLoss],
+        exit_price: 90.0,
+    };
+    let expected_snapshot = RuntimePortfolioSnapshot {
+        realized_cash_balance: 980.0,
+        open_position: None,
+        completed_trade_count: 1,
+        current_equity: 980.0,
+    };
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(runtime.market_history("1m"), Some(&[primary.clone()][..]));
+    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::RiskExitTriggered {
+                risk_exit: risk_exit.clone(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::RiskExit {
+                    side: PositionSide::Long,
+                    selected: RiskExitKind::StopLoss,
+                    exit_price: 90.0,
+                },
+            },
+            RuntimeEvent::PositionClosed {
+                closed_position: ClosedPosition {
+                    position: open_position,
+                    exit_price: 90.0,
+                    exit_time: primary.timestamp,
+                    realized_pnl: -20.0,
+                },
+                exit_kind: ExitKind::RiskExit {
+                    selected: RiskExitKind::StopLoss,
+                },
+            },
+            RuntimeEvent::PortfolioUpdated {
+                snapshot: expected_snapshot.clone(),
+            },
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert!(step.events.iter().all(|event| !matches!(
+        event,
+        RuntimeEvent::StrategyTickBlocked { .. }
+            | RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::StrategyTickCompleted
+    )));
+}
+
+#[test]
+fn short_risk_exit_closes_before_missing_required_secondary_can_block_strategy_tick() {
+    let primary = ohlc_candle(60_000, "1m", 100.0, 105.0, 80.0, 90.0);
+    let open_position = position_with_entry_risk(PositionSide::Short, 100.0, None, Some(80.0));
+    let calls = Rc::new(RefCell::new(0));
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        portfolio,
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::close_short()],
+        ),
+    );
+
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    let risk_exit = RiskExitTriggered {
+        side: PositionSide::Short,
+        selected: RiskExitKind::TakeProfit,
+        triggered: vec![RiskExitKind::TakeProfit],
+        exit_price: 80.0,
+    };
+    let expected_snapshot = RuntimePortfolioSnapshot {
+        realized_cash_balance: 1_040.0,
+        open_position: None,
+        completed_trade_count: 1,
+        current_equity: 1_040.0,
+    };
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(runtime.market_history("1m"), Some(&[primary.clone()][..]));
+    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::RiskExitTriggered {
+                risk_exit: risk_exit.clone(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::RiskExit {
+                    side: PositionSide::Short,
+                    selected: RiskExitKind::TakeProfit,
+                    exit_price: 80.0,
+                },
+            },
+            RuntimeEvent::PositionClosed {
+                closed_position: ClosedPosition {
+                    position: open_position,
+                    exit_price: 80.0,
+                    exit_time: primary.timestamp,
+                    realized_pnl: 40.0,
+                },
+                exit_kind: ExitKind::RiskExit {
+                    selected: RiskExitKind::TakeProfit,
+                },
+            },
+            RuntimeEvent::PortfolioUpdated {
+                snapshot: expected_snapshot.clone(),
+            },
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert!(step.events.iter().all(|event| !matches!(
+        event,
+        RuntimeEvent::StrategyTickBlocked { .. }
+            | RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::StrategyTickCompleted
+    )));
+}
+
+#[test]
+fn long_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick() {
+    let stale_secondary = candle(0, "1h", 100.0);
+    let primary = ohlc_candle(3_600_001, "1m", 100.0, 105.0, 90.0, 99.0);
+    let open_position = position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), None);
+    let calls = Rc::new(RefCell::new(0));
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        portfolio,
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::close_long()],
+        ),
+    );
+
+    runtime
+        .on_market_input(MarketInput::CompletedCandle(stale_secondary.clone()))
+        .unwrap();
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(runtime.market_history("1h"), Some(&[stale_secondary][..]));
+    assert!(step.events.contains(&RuntimeEvent::RiskExitTriggered {
+        risk_exit: RiskExitTriggered {
+            side: PositionSide::Long,
+            selected: RiskExitKind::StopLoss,
+            triggered: vec![RiskExitKind::StopLoss],
+            exit_price: 90.0,
+        },
+    }));
+    assert_eq!(step.portfolio_snapshot.open_position, None);
+    assert_eq!(step.portfolio_snapshot.realized_cash_balance, 980.0);
+    assert!(step.events.iter().all(|event| !matches!(
+        event,
+        RuntimeEvent::StrategyTickBlocked { .. }
+            | RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::StrategyTickCompleted
+    )));
+}
+
+#[test]
+fn short_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick() {
+    let stale_secondary = candle(0, "1h", 100.0);
+    let primary = ohlc_candle(3_600_001, "1m", 100.0, 105.0, 80.0, 90.0);
+    let open_position = position_with_entry_risk(PositionSide::Short, 100.0, None, Some(80.0));
+    let calls = Rc::new(RefCell::new(0));
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        portfolio,
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::close_short()],
+        ),
+    );
+
+    runtime
+        .on_market_input(MarketInput::CompletedCandle(stale_secondary.clone()))
+        .unwrap();
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(runtime.market_history("1h"), Some(&[stale_secondary][..]));
+    assert!(step.events.contains(&RuntimeEvent::RiskExitTriggered {
+        risk_exit: RiskExitTriggered {
+            side: PositionSide::Short,
+            selected: RiskExitKind::TakeProfit,
+            triggered: vec![RiskExitKind::TakeProfit],
+            exit_price: 80.0,
+        },
+    }));
+    assert_eq!(step.portfolio_snapshot.open_position, None);
+    assert_eq!(step.portfolio_snapshot.realized_cash_balance, 1_040.0);
+    assert!(step.events.iter().all(|event| !matches!(
+        event,
+        RuntimeEvent::StrategyTickBlocked { .. }
+            | RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::StrategyTickCompleted
+    )));
+}
+
+#[test]
+fn open_position_without_risk_exit_keeps_missing_required_secondary_as_strategy_only_blocker() {
+    let primary = ohlc_candle(60_000, "1m", 100.0, 105.0, 95.0, 101.0);
+    let open_position = position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), None);
+    let calls = Rc::new(RefCell::new(0));
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        portfolio,
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::close_long()],
+        ),
+    );
+
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+        .unwrap();
+
+    let expected_snapshot = RuntimePortfolioSnapshot {
+        realized_cash_balance: 1_000.0,
+        open_position: Some(open_position),
+        completed_trade_count: 0,
+        current_equity: 1_002.0,
+    };
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: primary.clone(),
+            },
+            RuntimeEvent::StrategyTickBlocked {
+                candle: primary.clone(),
+                reason: StrategyTickBlockedReason::RequiredSecondaryUnavailable {
+                    timeframe: "1h".into(),
+                },
+            },
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert!(step.events.iter().all(|event| !matches!(
+        event,
+        RuntimeEvent::RiskExitTriggered { .. }
+            | RuntimeEvent::StrategyTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::ExecutionActionPlanned { .. }
+            | RuntimeEvent::PositionClosed { .. }
     )));
 }
 
