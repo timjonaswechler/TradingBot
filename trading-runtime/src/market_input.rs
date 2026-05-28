@@ -49,6 +49,13 @@ impl RuntimeConfig {
             None
         }
     }
+
+    pub(crate) fn configured_timeframes(&self) -> Vec<String> {
+        let mut timeframes = Vec::with_capacity(1 + self.secondary_timeframes.len());
+        timeframes.push(self.primary_timeframe.clone());
+        timeframes.extend(self.secondary_timeframes.iter().cloned());
+        timeframes
+    }
 }
 
 /// Market input accepted by the runtime boundary.

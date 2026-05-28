@@ -330,6 +330,7 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
                 candle: first_warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
+                timeframe: "1m".into(),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 2,
             },
@@ -346,11 +347,13 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
                 candle: second_warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
+                timeframe: "1m".into(),
                 current_warmup_input_count: 2,
                 required_warmup_inputs: 2,
             },
             RuntimeEvent::WarmupCompleted {
-                completed_warmup_input_count: 2,
+                completed_timeframes: vec!["1m".into()],
+                required_warmup_inputs: 2,
             },
         ]
     );
@@ -422,11 +425,13 @@ fn warmup_input_crossing_stop_loss_on_initial_open_position_does_not_trade() {
                 candle: warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
+                timeframe: "1m".into(),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 1,
             },
             RuntimeEvent::WarmupCompleted {
-                completed_warmup_input_count: 1,
+                completed_timeframes: vec!["1m".into()],
+                required_warmup_inputs: 1,
             },
         ]
     );
@@ -1272,6 +1277,7 @@ fn force_close_works_while_runtime_is_still_in_warmup() {
                 candle: warmup_candle.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
+                timeframe: "1m".into(),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 3,
             },

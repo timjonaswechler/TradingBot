@@ -7,6 +7,7 @@ use crate::{
     RuntimeStep, StrategyHandler,
 };
 use shared::{Candle, PositionSide};
+use std::collections::HashMap;
 
 /// DB-free trading runtime core for one runtime asset.
 #[derive(Debug, Clone)]
@@ -14,8 +15,9 @@ pub struct TradingRuntime<S> {
     config: RuntimeConfig,
     market_state: MarketState,
     portfolio: PortfolioState,
-    warmup_input_count: usize,
+    warmup_progress: HashMap<String, usize>,
     warmup_requirement: usize,
+    warmup_completed: bool,
     strategy_handler: S,
 }
 
@@ -36,13 +38,19 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         strategy_handler: S,
     ) -> Self {
         let market_state = MarketState::from_config(&config);
+        let warmup_progress = config
+            .configured_timeframes()
+            .into_iter()
+            .map(|timeframe| (timeframe, 0))
+            .collect();
 
         Self {
             config,
             market_state,
             portfolio,
-            warmup_input_count: 0,
+            warmup_progress,
             warmup_requirement,
+            warmup_completed: warmup_requirement == 0,
             strategy_handler,
         }
     }
@@ -61,12 +69,27 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         match (input, role) {
             (MarketInput::WarmupCandle(candle), _) => Ok(self.on_warmup_input(candle)),
             (MarketInput::CompletedCandle(candle), MarketInputTimeframeRole::Primary) => {
-                Ok(self.on_tradable_candle(candle))
+                if self.is_warmup_complete() {
+                    Ok(self.on_tradable_candle(candle))
+                } else {
+                    Ok(self.on_completed_primary_before_warmup_complete(candle))
+                }
             }
             (MarketInput::CompletedCandle(candle), MarketInputTimeframeRole::Secondary) => {
                 Ok(self.on_secondary_completed_candle(candle))
             }
         }
+    }
+
+    fn on_completed_primary_before_warmup_complete(&mut self, candle: Candle) -> RuntimeStep {
+        self.market_state.record_accepted_candle(candle.clone());
+
+        RuntimeStep::new(
+            vec![RuntimeEvent::MarketInputAccepted {
+                candle: candle.clone(),
+            }],
+            self.portfolio.snapshot(candle.close),
+        )
     }
 
     fn on_secondary_completed_candle(&mut self, candle: Candle) -> RuntimeStep {
@@ -82,20 +105,24 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     pub fn on_warmup_input(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
-        self.warmup_input_count += 1;
+        let timeframe = candle.timeframe.clone();
+        let current_warmup_input_count = self.advance_warmup_progress(&timeframe);
 
         let mut events = vec![RuntimeEvent::WarmupInputAccepted {
             candle: candle.clone(),
         }];
 
         events.push(RuntimeEvent::WarmupAdvanced {
-            current_warmup_input_count: self.warmup_input_count,
+            timeframe,
+            current_warmup_input_count,
             required_warmup_inputs: self.warmup_requirement,
         });
 
-        if self.warmup_input_count == self.warmup_requirement {
+        if !self.warmup_completed && self.is_warmup_complete() {
+            self.warmup_completed = true;
             events.push(RuntimeEvent::WarmupCompleted {
-                completed_warmup_input_count: self.warmup_input_count,
+                completed_timeframes: self.config.configured_timeframes(),
+                required_warmup_inputs: self.warmup_requirement,
             });
         }
 
@@ -301,6 +328,22 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     pub fn warmup_requirement(&self) -> usize {
         self.warmup_requirement
+    }
+
+    fn advance_warmup_progress(&mut self, timeframe: &str) -> usize {
+        let count = self
+            .warmup_progress
+            .entry(timeframe.to_owned())
+            .or_insert(0);
+        *count += 1;
+        *count
+    }
+
+    fn is_warmup_complete(&self) -> bool {
+        self.warmup_requirement == 0
+            || self.config.configured_timeframes().iter().all(|timeframe| {
+                self.warmup_progress.get(timeframe).copied().unwrap_or(0) >= self.warmup_requirement
+            })
     }
 
     /// Inspect a configured timeframe's chronological Market State history.

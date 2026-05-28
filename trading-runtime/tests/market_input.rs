@@ -160,6 +160,7 @@ fn warmup_primary_market_input_routes_to_existing_warmup_behavior() {
                 candle: primary_warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
+                timeframe: "1m".into(),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 2,
             },
@@ -202,6 +203,7 @@ fn warmup_secondary_market_input_is_accepted_without_strategy_or_portfolio_trans
                 candle: secondary_warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
+                timeframe: "1h".into(),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 2,
             },
@@ -258,6 +260,163 @@ fn completed_secondary_market_input_is_accepted_without_strategy_or_portfolio_tr
             .as_ref()
             .map(|position| position.size),
         Some(2.0)
+    );
+}
+
+#[test]
+fn multi_timeframe_warmup_does_not_complete_when_primary_is_ready_but_secondary_is_not() {
+    let first_primary = candle(1, "1m", 100.0);
+    let second_primary = candle(2, "1m", 101.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config(),
+        PortfolioState::new(1_000.0),
+        2,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::open_long(2.0)],
+        ),
+    );
+
+    runtime
+        .on_market_input(MarketInput::WarmupCandle(first_primary.clone()))
+        .unwrap();
+    let second_step = runtime
+        .on_market_input(MarketInput::WarmupCandle(second_primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(
+        runtime.market_history("1m"),
+        Some(&[first_primary, second_primary][..])
+    );
+    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert!(!second_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::WarmupCompleted { .. })));
+}
+
+#[test]
+fn completed_primary_before_all_timeframe_warmups_are_satisfied_is_stored_without_trading() {
+    let primary_warmup_1 = candle(1, "1m", 100.0);
+    let primary_warmup_2 = candle(2, "1m", 101.0);
+    let early_completed_primary = ohlc_candle(3, "1m", 100.0, 105.0, 90.0, 99.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(position_with_entry_risk(
+        PositionSide::Long,
+        100.0,
+        Some(90.0),
+        None,
+    ));
+    let open_position = portfolio.open_position.clone();
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config(),
+        portfolio,
+        2,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::close_long()],
+        ),
+    );
+
+    runtime
+        .on_market_input(MarketInput::WarmupCandle(primary_warmup_1.clone()))
+        .unwrap();
+    runtime
+        .on_market_input(MarketInput::WarmupCandle(primary_warmup_2.clone()))
+        .unwrap();
+    let early_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(
+            early_completed_primary.clone(),
+        ))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(
+        runtime.market_history("1m"),
+        Some(
+            &[
+                primary_warmup_1,
+                primary_warmup_2,
+                early_completed_primary.clone()
+            ][..]
+        )
+    );
+    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(
+        early_step.events,
+        vec![RuntimeEvent::MarketInputAccepted {
+            candle: early_completed_primary.clone(),
+        }]
+    );
+    assert_eq!(early_step.portfolio_snapshot.open_position, open_position);
+    assert_eq!(early_step.portfolio_snapshot.completed_trade_count, 0);
+    assert!(!early_step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::TradableTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::RiskExitTriggered { .. }
+            | RuntimeEvent::PositionClosed { .. }
+            | RuntimeEvent::PortfolioUpdated { .. }
+    )));
+}
+
+#[test]
+fn first_completed_primary_after_all_timeframe_warmups_are_satisfied_runs_strategy() {
+    let primary_warmup_1 = candle(1, "1m", 100.0);
+    let primary_warmup_2 = candle(2, "1m", 101.0);
+    let secondary_warmup_1 = candle(3, "1h", 100.0);
+    let secondary_warmup_2 = candle(4, "1h", 101.0);
+    let first_completed_primary = candle(5, "1m", 102.0);
+    let decision = StrategyDecision::open_long(2.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config(),
+        PortfolioState::new(1_000.0),
+        2,
+        CountingStrategyHandler::from_decisions(Rc::clone(&calls), [decision]),
+    );
+
+    runtime
+        .on_market_input(MarketInput::WarmupCandle(primary_warmup_1.clone()))
+        .unwrap();
+    runtime
+        .on_market_input(MarketInput::WarmupCandle(primary_warmup_2.clone()))
+        .unwrap();
+    runtime
+        .on_market_input(MarketInput::WarmupCandle(secondary_warmup_1.clone()))
+        .unwrap();
+    let completion_step = runtime
+        .on_market_input(MarketInput::WarmupCandle(secondary_warmup_2.clone()))
+        .unwrap();
+
+    assert!(completion_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::WarmupCompleted { .. })));
+    assert_eq!(*calls.borrow(), 0);
+
+    let active_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(
+            first_completed_primary.clone(),
+        ))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 1);
+    assert!(active_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+    assert!(active_step.portfolio_snapshot.open_position.is_some());
+    assert_eq!(
+        runtime.market_history("1m"),
+        Some(&[primary_warmup_1, primary_warmup_2, first_completed_primary][..])
+    );
+    assert_eq!(
+        runtime.market_history("1h"),
+        Some(&[secondary_warmup_1, secondary_warmup_2][..])
     );
 }
 
@@ -329,6 +488,7 @@ fn unknown_timeframe_returns_input_error_without_advancing_warmup() {
 
     assert_eq!(*calls.borrow(), 0);
     assert!(warmup_step.events.contains(&RuntimeEvent::WarmupAdvanced {
+        timeframe: "1m".into(),
         current_warmup_input_count: 1,
         required_warmup_inputs: 2,
     }));

@@ -57,11 +57,13 @@ pub enum RuntimeEvent {
     },
     TradableTickCompleted,
     WarmupAdvanced {
+        timeframe: String,
         current_warmup_input_count: usize,
         required_warmup_inputs: usize,
     },
     WarmupCompleted {
-        completed_warmup_input_count: usize,
+        completed_timeframes: Vec<String>,
+        required_warmup_inputs: usize,
     },
     ForceCloseRequested {
         candle: Candle,
