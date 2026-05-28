@@ -3,8 +3,8 @@
 use crate::market_input::MarketInputTimeframeRole;
 use crate::{
     evaluate_risk_exit, plan_execution, ExecutionAction, ExitKind, ForceCloseIgnoredReason,
-    MarketInput, PortfolioState, RuntimeConfig, RuntimeEvent, RuntimeInputError, RuntimeStep,
-    StrategyHandler,
+    MarketInput, MarketState, PortfolioState, RuntimeConfig, RuntimeEvent, RuntimeInputError,
+    RuntimeStep, StrategyHandler,
 };
 use shared::{Candle, PositionSide};
 
@@ -12,6 +12,7 @@ use shared::{Candle, PositionSide};
 #[derive(Debug, Clone)]
 pub struct TradingRuntime<S> {
     config: RuntimeConfig,
+    market_state: MarketState,
     portfolio: PortfolioState,
     warmup_input_count: usize,
     warmup_requirement: usize,
@@ -34,8 +35,11 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         warmup_requirement: usize,
         strategy_handler: S,
     ) -> Self {
+        let market_state = MarketState::from_config(&config);
+
         Self {
             config,
+            market_state,
             portfolio,
             warmup_input_count: 0,
             warmup_requirement,
@@ -66,6 +70,8 @@ impl<S: StrategyHandler> TradingRuntime<S> {
     }
 
     fn on_secondary_completed_candle(&mut self, candle: Candle) -> RuntimeStep {
+        self.market_state.record_accepted_candle(candle.clone());
+
         RuntimeStep::new(
             vec![RuntimeEvent::MarketInputAccepted {
                 candle: candle.clone(),
@@ -75,6 +81,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
     }
 
     pub fn on_warmup_input(&mut self, candle: Candle) -> RuntimeStep {
+        self.market_state.record_accepted_candle(candle.clone());
         self.warmup_input_count += 1;
 
         let mut events = vec![RuntimeEvent::WarmupInputAccepted {
@@ -96,6 +103,8 @@ impl<S: StrategyHandler> TradingRuntime<S> {
     }
 
     pub fn on_tradable_candle(&mut self, candle: Candle) -> RuntimeStep {
+        self.market_state.record_accepted_candle(candle.clone());
+
         let mut events = vec![RuntimeEvent::MarketInputAccepted {
             candle: candle.clone(),
         }];
@@ -292,5 +301,10 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     pub fn warmup_requirement(&self) -> usize {
         self.warmup_requirement
+    }
+
+    /// Inspect a configured timeframe's chronological Market State history.
+    pub fn market_history(&self, timeframe: &str) -> Option<&[Candle]> {
+        self.market_state.history(timeframe)
     }
 }

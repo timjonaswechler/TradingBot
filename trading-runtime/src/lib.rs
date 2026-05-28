@@ -15,6 +15,7 @@ pub mod decision;
 pub mod events;
 pub mod execution;
 pub mod market_input;
+pub mod market_state;
 pub mod portfolio;
 pub mod risk_exit;
 pub mod runtime;
@@ -27,6 +28,7 @@ pub use decision::{
 pub use events::{ExitKind, ForceCloseIgnoredReason, RuntimeEvent};
 pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
 pub use market_input::{MarketInput, RuntimeConfig, RuntimeInputError};
+pub use market_state::MarketState;
 pub use portfolio::{
     ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,
 };
