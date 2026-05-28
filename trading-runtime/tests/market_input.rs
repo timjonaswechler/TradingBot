@@ -264,6 +264,156 @@ fn completed_secondary_market_input_is_accepted_without_strategy_or_portfolio_tr
 }
 
 #[test]
+fn interleaved_completed_primary_and_secondary_inputs_only_evaluate_primary_inputs() {
+    let first_secondary = candle(1, "1h", 100.0);
+    let first_primary = candle(2, "1m", 101.0);
+    let second_secondary = candle(3, "1h", 102.0);
+    let second_primary = candle(4, "1m", 103.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config(),
+        PortfolioState::new(1_000.0),
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [
+                StrategyDecision::open_long(2.0),
+                StrategyDecision::close_long(),
+            ],
+        ),
+    );
+
+    let first_secondary_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(first_secondary.clone()))
+        .unwrap();
+    let first_primary_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(first_primary.clone()))
+        .unwrap();
+    let second_secondary_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(second_secondary.clone()))
+        .unwrap();
+    let second_primary_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(second_primary.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 2);
+    assert_eq!(
+        first_secondary_step.events,
+        vec![RuntimeEvent::MarketInputAccepted {
+            candle: first_secondary.clone(),
+        }]
+    );
+    assert_eq!(
+        second_secondary_step.events,
+        vec![RuntimeEvent::MarketInputAccepted {
+            candle: second_secondary.clone(),
+        }]
+    );
+    assert!(!first_secondary_step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::TradableTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::ExecutionActionPlanned { .. }
+            | RuntimeEvent::PositionOpened { .. }
+            | RuntimeEvent::PositionClosed { .. }
+            | RuntimeEvent::PortfolioUpdated { .. }
+    )));
+    assert!(!second_secondary_step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::TradableTickStarted { .. }
+            | RuntimeEvent::StrategyDecisionProduced { .. }
+            | RuntimeEvent::ExecutionActionPlanned { .. }
+            | RuntimeEvent::PositionOpened { .. }
+            | RuntimeEvent::PositionClosed { .. }
+            | RuntimeEvent::PortfolioUpdated { .. }
+    )));
+    assert!(first_primary_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+    assert!(second_primary_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+    assert!(second_primary_step
+        .portfolio_snapshot
+        .open_position
+        .is_none());
+    assert_eq!(
+        second_primary_step.portfolio_snapshot.completed_trade_count,
+        1
+    );
+    assert_eq!(
+        runtime.market_history("1m"),
+        Some(&[first_primary, second_primary][..])
+    );
+    assert_eq!(
+        runtime.market_history("1h"),
+        Some(&[first_secondary, second_secondary][..])
+    );
+}
+
+#[test]
+fn completed_secondary_candle_that_crosses_entry_risk_does_not_trigger_risk_exit() {
+    let secondary_crossing_stop = ohlc_candle(1, "1h", 100.0, 101.0, 85.0, 88.0);
+    let primary_crossing_stop = ohlc_candle(2, "1m", 100.0, 101.0, 85.0, 88.0);
+    let calls = Rc::new(RefCell::new(0));
+    let mut portfolio = PortfolioState::new(1_000.0);
+    let open_position =
+        position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), Some(120.0));
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::with_config(
+        runtime_config(),
+        portfolio,
+        0,
+        CountingStrategyHandler::from_decisions(
+            Rc::clone(&calls),
+            [StrategyDecision::close_long()],
+        ),
+    );
+
+    let secondary_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(
+            secondary_crossing_stop.clone(),
+        ))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert_eq!(
+        secondary_step.events,
+        vec![RuntimeEvent::MarketInputAccepted {
+            candle: secondary_crossing_stop.clone(),
+        }]
+    );
+    assert_eq!(
+        secondary_step.portfolio_snapshot.open_position,
+        Some(open_position)
+    );
+    assert_eq!(secondary_step.portfolio_snapshot.completed_trade_count, 0);
+    assert_eq!(runtime.market_history("1m"), Some(&[][..]));
+    assert_eq!(
+        runtime.market_history("1h"),
+        Some(&[secondary_crossing_stop][..])
+    );
+
+    let primary_step = runtime
+        .on_market_input(MarketInput::CompletedCandle(primary_crossing_stop.clone()))
+        .unwrap();
+
+    assert_eq!(*calls.borrow(), 0);
+    assert!(primary_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::RiskExitTriggered { .. })));
+    assert!(primary_step.portfolio_snapshot.open_position.is_none());
+    assert_eq!(primary_step.portfolio_snapshot.completed_trade_count, 1);
+    assert_eq!(
+        runtime.market_history("1m"),
+        Some(&[primary_crossing_stop][..])
+    );
+}
+
+#[test]
 fn multi_timeframe_warmup_does_not_complete_when_primary_is_ready_but_secondary_is_not() {
     let first_primary = candle(1, "1m", 100.0);
     let second_primary = candle(2, "1m", 101.0);
