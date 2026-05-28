@@ -7,7 +7,7 @@ use crate::{
     RuntimeInputError, RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness,
     SecondaryTimeframeConfig, StrategyHandler,
 };
-use shared::{Candle, PositionSide};
+use shared::{Candle, PositionSide, Timeframe};
 use std::collections::HashMap;
 
 /// DB-free trading runtime core for one runtime asset.
@@ -16,7 +16,7 @@ pub struct TradingRuntime<S> {
     config: RuntimeConfig,
     market_state: MarketState,
     portfolio: PortfolioState,
-    warmup_progress: HashMap<String, usize>,
+    warmup_progress: HashMap<Timeframe, usize>,
     warmup_requirement: usize,
     warmup_completed: bool,
     strategy_handler: S,
@@ -25,7 +25,7 @@ pub struct TradingRuntime<S> {
 impl<S: StrategyHandler> TradingRuntime<S> {
     pub fn new(portfolio: PortfolioState, warmup_requirement: usize, strategy_handler: S) -> Self {
         Self::with_config(
-            RuntimeConfig::single_timeframe("BTC-USD", "1m"),
+            RuntimeConfig::single_timeframe("BTC-USD", Timeframe::minutes(1)),
             portfolio,
             warmup_requirement,
             strategy_handler,
@@ -62,9 +62,9 @@ impl<S: StrategyHandler> TradingRuntime<S> {
     ) -> Result<RuntimeStep, RuntimeInputError> {
         let role = self
             .config
-            .classify_timeframe(&input.candle().timeframe)
+            .classify_timeframe(input.candle().timeframe)
             .ok_or_else(|| RuntimeInputError::UnknownTimeframe {
-                timeframe: input.candle().timeframe.clone(),
+                timeframe: input.candle().timeframe,
             })?;
 
         match (input, role) {
@@ -106,8 +106,8 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     pub fn on_warmup_input(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
-        let timeframe = candle.timeframe.clone();
-        let current_warmup_input_count = self.advance_warmup_progress(&timeframe);
+        let timeframe = candle.timeframe;
+        let current_warmup_input_count = self.advance_warmup_progress(timeframe);
 
         let mut events = vec![RuntimeEvent::WarmupInputAccepted {
             candle: candle.clone(),
@@ -347,11 +347,8 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         self.warmup_requirement
     }
 
-    fn advance_warmup_progress(&mut self, timeframe: &str) -> usize {
-        let count = self
-            .warmup_progress
-            .entry(timeframe.to_owned())
-            .or_insert(0);
+    fn advance_warmup_progress(&mut self, timeframe: Timeframe) -> usize {
+        let count = self.warmup_progress.entry(timeframe).or_insert(0);
         *count += 1;
         *count
     }
@@ -375,14 +372,14 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                 match secondary.readiness {
                     SecondaryReadiness::Required => {
                         blocked_contexts.push(BlockedSecondaryContext {
-                            timeframe: secondary.timeframe.clone(),
+                            timeframe: secondary.timeframe,
                             reason,
                         });
                     }
                     SecondaryReadiness::Optional => {
                         events.push(RuntimeEvent::SecondaryContextUnavailable {
                             candle: primary_candle.clone(),
-                            timeframe: secondary.timeframe.clone(),
+                            timeframe: secondary.timeframe,
                             readiness: secondary.readiness,
                             reason,
                         });
@@ -401,13 +398,11 @@ impl<S: StrategyHandler> TradingRuntime<S> {
     ) -> Option<SecondaryContextUnavailableReason> {
         let Some(latest_secondary) = self
             .market_state
-            .latest_completed_candle(&secondary.timeframe)
+            .latest_completed_candle(secondary.timeframe)
         else {
             return Some(SecondaryContextUnavailableReason::Missing);
         };
-        let Some(duration_ms) = timeframe_duration_ms(&secondary.timeframe) else {
-            return Some(SecondaryContextUnavailableReason::Stale);
-        };
+        let duration_ms = secondary.timeframe.duration_ms();
         let allowed_until = latest_secondary.timestamp.saturating_add(
             duration_ms.saturating_mul(i64::from(secondary.max_missing_candles) + 1),
         );
@@ -417,28 +412,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
     }
 
     /// Inspect a configured timeframe's chronological Market State history.
-    pub fn market_history(&self, timeframe: &str) -> Option<&[Candle]> {
+    pub fn market_history(&self, timeframe: Timeframe) -> Option<&[Candle]> {
         self.market_state.history(timeframe)
     }
-}
-
-fn timeframe_duration_ms(timeframe: &str) -> Option<i64> {
-    let (number, unit) = split_timeframe(timeframe)?;
-    let multiplier = match unit {
-        "m" => 60_000,
-        "h" => 3_600_000,
-        "d" => 86_400_000,
-        "wk" | "w" => 7 * 86_400_000,
-        _ => return None,
-    };
-
-    number.checked_mul(multiplier)
-}
-
-fn split_timeframe(timeframe: &str) -> Option<(i64, &str)> {
-    let first_unit_index = timeframe
-        .char_indices()
-        .find_map(|(index, character)| (!character.is_ascii_digit()).then_some(index))?;
-    let number = timeframe[..first_unit_index].parse::<i64>().ok()?;
-    (number > 0).then_some((number, &timeframe[first_unit_index..]))
 }

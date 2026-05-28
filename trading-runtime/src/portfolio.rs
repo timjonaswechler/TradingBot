@@ -209,7 +209,7 @@ mod tests {
             low: close,
             close,
             volume: 1_000.0,
-            timeframe: "1m".into(),
+            timeframe: shared::Timeframe::minutes(1),
         }
     }
 

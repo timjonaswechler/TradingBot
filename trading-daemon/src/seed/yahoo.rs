@@ -4,7 +4,7 @@
 /// (incomplete) candle when the current candle period has not yet closed.
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
-use shared::Candle;
+use shared::{Candle, Timeframe};
 
 /// Yahoo Finance chart API response.
 #[derive(Debug, Deserialize)]
@@ -40,19 +40,19 @@ struct YahooQuote {
 
 // ── Interval helpers ──────────────────────────────────────────────────────────
 
-/// Convert a timeframe string to milliseconds.
-pub fn interval_ms(interval: &str) -> i64 {
+/// Parse a Yahoo interval into the canonical runtime/domain timeframe.
+pub fn interval_timeframe(interval: &str) -> Result<Timeframe> {
     match interval {
-        "1m" => 60_000,
-        "5m" => 5 * 60_000,
-        "15m" => 15 * 60_000,
-        "30m" => 30 * 60_000,
-        "1h" => 3_600_000,
-        "4h" => 4 * 3_600_000,
-        "1d" => 86_400_000,
-        "1wk" => 7 * 86_400_000,
-        _ => 86_400_000, // default to 1d
+        "1wk" => Ok(Timeframe::weeks(1)),
+        canonical => canonical
+            .parse()
+            .map_err(|e| anyhow!("Unsupported Yahoo interval '{interval}': {e}")),
     }
+}
+
+/// Convert a timeframe string to milliseconds.
+pub fn interval_ms(interval: &str) -> Result<i64> {
+    Ok(interval_timeframe(interval)?.duration_ms())
 }
 
 // ── Main fetch function ───────────────────────────────────────────────────────
@@ -119,9 +119,9 @@ pub async fn fetch_candles(
         .next()
         .ok_or_else(|| anyhow!("No quote data in Yahoo response"))?;
 
-    let int_ms = interval_ms(interval);
+    let timeframe = interval_timeframe(interval)?;
+    let int_ms = interval_ms(interval)?;
     let symbol_str = symbol.to_string();
-    let tf_str = interval.to_string();
 
     let mut candles: Vec<Candle> = timestamps
         .iter()
@@ -158,7 +158,7 @@ pub async fn fetch_candles(
                 low,
                 close,
                 volume,
-                timeframe: tf_str.clone(),
+                timeframe,
             })
         })
         .collect();

@@ -250,7 +250,7 @@ mod tests {
             low: close,
             close,
             volume: 0.0,
-            timeframe: "1m".into(),
+            timeframe: "1m".parse().unwrap(),
         }
     }
 

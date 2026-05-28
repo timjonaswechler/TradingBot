@@ -1,4 +1,4 @@
-use shared::{Candle, Position, PositionSide};
+use shared::{Candle, Position, PositionSide, Timeframe};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason,
@@ -20,7 +20,7 @@ fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Ca
         low,
         close,
         volume: 1_000.0,
-        timeframe: "1m".into(),
+        timeframe: Timeframe::minutes(1),
     }
 }
 
@@ -347,7 +347,7 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
                 candle: first_warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
-                timeframe: "1m".into(),
+                timeframe: Timeframe::minutes(1),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 2,
             },
@@ -364,12 +364,12 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
                 candle: second_warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
-                timeframe: "1m".into(),
+                timeframe: Timeframe::minutes(1),
                 current_warmup_input_count: 2,
                 required_warmup_inputs: 2,
             },
             RuntimeEvent::WarmupCompleted {
-                completed_timeframes: vec!["1m".into()],
+                completed_timeframes: vec![Timeframe::minutes(1)],
                 required_warmup_inputs: 2,
             },
         ]
@@ -446,12 +446,12 @@ fn warmup_input_crossing_stop_loss_on_initial_open_position_does_not_trade() {
                 candle: warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
-                timeframe: "1m".into(),
+                timeframe: Timeframe::minutes(1),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 1,
             },
             RuntimeEvent::WarmupCompleted {
-                completed_timeframes: vec!["1m".into()],
+                completed_timeframes: vec![Timeframe::minutes(1)],
                 required_warmup_inputs: 1,
             },
         ]
@@ -1314,7 +1314,7 @@ fn force_close_works_while_runtime_is_still_in_warmup() {
                 candle: warmup_candle.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
-                timeframe: "1m".into(),
+                timeframe: Timeframe::minutes(1),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 3,
             },

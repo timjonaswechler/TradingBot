@@ -39,5 +39,6 @@ pub use portfolio::{
 };
 pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;
+pub use shared::{Timeframe, TimeframeParseError, TimeframeUnit};
 pub use step::RuntimeStep;
 pub use strategy::{PredeterminedStrategyHandler, StrategyHandler};

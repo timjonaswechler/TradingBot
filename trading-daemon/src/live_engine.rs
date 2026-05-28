@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 
 use db_layer::{count_trades, module_bindings::CandlesTableAccess, DbConnection, SpacetimeClient};
 use engine::Engine;
-use shared::{Candle, Context, Position};
+use shared::{Candle, Context, Position, Timeframe};
 use spacetimedb_sdk::Table;
 
 use crate::{
@@ -47,6 +47,9 @@ pub async fn run(
     let conn: Arc<DbConnection> = client.conn.clone();
     let warmup = warmup_engine(&conn, &mut engine, &symbol, &interval, warmup_bars)?;
     let warmup_high_water = warmup.high_water_ts;
+    let runtime_timeframe: Timeframe = interval
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid configured interval '{}': {e}", interval))?;
 
     // ── Create paper executor (restores open position from DB cache) ───────────
     let mut executor = PaperExecutor::new(
@@ -68,7 +71,7 @@ pub async fn run(
     let (tx, mut rx) = mpsc::channel::<Candle>(64);
 
     let sym_filter = symbol.clone();
-    let tf_filter = interval.clone();
+    let tf_filter = runtime_timeframe.to_string();
 
     conn.db.candles().on_insert(move |_ctx, db_candle| {
         if db_candle.symbol != sym_filter || db_candle.timeframe != tf_filter {
@@ -88,7 +91,7 @@ pub async fn run(
             low: db_candle.low,
             close: db_candle.close,
             volume: db_candle.volume,
-            timeframe: db_candle.timeframe.clone(),
+            timeframe: runtime_timeframe,
         };
         if let Err(e) = tx.try_send(candle) {
             warn!(error = %e, "Dropped candle — engine channel full");

@@ -48,7 +48,7 @@ mod tests {
             low: l,
             close: c,
             volume: v,
-            timeframe: "1d".into(),
+            timeframe: "1d".parse().unwrap(),
         }
     }
 

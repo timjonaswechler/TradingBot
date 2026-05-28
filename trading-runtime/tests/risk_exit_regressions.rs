@@ -1,4 +1,4 @@
-use shared::{Candle, Position, PositionSide};
+use shared::{Candle, Position, PositionSide, Timeframe};
 use std::{cell::RefCell, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, MarketInput, PortfolioState, RiskExitKind,
@@ -15,7 +15,7 @@ fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Ca
         low,
         close,
         volume: 1_000.0,
-        timeframe: "1m".into(),
+        timeframe: Timeframe::minutes(1),
     }
 }
 

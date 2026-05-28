@@ -214,7 +214,7 @@ mod tests {
             low: close - 1.0,
             close,
             volume: 1000.0,
-            timeframe: "1d".into(),
+            timeframe: "1d".parse().unwrap(),
         }
     }
 
@@ -923,7 +923,7 @@ fn on_tick(candles, context) {
             low: l,
             close: c,
             volume: 1.0,
-            timeframe: "1m".into(),
+            timeframe: "1m".parse().unwrap(),
         }
     }
 

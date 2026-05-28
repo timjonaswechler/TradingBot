@@ -1,6 +1,6 @@
 //! Runtime market-input boundary types.
 
-use shared::Candle;
+use shared::{Candle, Timeframe};
 
 /// Whether a configured Secondary Timeframe is required for Strategy Ticks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,23 +12,23 @@ pub enum SecondaryReadiness {
 /// Runtime configuration for one Secondary Timeframe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecondaryTimeframeConfig {
-    pub timeframe: String,
+    pub timeframe: Timeframe,
     pub readiness: SecondaryReadiness,
     pub max_missing_candles: u32,
 }
 
 impl SecondaryTimeframeConfig {
-    pub fn required(timeframe: impl Into<String>, max_missing_candles: u32) -> Self {
+    pub fn required(timeframe: Timeframe, max_missing_candles: u32) -> Self {
         Self {
-            timeframe: timeframe.into(),
+            timeframe,
             readiness: SecondaryReadiness::Required,
             max_missing_candles,
         }
     }
 
-    pub fn optional(timeframe: impl Into<String>, max_missing_candles: u32) -> Self {
+    pub fn optional(timeframe: Timeframe, max_missing_candles: u32) -> Self {
         Self {
-            timeframe: timeframe.into(),
+            timeframe,
             readiness: SecondaryReadiness::Optional,
             max_missing_candles,
         }
@@ -39,31 +39,30 @@ impl SecondaryTimeframeConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub runtime_asset: String,
-    pub primary_timeframe: String,
+    pub primary_timeframe: Timeframe,
     pub secondary_timeframes: Vec<SecondaryTimeframeConfig>,
 }
 
 impl RuntimeConfig {
-    pub fn with_secondary_configs<A, P, I>(
+    pub fn with_secondary_configs<A, I>(
         runtime_asset: A,
-        primary_timeframe: P,
+        primary_timeframe: Timeframe,
         secondary_timeframes: I,
     ) -> Self
     where
         A: Into<String>,
-        P: Into<String>,
         I: IntoIterator<Item = SecondaryTimeframeConfig>,
     {
         Self {
             runtime_asset: runtime_asset.into(),
-            primary_timeframe: primary_timeframe.into(),
+            primary_timeframe,
             secondary_timeframes: secondary_timeframes.into_iter().collect(),
         }
     }
 
     pub fn single_timeframe(
         runtime_asset: impl Into<String>,
-        primary_timeframe: impl Into<String>,
+        primary_timeframe: Timeframe,
     ) -> Self {
         Self::with_secondary_configs(
             runtime_asset,
@@ -72,7 +71,10 @@ impl RuntimeConfig {
         )
     }
 
-    pub(crate) fn classify_timeframe(&self, timeframe: &str) -> Option<MarketInputTimeframeRole> {
+    pub(crate) fn classify_timeframe(
+        &self,
+        timeframe: Timeframe,
+    ) -> Option<MarketInputTimeframeRole> {
         if timeframe == self.primary_timeframe {
             Some(MarketInputTimeframeRole::Primary)
         } else if self
@@ -86,13 +88,13 @@ impl RuntimeConfig {
         }
     }
 
-    pub(crate) fn configured_timeframes(&self) -> Vec<String> {
+    pub(crate) fn configured_timeframes(&self) -> Vec<Timeframe> {
         let mut timeframes = Vec::with_capacity(1 + self.secondary_timeframes.len());
-        timeframes.push(self.primary_timeframe.clone());
+        timeframes.push(self.primary_timeframe);
         timeframes.extend(
             self.secondary_timeframes
                 .iter()
-                .map(|secondary| secondary.timeframe.clone()),
+                .map(|secondary| secondary.timeframe),
         );
         timeframes
     }
@@ -120,7 +122,7 @@ impl MarketInput {
 /// Runtime-boundary errors for invalid runner/runtime market input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeInputError {
-    UnknownTimeframe { timeframe: String },
+    UnknownTimeframe { timeframe: Timeframe },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

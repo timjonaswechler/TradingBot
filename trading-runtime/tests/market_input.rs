@@ -4,9 +4,13 @@ use trading_runtime::{
     BlockedSecondaryContext, ClosedPosition, ExecutionAction, ExitKind, MarketInput,
     PortfolioState, RiskExitKind, RiskExitTriggered, RuntimeConfig, RuntimeEvent,
     RuntimeInputError, RuntimePortfolioSnapshot, SecondaryContextUnavailableReason,
-    SecondaryReadiness, SecondaryTimeframeConfig, StrategyDecision, StrategyHandler,
+    SecondaryReadiness, SecondaryTimeframeConfig, StrategyDecision, StrategyHandler, Timeframe,
     TradingRuntime,
 };
+
+fn tf(raw: &str) -> Timeframe {
+    raw.parse().expect("test timeframe should be valid")
+}
 
 fn candle(timestamp: i64, timeframe: &str, close: f64) -> Candle {
     ohlc_candle(timestamp, timeframe, close, close, close, close)
@@ -28,7 +32,7 @@ fn ohlc_candle(
         low,
         close,
         volume: 1_000.0,
-        timeframe: timeframe.into(),
+        timeframe: tf(timeframe),
     }
 }
 
@@ -52,8 +56,8 @@ fn position_with_entry_risk(
 fn runtime_config() -> RuntimeConfig {
     RuntimeConfig::with_secondary_configs(
         "BTC-USD",
-        "1m",
-        [SecondaryTimeframeConfig::optional("1h", 0)],
+        tf("1m"),
+        [SecondaryTimeframeConfig::optional(tf("1h"), 0)],
     )
 }
 
@@ -105,8 +109,11 @@ fn completed_primary_market_input_emits_tradable_candle_and_strategy_tick_events
         .unwrap();
 
     assert_eq!(*calls.borrow(), 1);
-    assert_eq!(runtime.market_history("1m"), Some(&[primary.clone()][..]));
-    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(
+        runtime.market_history(tf("1m")),
+        Some(&[primary.clone()][..])
+    );
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[][..]));
     assert_eq!(
         step.events,
         vec![
@@ -118,7 +125,7 @@ fn completed_primary_market_input_emits_tradable_candle_and_strategy_tick_events
             },
             RuntimeEvent::SecondaryContextUnavailable {
                 candle: primary.clone(),
-                timeframe: "1h".into(),
+                timeframe: tf("1h"),
                 readiness: SecondaryReadiness::Optional,
                 reason: SecondaryContextUnavailableReason::Missing,
             },
@@ -166,10 +173,10 @@ fn warmup_primary_market_input_routes_to_existing_warmup_behavior() {
 
     assert_eq!(*calls.borrow(), 0);
     assert_eq!(
-        runtime.market_history("1m"),
+        runtime.market_history(tf("1m")),
         Some(&[primary_warmup.clone()][..])
     );
-    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[][..]));
     assert_eq!(
         step.events,
         vec![
@@ -177,7 +184,7 @@ fn warmup_primary_market_input_routes_to_existing_warmup_behavior() {
                 candle: primary_warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
-                timeframe: "1m".into(),
+                timeframe: tf("1m"),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 2,
             },
@@ -208,9 +215,9 @@ fn warmup_secondary_market_input_is_accepted_without_strategy_or_portfolio_trans
         .unwrap();
 
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(runtime.market_history("1m"), Some(&[][..]));
+    assert_eq!(runtime.market_history(tf("1m")), Some(&[][..]));
     assert_eq!(
-        runtime.market_history("1h"),
+        runtime.market_history(tf("1h")),
         Some(&[secondary_warmup.clone()][..])
     );
     assert_eq!(
@@ -220,7 +227,7 @@ fn warmup_secondary_market_input_is_accepted_without_strategy_or_portfolio_trans
                 candle: secondary_warmup.clone(),
             },
             RuntimeEvent::WarmupAdvanced {
-                timeframe: "1h".into(),
+                timeframe: tf("1h"),
                 current_warmup_input_count: 1,
                 required_warmup_inputs: 2,
             },
@@ -255,8 +262,11 @@ fn completed_secondary_market_input_is_accepted_without_strategy_or_portfolio_tr
             candle: secondary.clone(),
         }]
     );
-    assert_eq!(runtime.market_history("1m"), Some(&[][..]));
-    assert_eq!(runtime.market_history("1h"), Some(&[secondary.clone()][..]));
+    assert_eq!(runtime.market_history(tf("1m")), Some(&[][..]));
+    assert_eq!(
+        runtime.market_history(tf("1h")),
+        Some(&[secondary.clone()][..])
+    );
     assert_eq!(*calls.borrow(), 0);
     assert_eq!(
         secondary_step.portfolio_snapshot,
@@ -268,8 +278,8 @@ fn completed_secondary_market_input_is_accepted_without_strategy_or_portfolio_tr
         .unwrap();
 
     assert_eq!(*calls.borrow(), 1);
-    assert_eq!(runtime.market_history("1m"), Some(&[primary][..]));
-    assert_eq!(runtime.market_history("1h"), Some(&[secondary][..]));
+    assert_eq!(runtime.market_history(tf("1m")), Some(&[primary][..]));
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[secondary][..]));
     assert_eq!(
         primary_step
             .portfolio_snapshot
@@ -361,11 +371,11 @@ fn interleaved_completed_primary_and_secondary_inputs_only_evaluate_primary_inpu
         1
     );
     assert_eq!(
-        runtime.market_history("1m"),
+        runtime.market_history(tf("1m")),
         Some(&[first_primary, second_primary][..])
     );
     assert_eq!(
-        runtime.market_history("1h"),
+        runtime.market_history(tf("1h")),
         Some(&[first_secondary, second_secondary][..])
     );
 }
@@ -407,9 +417,9 @@ fn completed_secondary_candle_that_crosses_entry_risk_does_not_trigger_risk_exit
         Some(open_position)
     );
     assert_eq!(secondary_step.portfolio_snapshot.completed_trade_count, 0);
-    assert_eq!(runtime.market_history("1m"), Some(&[][..]));
+    assert_eq!(runtime.market_history(tf("1m")), Some(&[][..]));
     assert_eq!(
-        runtime.market_history("1h"),
+        runtime.market_history(tf("1h")),
         Some(&[secondary_crossing_stop][..])
     );
 
@@ -425,7 +435,7 @@ fn completed_secondary_candle_that_crosses_entry_risk_does_not_trigger_risk_exit
     assert!(primary_step.portfolio_snapshot.open_position.is_none());
     assert_eq!(primary_step.portfolio_snapshot.completed_trade_count, 1);
     assert_eq!(
-        runtime.market_history("1m"),
+        runtime.market_history(tf("1m")),
         Some(&[primary_crossing_stop][..])
     );
 }
@@ -454,10 +464,10 @@ fn multi_timeframe_warmup_does_not_complete_when_primary_is_ready_but_secondary_
 
     assert_eq!(*calls.borrow(), 0);
     assert_eq!(
-        runtime.market_history("1m"),
+        runtime.market_history(tf("1m")),
         Some(&[first_primary, second_primary][..])
     );
-    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[][..]));
     assert!(!second_step
         .events
         .iter()
@@ -502,7 +512,7 @@ fn completed_primary_before_all_timeframe_warmups_are_satisfied_is_stored_withou
 
     assert_eq!(*calls.borrow(), 0);
     assert_eq!(
-        runtime.market_history("1m"),
+        runtime.market_history(tf("1m")),
         Some(
             &[
                 primary_warmup_1,
@@ -511,7 +521,7 @@ fn completed_primary_before_all_timeframe_warmups_are_satisfied_is_stored_withou
             ][..]
         )
     );
-    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[][..]));
     assert_eq!(
         early_step.events,
         vec![RuntimeEvent::MarketInputAccepted {
@@ -578,11 +588,11 @@ fn first_completed_primary_after_all_timeframe_warmups_are_satisfied_runs_strate
         .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
     assert!(active_step.portfolio_snapshot.open_position.is_some());
     assert_eq!(
-        runtime.market_history("1m"),
+        runtime.market_history(tf("1m")),
         Some(&[primary_warmup_1, primary_warmup_2, first_completed_primary][..])
     );
     assert_eq!(
-        runtime.market_history("1h"),
+        runtime.market_history(tf("1h")),
         Some(&[secondary_warmup_1, secondary_warmup_2][..])
     );
 }
@@ -604,12 +614,12 @@ fn unknown_timeframe_returns_input_error_without_consuming_strategy_decisions() 
         .on_market_input(MarketInput::CompletedCandle(unknown))
         .unwrap_err();
 
-    assert_eq!(runtime.market_history("1m"), Some(&[][..]));
-    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(runtime.market_history(tf("1m")), Some(&[][..]));
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[][..]));
     assert_eq!(
         error,
         RuntimeInputError::UnknownTimeframe {
-            timeframe: "5m".into(),
+            timeframe: tf("5m"),
         }
     );
     assert_eq!(*calls.borrow(), 0);
@@ -619,7 +629,7 @@ fn unknown_timeframe_returns_input_error_without_consuming_strategy_decisions() 
         .unwrap();
 
     assert_eq!(*calls.borrow(), 1);
-    assert_eq!(runtime.market_history("1m"), Some(&[primary][..]));
+    assert_eq!(runtime.market_history(tf("1m")), Some(&[primary][..]));
     assert!(primary_step.portfolio_snapshot.open_position.is_some());
 }
 
@@ -645,7 +655,7 @@ fn unknown_timeframe_returns_input_error_without_advancing_warmup() {
     assert_eq!(
         error,
         RuntimeInputError::UnknownTimeframe {
-            timeframe: "5m".into(),
+            timeframe: tf("5m"),
         }
     );
 
@@ -655,7 +665,7 @@ fn unknown_timeframe_returns_input_error_without_advancing_warmup() {
 
     assert_eq!(*calls.borrow(), 0);
     assert!(warmup_step.events.contains(&RuntimeEvent::WarmupAdvanced {
-        timeframe: "1m".into(),
+        timeframe: tf("1m"),
         current_warmup_input_count: 1,
         required_warmup_inputs: 2,
     }));
@@ -691,7 +701,7 @@ fn completed_primary_is_stored_even_when_risk_exit_prevents_strategy_tick() {
         .unwrap();
 
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(runtime.market_history("1m"), Some(&[exit_candle][..]));
+    assert_eq!(runtime.market_history(tf("1m")), Some(&[exit_candle][..]));
     assert!(step
         .events
         .iter()
@@ -721,8 +731,8 @@ fn unknown_timeframe_error_leaves_existing_market_state_histories_unchanged() {
     runtime
         .on_market_input(MarketInput::CompletedCandle(secondary.clone()))
         .unwrap();
-    let primary_before = runtime.market_history("1m").unwrap().to_vec();
-    let secondary_before = runtime.market_history("1h").unwrap().to_vec();
+    let primary_before = runtime.market_history(tf("1m")).unwrap().to_vec();
+    let secondary_before = runtime.market_history(tf("1h")).unwrap().to_vec();
 
     let error = runtime
         .on_market_input(MarketInput::CompletedCandle(unknown))
@@ -731,19 +741,22 @@ fn unknown_timeframe_error_leaves_existing_market_state_histories_unchanged() {
     assert_eq!(
         error,
         RuntimeInputError::UnknownTimeframe {
-            timeframe: "5m".into(),
+            timeframe: tf("5m"),
         }
     );
-    assert_eq!(runtime.market_history("1m"), Some(&primary_before[..]));
-    assert_eq!(runtime.market_history("1h"), Some(&secondary_before[..]));
-    assert_eq!(runtime.market_history("5m"), None);
+    assert_eq!(runtime.market_history(tf("1m")), Some(&primary_before[..]));
+    assert_eq!(
+        runtime.market_history(tf("1h")),
+        Some(&secondary_before[..])
+    );
+    assert_eq!(runtime.market_history(tf("5m")), None);
 }
 
 fn runtime_config_with_secondary_configs(
     primary_timeframe: &str,
     secondary_timeframes: impl IntoIterator<Item = SecondaryTimeframeConfig>,
 ) -> RuntimeConfig {
-    RuntimeConfig::with_secondary_configs("BTC-USD", primary_timeframe, secondary_timeframes)
+    RuntimeConfig::with_secondary_configs("BTC-USD", tf(primary_timeframe), secondary_timeframes)
 }
 
 #[test]
@@ -751,7 +764,10 @@ fn required_secondary_missing_blocks_strategy_tick_after_storing_primary() {
     let primary = candle(60_000, "1m", 100.0);
     let calls = Rc::new(RefCell::new(0));
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::required(tf("1h"), 0)],
+        ),
         PortfolioState::new(1_000.0),
         0,
         CountingStrategyHandler::from_decisions(
@@ -765,8 +781,11 @@ fn required_secondary_missing_blocks_strategy_tick_after_storing_primary() {
         .unwrap();
 
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(runtime.market_history("1m"), Some(&[primary.clone()][..]));
-    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(
+        runtime.market_history(tf("1m")),
+        Some(&[primary.clone()][..])
+    );
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[][..]));
     assert_eq!(
         step.events,
         vec![
@@ -779,7 +798,7 @@ fn required_secondary_missing_blocks_strategy_tick_after_storing_primary() {
             RuntimeEvent::StrategyTickBlocked {
                 candle: primary.clone(),
                 blocked_contexts: vec![BlockedSecondaryContext {
-                    timeframe: "1h".into(),
+                    timeframe: tf("1h"),
                     reason: SecondaryContextUnavailableReason::Missing,
                 }],
             },
@@ -802,8 +821,8 @@ fn missing_required_secondaries_are_reported_together_when_strategy_tick_is_bloc
         runtime_config_with_secondary_configs(
             "1m",
             [
-                SecondaryTimeframeConfig::required("1h", 0),
-                SecondaryTimeframeConfig::required("1d", 0),
+                SecondaryTimeframeConfig::required(tf("1h"), 0),
+                SecondaryTimeframeConfig::required(tf("1d"), 0),
             ],
         ),
         PortfolioState::new(1_000.0),
@@ -823,11 +842,11 @@ fn missing_required_secondaries_are_reported_together_when_strategy_tick_is_bloc
         candle: primary,
         blocked_contexts: vec![
             BlockedSecondaryContext {
-                timeframe: "1h".into(),
+                timeframe: tf("1h"),
                 reason: SecondaryContextUnavailableReason::Missing,
             },
             BlockedSecondaryContext {
-                timeframe: "1d".into(),
+                timeframe: tf("1d"),
                 reason: SecondaryContextUnavailableReason::Missing,
             },
         ],
@@ -842,7 +861,10 @@ fn long_risk_exit_closes_before_missing_required_secondary_can_block_strategy_ti
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::required(tf("1h"), 0)],
+        ),
         portfolio,
         0,
         CountingStrategyHandler::from_decisions(
@@ -868,8 +890,11 @@ fn long_risk_exit_closes_before_missing_required_secondary_can_block_strategy_ti
         current_equity: 980.0,
     };
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(runtime.market_history("1m"), Some(&[primary.clone()][..]));
-    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(
+        runtime.market_history(tf("1m")),
+        Some(&[primary.clone()][..])
+    );
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[][..]));
     assert_eq!(
         step.events,
         vec![
@@ -924,7 +949,10 @@ fn short_risk_exit_closes_before_missing_required_secondary_can_block_strategy_t
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::required(tf("1h"), 0)],
+        ),
         portfolio,
         0,
         CountingStrategyHandler::from_decisions(
@@ -950,8 +978,11 @@ fn short_risk_exit_closes_before_missing_required_secondary_can_block_strategy_t
         current_equity: 1_040.0,
     };
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(runtime.market_history("1m"), Some(&[primary.clone()][..]));
-    assert_eq!(runtime.market_history("1h"), Some(&[][..]));
+    assert_eq!(
+        runtime.market_history(tf("1m")),
+        Some(&[primary.clone()][..])
+    );
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[][..]));
     assert_eq!(
         step.events,
         vec![
@@ -1007,7 +1038,10 @@ fn long_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::required(tf("1h"), 0)],
+        ),
         portfolio,
         0,
         CountingStrategyHandler::from_decisions(
@@ -1024,7 +1058,10 @@ fn long_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick
         .unwrap();
 
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(runtime.market_history("1h"), Some(&[stale_secondary][..]));
+    assert_eq!(
+        runtime.market_history(tf("1h")),
+        Some(&[stale_secondary][..])
+    );
     assert!(step.events.contains(&RuntimeEvent::RiskExitTriggered {
         risk_exit: RiskExitTriggered {
             side: PositionSide::Long,
@@ -1053,7 +1090,10 @@ fn short_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tic
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::required(tf("1h"), 0)],
+        ),
         portfolio,
         0,
         CountingStrategyHandler::from_decisions(
@@ -1070,7 +1110,10 @@ fn short_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tic
         .unwrap();
 
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(runtime.market_history("1h"), Some(&[stale_secondary][..]));
+    assert_eq!(
+        runtime.market_history(tf("1h")),
+        Some(&[stale_secondary][..])
+    );
     assert!(step.events.contains(&RuntimeEvent::RiskExitTriggered {
         risk_exit: RiskExitTriggered {
             side: PositionSide::Short,
@@ -1098,7 +1141,10 @@ fn open_position_without_risk_exit_keeps_missing_required_secondary_as_strategy_
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::required(tf("1h"), 0)],
+        ),
         portfolio,
         0,
         CountingStrategyHandler::from_decisions(
@@ -1130,7 +1176,7 @@ fn open_position_without_risk_exit_keeps_missing_required_secondary_as_strategy_
             RuntimeEvent::StrategyTickBlocked {
                 candle: primary.clone(),
                 blocked_contexts: vec![BlockedSecondaryContext {
-                    timeframe: "1h".into(),
+                    timeframe: tf("1h"),
                     reason: SecondaryContextUnavailableReason::Missing,
                 }],
             },
@@ -1155,7 +1201,10 @@ fn coarse_required_secondary_remains_fresh_until_duration_and_tolerance_are_exce
     let stale_primary = candle(7_200_001, "1m", 102.0);
     let calls = Rc::new(RefCell::new(0));
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 1)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::required(tf("1h"), 1)],
+        ),
         PortfolioState::new(1_000.0),
         0,
         CountingStrategyHandler::from_decisions(
@@ -1191,7 +1240,7 @@ fn coarse_required_secondary_remains_fresh_until_duration_and_tolerance_are_exce
             RuntimeEvent::StrategyTickBlocked {
                 candle: stale_primary.clone(),
                 blocked_contexts: vec![BlockedSecondaryContext {
-                    timeframe: "1h".into(),
+                    timeframe: tf("1h"),
                     reason: SecondaryContextUnavailableReason::Stale,
                 }],
             },
@@ -1199,10 +1248,10 @@ fn coarse_required_secondary_remains_fresh_until_duration_and_tolerance_are_exce
         ]
     );
     assert_eq!(
-        runtime.market_history("1m"),
+        runtime.market_history(tf("1m")),
         Some(&[fresh_primary, stale_primary][..])
     );
-    assert_eq!(runtime.market_history("1h"), Some(&[secondary][..]));
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[secondary][..]));
 }
 
 #[test]
@@ -1211,7 +1260,10 @@ fn optional_secondary_stale_emits_diagnostic_but_allows_same_strategy_tick() {
     let primary = candle(3_600_001, "1m", 101.0);
     let calls = Rc::new(RefCell::new(0));
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::optional("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::optional(tf("1h"), 0)],
+        ),
         PortfolioState::new(1_000.0),
         0,
         CountingStrategyHandler::from_decisions(
@@ -1232,7 +1284,7 @@ fn optional_secondary_stale_emits_diagnostic_but_allows_same_strategy_tick() {
         .events
         .contains(&RuntimeEvent::SecondaryContextUnavailable {
             candle: primary.clone(),
-            timeframe: "1h".into(),
+            timeframe: tf("1h"),
             readiness: SecondaryReadiness::Optional,
             reason: SecondaryContextUnavailableReason::Stale,
         }));
@@ -1257,7 +1309,10 @@ fn required_and_optional_secondary_differ_for_the_same_stale_context() {
     let required_calls = Rc::new(RefCell::new(0));
     let optional_calls = Rc::new(RefCell::new(0));
     let mut required_runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::required("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::required(tf("1h"), 0)],
+        ),
         PortfolioState::new(1_000.0),
         0,
         CountingStrategyHandler::from_decisions(
@@ -1266,7 +1321,10 @@ fn required_and_optional_secondary_differ_for_the_same_stale_context() {
         ),
     );
     let mut optional_runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1m", [SecondaryTimeframeConfig::optional("1h", 0)]),
+        runtime_config_with_secondary_configs(
+            "1m",
+            [SecondaryTimeframeConfig::optional(tf("1h"), 0)],
+        ),
         PortfolioState::new(1_000.0),
         0,
         CountingStrategyHandler::from_decisions(
@@ -1300,7 +1358,7 @@ fn required_and_optional_secondary_differ_for_the_same_stale_context() {
         .events
         .contains(&RuntimeEvent::SecondaryContextUnavailable {
             candle: primary,
-            timeframe: "1h".into(),
+            timeframe: tf("1h"),
             readiness: SecondaryReadiness::Optional,
             reason: SecondaryContextUnavailableReason::Stale,
         }));
@@ -1313,7 +1371,10 @@ fn fine_secondary_freshness_uses_secondary_duration_not_primary_duration() {
     let primary = candle(180_001, "1h", 101.0);
     let calls = Rc::new(RefCell::new(0));
     let mut runtime = TradingRuntime::with_config(
-        runtime_config_with_secondary_configs("1h", [SecondaryTimeframeConfig::required("1m", 1)]),
+        runtime_config_with_secondary_configs(
+            "1h",
+            [SecondaryTimeframeConfig::required(tf("1m"), 1)],
+        ),
         PortfolioState::new(1_000.0),
         0,
         CountingStrategyHandler::from_decisions(
@@ -1342,13 +1403,13 @@ fn fine_secondary_freshness_uses_secondary_duration_not_primary_duration() {
             RuntimeEvent::StrategyTickBlocked {
                 candle: primary.clone(),
                 blocked_contexts: vec![BlockedSecondaryContext {
-                    timeframe: "1m".into(),
+                    timeframe: tf("1m"),
                     reason: SecondaryContextUnavailableReason::Stale,
                 }],
             },
             RuntimeEvent::TradableCandleCompleted,
         ]
     );
-    assert_eq!(runtime.market_history("1h"), Some(&[primary][..]));
-    assert_eq!(runtime.market_history("1m"), Some(&[secondary][..]));
+    assert_eq!(runtime.market_history(tf("1h")), Some(&[primary][..]));
+    assert_eq!(runtime.market_history(tf("1m")), Some(&[secondary][..]));
 }

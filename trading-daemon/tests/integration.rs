@@ -39,7 +39,7 @@ fn make_candle(ts: i64, close: f64) -> Candle {
         low: close - 1.0,
         close,
         volume: 1000.0,
-        timeframe: "1d".into(),
+        timeframe: "1d".parse().unwrap(),
     }
 }
 

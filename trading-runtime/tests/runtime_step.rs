@@ -1,3 +1,4 @@
+use shared::Timeframe;
 use trading_runtime::{
     BlockedSecondaryContext, ExitKind, RiskExitKind, RuntimeEvent, RuntimeStep,
     SecondaryContextUnavailableReason, StrategyDecision,
@@ -12,7 +13,7 @@ fn candle() -> shared::Candle {
         low: 99.0,
         close: 100.0,
         volume: 1_000.0,
-        timeframe: "1m".into(),
+        timeframe: Timeframe::minutes(1),
     }
 }
 
@@ -79,7 +80,7 @@ fn blocked_strategy_tick_can_complete_tradable_candle_without_strategy_output() 
             RuntimeEvent::StrategyTickBlocked {
                 candle: candle.clone(),
                 blocked_contexts: vec![BlockedSecondaryContext {
-                    timeframe: "1h".into(),
+                    timeframe: Timeframe::hours(1),
                     reason: SecondaryContextUnavailableReason::Missing,
                 }],
             },
@@ -94,7 +95,7 @@ fn blocked_strategy_tick_can_complete_tradable_candle_without_strategy_output() 
             blocked_contexts,
             ..
         } if blocked_contexts == &vec![BlockedSecondaryContext {
-            timeframe: "1h".into(),
+            timeframe: Timeframe::hours(1),
             reason: SecondaryContextUnavailableReason::Missing,
         }]
     )));

@@ -1,22 +1,22 @@
 //! Runtime-owned market history for one runtime asset.
 
 use crate::RuntimeConfig;
-use shared::Candle;
+use shared::{Candle, Timeframe};
 use std::collections::HashMap;
 
 /// DB-free market-data history grouped by configured timeframe.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarketState {
-    histories: HashMap<String, Vec<Candle>>,
+    histories: HashMap<Timeframe, Vec<Candle>>,
 }
 
 impl MarketState {
     pub(crate) fn from_config(config: &RuntimeConfig) -> Self {
         let mut histories = HashMap::new();
-        histories.insert(config.primary_timeframe.clone(), Vec::new());
+        histories.insert(config.primary_timeframe, Vec::new());
         for secondary in &config.secondary_timeframes {
             histories
-                .entry(secondary.timeframe.clone())
+                .entry(secondary.timeframe)
                 .or_insert_with(Vec::new);
         }
 
@@ -39,15 +39,15 @@ impl MarketState {
     }
 
     /// Inspect a configured timeframe's chronological candle history.
-    pub fn history(&self, timeframe: &str) -> Option<&[Candle]> {
+    pub fn history(&self, timeframe: Timeframe) -> Option<&[Candle]> {
         self.histories
-            .get(timeframe)
+            .get(&timeframe)
             .map(|history| history.as_slice())
     }
 
-    pub(crate) fn latest_completed_candle(&self, timeframe: &str) -> Option<&Candle> {
+    pub(crate) fn latest_completed_candle(&self, timeframe: Timeframe) -> Option<&Candle> {
         self.histories
-            .get(timeframe)
+            .get(&timeframe)
             .and_then(|history| history.last())
     }
 }

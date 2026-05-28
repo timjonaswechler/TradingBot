@@ -4,7 +4,7 @@ use crate::{
     ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RiskExitTriggered,
     RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision,
 };
-use shared::{Candle, Position};
+use shared::{Candle, Position, Timeframe};
 
 /// Why an explicit runner force-close command did not close a position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub enum SecondaryContextUnavailableReason {
 /// Required Secondary-Timeframe context that blocked a Primary Strategy Tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockedSecondaryContext {
-    pub timeframe: String,
+    pub timeframe: Timeframe,
     pub reason: SecondaryContextUnavailableReason,
 }
 
@@ -55,7 +55,7 @@ pub enum RuntimeEvent {
     },
     SecondaryContextUnavailable {
         candle: Candle,
-        timeframe: String,
+        timeframe: Timeframe,
         readiness: SecondaryReadiness,
         reason: SecondaryContextUnavailableReason,
     },
@@ -85,12 +85,12 @@ pub enum RuntimeEvent {
     StrategyTickCompleted,
     TradableCandleCompleted,
     WarmupAdvanced {
-        timeframe: String,
+        timeframe: Timeframe,
         current_warmup_input_count: usize,
         required_warmup_inputs: usize,
     },
     WarmupCompleted {
-        completed_timeframes: Vec<String>,
+        completed_timeframes: Vec<Timeframe>,
         required_warmup_inputs: usize,
     },
     ForceCloseRequested {
