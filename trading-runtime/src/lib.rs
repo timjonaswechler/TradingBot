@@ -24,6 +24,7 @@ pub mod risk_exit;
 pub mod runtime;
 pub mod step;
 pub mod strategy;
+pub mod strategy_config;
 
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
@@ -42,7 +43,6 @@ pub use portfolio::{
 };
 pub use rhai_strategy::{
     AnchoredConfiguration, RhaiStrategy, RhaiStrategyHooks, RhaiStrategyLoadError,
-    StrategyConfiguration,
 };
 pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;
@@ -52,3 +52,4 @@ pub use strategy::{
     MarketView, PredeterminedStrategyHandler, StrategyContext, StrategyError, StrategyHandler,
     StrategyState, StrategyStateValue, StrategyTickInput, StrategyTickResult,
 };
+pub use strategy_config::StrategyConfiguration;

@@ -1,5 +1,6 @@
 //! Runtime market-input boundary types.
 
+use crate::strategy_config::StrategyConfiguration;
 use shared::{Candle, Timeframe};
 
 /// Whether a configured Secondary Timeframe is required for Strategy Ticks.
@@ -101,6 +102,35 @@ impl RuntimeConfig {
 
     pub(crate) fn secondary_configs(&self) -> &[SecondaryTimeframeConfig] {
         &self.secondary_timeframes
+    }
+
+    /// Resolve strategy-declared configuration into this run configuration.
+    ///
+    /// Run Configuration remains authoritative: existing Secondary-Timeframe
+    /// entries keep their readiness/tolerance, and the runtime asset and Primary
+    /// Timeframe are never changed by Strategy Configuration. Strategy-declared
+    /// Secondary Timeframes that are absent from the run config are added.
+    pub fn merge_strategy_config(&self, strategy_config: &StrategyConfiguration) -> Self {
+        let mut resolved = self.clone();
+
+        for strategy_secondary in strategy_config.secondary_timeframes() {
+            if strategy_secondary.timeframe == resolved.primary_timeframe {
+                continue;
+            }
+
+            let run_config_has_timeframe = resolved
+                .secondary_timeframes
+                .iter()
+                .any(|run_secondary| run_secondary.timeframe == strategy_secondary.timeframe);
+
+            if !run_config_has_timeframe {
+                resolved
+                    .secondary_timeframes
+                    .push(strategy_secondary.clone());
+            }
+        }
+
+        resolved
     }
 }
 

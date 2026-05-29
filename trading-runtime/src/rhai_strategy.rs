@@ -6,34 +6,14 @@
 //! tick boundary. Secondary Market View access is implemented in a later slice.
 
 use crate::{
-    RuntimePortfolioSnapshot, StrategyDecision, StrategyError, StrategyHandler, StrategyState,
-    StrategyStateValue, StrategyTickInput, StrategyTickResult,
+    RuntimePortfolioSnapshot, SecondaryTimeframeConfig, StrategyConfiguration, StrategyDecision,
+    StrategyError, StrategyHandler, StrategyState, StrategyStateValue, StrategyTickInput,
+    StrategyTickResult,
 };
 use indicators::trend::sma::sma;
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
 use shared::{Candle, Position, Timeframe};
 use std::{error::Error, fmt, path::Path, sync::Arc};
-
-/// Typed strategy-declared configuration returned by `strategy_config()`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StrategyConfiguration {
-    minimum_warmup: usize,
-}
-
-impl StrategyConfiguration {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn minimum_warmup(&self) -> usize {
-        self.minimum_warmup
-    }
-
-    fn with_minimum_warmup(mut self, minimum_warmup: usize) -> Self {
-        self.minimum_warmup = minimum_warmup;
-        self
-    }
-}
 
 /// Placeholder typed anchored configuration returned by `anchored_config()`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -353,6 +333,7 @@ fn new_rhai_engine() -> RhaiEngine {
 
     engine.register_type_with_name::<Timeframe>("Timeframe");
     engine.register_type_with_name::<StrategyConfiguration>("StrategyConfig");
+    engine.register_type_with_name::<SecondaryTimeframeConfig>("SecondaryConfig");
     engine.register_type_with_name::<AnchoredConfiguration>("AnchoredConfig");
     engine.register_type_with_name::<StrategyDecision>("StrategyDecision");
     engine.register_type_with_name::<RhaiMarketView>("MarketView");
@@ -375,6 +356,8 @@ fn new_rhai_engine() -> RhaiEngine {
             with_minimum_warmup(config, minimum_warmup)
         },
     );
+    engine.register_fn("with_secondary", with_secondary);
+    engine.register_fn("with_max_missing_candles", with_max_missing_candles);
 
     engine.register_fn("__runtime_strategy_config_new", StrategyConfiguration::new);
     engine.register_fn("__runtime_anchored_config_new", AnchoredConfiguration::new);
@@ -382,6 +365,15 @@ fn new_rhai_engine() -> RhaiEngine {
     let mut strategy_config_module = Module::new();
     strategy_config_module.set_native_fn("new", || Ok(StrategyConfiguration::new()));
     engine.register_static_module("strategy_config", Arc::new(strategy_config_module));
+
+    let mut secondary_module = Module::new();
+    secondary_module.set_native_fn("required", |timeframe: Timeframe| {
+        Ok(SecondaryTimeframeConfig::required(timeframe, 0))
+    });
+    secondary_module.set_native_fn("optional", |timeframe: Timeframe| {
+        Ok(SecondaryTimeframeConfig::optional(timeframe, 0))
+    });
+    engine.register_static_module("secondary", Arc::new(secondary_module));
 
     let mut anchored_config_module = Module::new();
     anchored_config_module.set_native_fn("new", || Ok(AnchoredConfiguration::new()));
@@ -742,6 +734,24 @@ fn with_minimum_warmup(
     Ok(config.with_minimum_warmup(minimum_warmup))
 }
 
+fn with_secondary(
+    config: StrategyConfiguration,
+    secondary: SecondaryTimeframeConfig,
+) -> StrategyConfiguration {
+    config.with_secondary(secondary)
+}
+
+fn with_max_missing_candles(
+    mut secondary: SecondaryTimeframeConfig,
+    max_missing_candles: INT,
+) -> Result<SecondaryTimeframeConfig, Box<EvalAltResult>> {
+    secondary.max_missing_candles = u32::try_from(max_missing_candles).map_err(|_| {
+        "max missing candles must be a non-negative integer fitting u32".to_string()
+    })?;
+
+    Ok(secondary)
+}
+
 fn with_stop_loss(
     decision: StrategyDecision,
     stop_loss: FLOAT,
@@ -875,8 +885,8 @@ fn has_hook_with_arity(ast: &AST, name: &str, arity: usize) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        ExecutionAction, IgnoredDecisionReason, MarketInput, PortfolioState, RuntimeEvent,
-        StrategyDecisionIntent, TradingRuntime,
+        ExecutionAction, IgnoredDecisionReason, MarketInput, PortfolioState, RuntimeConfig,
+        RuntimeEvent, SecondaryReadiness, StrategyDecisionIntent, TradingRuntime,
     };
     use shared::{Candle, Timeframe};
 
@@ -1316,6 +1326,195 @@ fn on_tick(market, context) {
 
         assert!(strategy.hooks().has_strategy_config);
         assert_eq!(strategy.strategy_config().minimum_warmup(), 200);
+    }
+
+    #[test]
+    fn typed_strategy_config_extracts_required_and_optional_secondaries() {
+        let source = r#"
+const H1 = timeframe("1h");
+const D1 = timeframe("1d");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_minimum_warmup(200)
+        .with_secondary(
+            secondary::required(H1)
+                .with_max_missing_candles(1)
+        )
+        .with_secondary(
+            secondary::optional(D1)
+                .with_max_missing_candles(0)
+        )
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+
+        assert_eq!(strategy.strategy_config().minimum_warmup(), 200);
+        assert_eq!(
+            strategy.strategy_config().secondary_timeframes(),
+            &[
+                SecondaryTimeframeConfig::required(Timeframe::hours(1), 1),
+                SecondaryTimeframeConfig::optional(Timeframe::days(1), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_config_merge_adds_strategy_only_secondaries() {
+        let source = r#"
+const H1 = timeframe("1h");
+const D1 = timeframe("1d");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_secondary(secondary::required(H1).with_max_missing_candles(1))
+        .with_secondary(secondary::optional(D1).with_max_missing_candles(0))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let run_config = RuntimeConfig::single_timeframe("BTC-USD", Timeframe::minutes(1));
+
+        let resolved = run_config.merge_strategy_config(strategy.strategy_config());
+
+        assert_eq!(resolved.runtime_asset, "BTC-USD");
+        assert_eq!(resolved.primary_timeframe, Timeframe::minutes(1));
+        assert_eq!(
+            resolved.secondary_timeframes,
+            vec![
+                SecondaryTimeframeConfig::required(Timeframe::hours(1), 1),
+                SecondaryTimeframeConfig::optional(Timeframe::days(1), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_config_merge_preserves_run_config_only_secondaries() {
+        let run_config = RuntimeConfig::with_secondary_configs(
+            "BTC-USD",
+            Timeframe::minutes(1),
+            [SecondaryTimeframeConfig::optional(Timeframe::hours(1), 2)],
+        );
+
+        let resolved = run_config.merge_strategy_config(&StrategyConfiguration::default());
+
+        assert_eq!(resolved, run_config);
+    }
+
+    #[test]
+    fn runtime_config_wins_secondary_conflicts() {
+        let source = r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_secondary(secondary::required(H1).with_max_missing_candles(1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let run_config = RuntimeConfig::with_secondary_configs(
+            "BTC-USD",
+            Timeframe::minutes(1),
+            [SecondaryTimeframeConfig::optional(Timeframe::hours(1), 0)],
+        );
+
+        let resolved = run_config.merge_strategy_config(strategy.strategy_config());
+
+        assert_eq!(resolved.runtime_asset, "BTC-USD");
+        assert_eq!(resolved.primary_timeframe, Timeframe::minutes(1));
+        assert_eq!(
+            resolved.secondary_timeframes,
+            vec![SecondaryTimeframeConfig::optional(Timeframe::hours(1), 0)]
+        );
+        assert_eq!(
+            resolved.secondary_timeframes[0].readiness,
+            SecondaryReadiness::Optional
+        );
+    }
+
+    #[test]
+    fn strategy_config_cannot_change_runtime_asset_or_primary_timeframe() {
+        for forbidden in [
+            r#"strategy_config::new().with_runtime_asset("ETH-USD")"#,
+            r#"strategy_config::new().with_primary_timeframe(timeframe("1h"))"#,
+        ] {
+            let source = format!(
+                r#"
+fn strategy_config() {{
+    {forbidden}
+}}
+
+fn on_tick(market, context) {{
+    decision::hold()
+}}
+"#
+            );
+
+            let error = RhaiStrategy::load(&source).unwrap_err();
+
+            assert!(
+                matches!(error, RhaiStrategyLoadError::HookEvaluation { .. }),
+                "{forbidden}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_timeframe_in_strategy_config_fails_load() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_secondary(secondary::required(timeframe("15min")))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RhaiStrategyLoadError::HookEvaluation { .. }
+        ));
+        assert!(error.to_string().contains("invalid timeframe"));
+    }
+
+    #[test]
+    fn invalid_secondary_missing_candle_tolerance_fails_load() {
+        let source = r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_secondary(secondary::required(H1).with_max_missing_candles(-1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RhaiStrategyLoadError::HookEvaluation { .. }
+        ));
+        assert!(error.to_string().contains("max missing candles"));
     }
 
     #[test]
