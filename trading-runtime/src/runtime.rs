@@ -202,7 +202,12 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
         let portfolio_before_decision = self.portfolio.snapshot(candle.close);
         let tick_input = StrategyTickInput {
-            market: MarketView::new(&self.market_state, self.config.primary_timeframe, &candle),
+            market: MarketView::new(
+                &self.market_state,
+                self.config.primary_timeframe,
+                self.config.secondary_configs(),
+                &candle,
+            ),
             context: StrategyContext {
                 portfolio: &portfolio_before_decision,
                 state: &mut self.strategy_state,

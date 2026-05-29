@@ -4,12 +4,13 @@
 //! strategy-decision planning, runtime-local portfolio state, realized-cash
 //! portfolio transitions, explicit force-close commands, warmup progression,
 //! ordered runner-neutral runtime events, Rhai strategy loading/hook validation,
-//! typed Rhai decisions, grouped Rhai Strategy Context/Strategy State, and
+//! typed Rhai decisions, grouped Rhai Strategy Context/Strategy State, typed
+//! Rhai Market View access for configured Primary/Secondary timeframes, and
 //! [`RuntimeStep`] return values.
 //!
 //! This slice intentionally does not include database persistence, live-daemon or
 //! backtester wiring, real broker execution, dynamic risk updates, or the full
-//! typed Market View Rhai API.
+//! live/backtester migration.
 //! The old `engine` crate remains only donor material for strategy-handling
 //! behavior; this crate must stay independent from it.
 

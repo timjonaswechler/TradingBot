@@ -6,6 +6,34 @@ It is intentionally limited to what strategy authors can use today through
 `on_tick`, `anchored_config`, `candles`, `context`, and `indicators::...`.
 Not every Rust helper in `indicators/` is exposed to Rhai.
 
+## Typed Trading Runtime Market View
+
+The new `trading-runtime` Rhai path uses typed hooks and values:
+
+```rhai
+const H1 = timeframe("1h");
+
+fn on_tick(market, context) {
+    let primary = market.candle();
+    let h1 = market.candle(H1);
+    let h1_history = market.candles(H1);
+
+    if h1 == () || h1_history == () {
+        return decision::hold().with_reason("optional H1 unavailable");
+    }
+
+    let h1_sma = indicators::sma(h1_history, 20);
+    decision::hold()
+}
+```
+
+- `market.candle()` / `market.candles()` read the Primary Timeframe.
+- `market.candle(tf)` / `market.candles(tf)` accept typed `Timeframe` values from `timeframe("1h")`.
+- Candle histories are 1-indexed and newest-first: `[1]` is the newest candle in that timeframe.
+- Optional Secondary-Timeframe context that is missing or stale returns `()` from both `market.candle(tf)` and `market.candles(tf)`.
+- Required unavailable Secondary-Timeframe context is blocked by runtime readiness before `on_tick` is called.
+- Accessing an unconfigured timeframe is a Strategy Error.
+
 ## Strategy file contract
 
 Every strategy must define:

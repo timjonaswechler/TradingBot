@@ -1,6 +1,6 @@
 //! Strategy tick boundary abstractions for the trading runtime.
 
-use crate::{MarketState, RuntimePortfolioSnapshot, StrategyDecision};
+use crate::{MarketState, RuntimePortfolioSnapshot, SecondaryTimeframeConfig, StrategyDecision};
 use shared::{Candle, Timeframe};
 use std::{
     collections::{HashMap, VecDeque},
@@ -12,6 +12,7 @@ use std::{
 pub struct MarketView<'a> {
     market_state: &'a MarketState,
     primary_timeframe: Timeframe,
+    secondary_timeframes: &'a [SecondaryTimeframeConfig],
     primary_candle: &'a Candle,
 }
 
@@ -19,11 +20,13 @@ impl<'a> MarketView<'a> {
     pub(crate) fn new(
         market_state: &'a MarketState,
         primary_timeframe: Timeframe,
+        secondary_timeframes: &'a [SecondaryTimeframeConfig],
         primary_candle: &'a Candle,
     ) -> Self {
         Self {
             market_state,
             primary_timeframe,
+            secondary_timeframes,
             primary_candle,
         }
     }
@@ -38,11 +41,57 @@ impl<'a> MarketView<'a> {
         self.primary_candle
     }
 
+    /// All timeframes configured for this Market View.
+    pub fn configured_timeframes(&self) -> impl Iterator<Item = Timeframe> + '_ {
+        std::iter::once(self.primary_timeframe).chain(
+            self.secondary_timeframes
+                .iter()
+                .map(|secondary| secondary.timeframe),
+        )
+    }
+
     /// Chronological Primary Timeframe history visible to this Strategy Tick.
     pub fn primary_history(&self) -> &'a [Candle] {
         self.market_state
             .history(self.primary_timeframe)
             .expect("primary timeframe history should be configured")
+    }
+
+    /// Visible candle history for a configured timeframe.
+    ///
+    /// Primary history is always visible. Secondary history is visible only when
+    /// the configured Secondary context is currently available/fresh for this
+    /// Strategy Tick. Unavailable optional Secondary context returns `Ok(None)`;
+    /// unconfigured timeframe access returns a strategy-facing error.
+    pub fn visible_history(
+        &self,
+        timeframe: Timeframe,
+    ) -> Result<Option<&'a [Candle]>, MarketViewTimeframeError> {
+        if timeframe == self.primary_timeframe {
+            return Ok(Some(self.primary_history()));
+        }
+
+        let secondary = self
+            .secondary_timeframes
+            .iter()
+            .find(|secondary| secondary.timeframe == timeframe)
+            .ok_or(MarketViewTimeframeError::UnconfiguredTimeframe { timeframe })?;
+
+        if self.secondary_context_is_unavailable(secondary) {
+            Ok(None)
+        } else {
+            Ok(self.market_state.history(timeframe))
+        }
+    }
+
+    /// Latest candle currently visible for a configured timeframe.
+    pub fn visible_latest_candle(
+        &self,
+        timeframe: Timeframe,
+    ) -> Result<Option<&'a Candle>, MarketViewTimeframeError> {
+        Ok(self
+            .visible_history(timeframe)?
+            .and_then(|history| history.last()))
     }
 
     /// Latest candle currently held by Market State for a configured timeframe.
@@ -51,7 +100,38 @@ impl<'a> MarketView<'a> {
             .history(timeframe)
             .and_then(|history| history.last())
     }
+
+    fn secondary_context_is_unavailable(&self, secondary: &SecondaryTimeframeConfig) -> bool {
+        let Some(latest_secondary) = self.latest_candle(secondary.timeframe) else {
+            return true;
+        };
+
+        let duration_ms = secondary.timeframe.duration_ms();
+        let allowed_until = latest_secondary.timestamp.saturating_add(
+            duration_ms.saturating_mul(i64::from(secondary.max_missing_candles) + 1),
+        );
+
+        self.primary_candle.timestamp > allowed_until
+    }
 }
+
+/// Strategy-facing Market View timeframe access error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarketViewTimeframeError {
+    UnconfiguredTimeframe { timeframe: Timeframe },
+}
+
+impl std::fmt::Display for MarketViewTimeframeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnconfiguredTimeframe { timeframe } => {
+                write!(formatter, "unconfigured timeframe `{timeframe}`")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MarketViewTimeframeError {}
 
 /// Primitive value stored in session-local Strategy State.
 #[derive(Debug, Clone, PartialEq)]

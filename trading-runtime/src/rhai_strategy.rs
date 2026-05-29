@@ -2,8 +2,10 @@
 //!
 //! This module owns compile/load-time Rhai strategy handling inside the
 //! `trading-runtime` crate, the typed decision API, grouped Strategy Context /
-//! Strategy State, and the Primary-Timeframe Market View used at the strategy
-//! tick boundary. Secondary Market View access is implemented in a later slice.
+//! Strategy State, and the typed Primary/Secondary-Timeframe Market View used
+//! at the strategy tick boundary. Optional Secondary-Timeframe `candle(tf)` and
+//! `candles(tf)` access returns Rhai unit `()` when that context is missing or
+//! stale for the current Strategy Tick.
 
 use crate::{
     RuntimePortfolioSnapshot, SecondaryTimeframeConfig, StrategyConfiguration, StrategyDecision,
@@ -13,7 +15,7 @@ use crate::{
 use indicators::trend::sma::sma;
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
 use shared::{Candle, Position, Timeframe};
-use std::{error::Error, fmt, path::Path, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt, path::Path, sync::Arc};
 
 /// Placeholder typed anchored configuration returned by `anchored_config()`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -47,13 +49,49 @@ pub struct RhaiStrategy {
 struct RhaiMarketView {
     current: RhaiCandle,
     primary_history: RhaiCandleHistory,
+    histories_by_timeframe: HashMap<Timeframe, Option<RhaiCandleHistory>>,
 }
 
 impl RhaiMarketView {
     fn from_runtime(market: &crate::MarketView<'_>) -> Self {
-        Self {
+        let primary_history = RhaiCandleHistory::new(market.primary_history().to_vec());
+        let mut view = Self {
             current: RhaiCandle::new(market.primary_candle().clone()),
-            primary_history: RhaiCandleHistory::new(market.primary_history().to_vec()),
+            primary_history: primary_history.clone(),
+            histories_by_timeframe: HashMap::from([(
+                market.primary_timeframe(),
+                Some(primary_history),
+            )]),
+        };
+
+        for timeframe in market.configured_timeframes() {
+            if timeframe == market.primary_timeframe() {
+                continue;
+            }
+
+            let history = market
+                .visible_history(timeframe)
+                .expect("configured timeframe should be visible or unavailable");
+            view.insert_visible_history(timeframe, history);
+        }
+
+        view
+    }
+
+    fn insert_visible_history(&mut self, timeframe: Timeframe, history: Option<&[Candle]>) {
+        self.histories_by_timeframe.insert(
+            timeframe,
+            history.map(|candles| RhaiCandleHistory::new(candles.to_vec())),
+        );
+    }
+
+    fn visible_history(
+        &self,
+        timeframe: Timeframe,
+    ) -> Result<Option<RhaiCandleHistory>, Box<EvalAltResult>> {
+        match self.histories_by_timeframe.get(&timeframe) {
+            Some(history) => Ok(history.clone()),
+            None => Err(format!("unconfigured timeframe `{timeframe}`").into()),
         }
     }
 }
@@ -79,6 +117,10 @@ impl RhaiCandleHistory {
         Self {
             candles: Arc::new(candles),
         }
+    }
+
+    fn latest_candle(&self) -> Option<RhaiCandle> {
+        self.candles.last().cloned().map(RhaiCandle::new)
     }
 
     fn chronological_candles_before_offset(&self, offset: usize) -> &[Candle] {
@@ -575,9 +617,32 @@ fn register_market_view_api(engine: &mut RhaiEngine) {
     engine.register_fn("candle", |market: &mut RhaiMarketView| {
         market.current.clone()
     });
+    engine.register_fn(
+        "candle",
+        |market: &mut RhaiMarketView,
+         timeframe: Timeframe|
+         -> Result<Dynamic, Box<EvalAltResult>> {
+            Ok(market
+                .visible_history(timeframe)?
+                .and_then(|history| history.latest_candle())
+                .map(Dynamic::from)
+                .unwrap_or(Dynamic::UNIT))
+        },
+    );
     engine.register_fn("candles", |market: &mut RhaiMarketView| {
         market.primary_history.clone()
     });
+    engine.register_fn(
+        "candles",
+        |market: &mut RhaiMarketView,
+         timeframe: Timeframe|
+         -> Result<Dynamic, Box<EvalAltResult>> {
+            Ok(market
+                .visible_history(timeframe)?
+                .map(Dynamic::from)
+                .unwrap_or(Dynamic::UNIT))
+        },
+    );
 
     engine.register_get("open", |candle: &mut RhaiCandle| candle.candle.open);
     engine.register_get("high", |candle: &mut RhaiCandle| candle.candle.high);
@@ -897,15 +962,19 @@ fn on_tick(market, context) {
 "#;
 
     fn candle(close: f64) -> Candle {
+        candle_at(close, 1, Timeframe::minutes(1))
+    }
+
+    fn candle_at(close: f64, timestamp: i64, timeframe: Timeframe) -> Candle {
         Candle {
-            timestamp: 1,
+            timestamp,
             symbol: "BTC-USD".into(),
             open: close,
             high: close,
             low: close,
             close,
             volume: 1_000.0,
-            timeframe: Timeframe::minutes(1),
+            timeframe,
         }
     }
 
@@ -1207,6 +1276,249 @@ if previous != () && previous.close == 99.0 {
             produced_decision(&first_strategy_tick),
             StrategyDecision::open_long(1.0)
         );
+    }
+
+    #[test]
+    fn market_view_reads_available_secondary_candle_and_history_by_typed_timeframe() {
+        let source = r#"
+const H1 = timeframe("1h");
+
+fn on_tick(market, context) {
+    let h1 = market.candle(H1);
+    let h1_history = market.candles(H1);
+
+    if h1 != ()
+            && h1_history[1] != ()
+            && h1_history[2] != ()
+            && h1.close == 200.0
+            && h1_history[1].close == 200.0
+            && h1_history[2].close == 150.0 {
+        decision::open_long(1.0)
+    } else {
+        decision::hold()
+    }
+}
+"#;
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::with_config(
+            RuntimeConfig::with_secondary_configs(
+                "BTC-USD",
+                Timeframe::minutes(1),
+                [SecondaryTimeframeConfig::required(Timeframe::hours(1), 0)],
+            ),
+            PortfolioState::new(1_000.0),
+            0,
+            strategy,
+        );
+
+        runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                150.0,
+                0,
+                Timeframe::hours(1),
+            )))
+            .expect("first secondary candle should be accepted");
+        runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                200.0,
+                3_600_000,
+                Timeframe::hours(1),
+            )))
+            .expect("second secondary candle should be accepted");
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                100.0,
+                3_600_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("primary candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn optional_secondary_missing_returns_unit_for_candle_and_candles() {
+        let source = source_returning(
+            r#"
+let H1 = timeframe("1h");
+if market.candle(H1) == () && market.candles(H1) == () {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::with_config(
+            RuntimeConfig::with_secondary_configs(
+                "BTC-USD",
+                Timeframe::minutes(1),
+                [SecondaryTimeframeConfig::optional(Timeframe::hours(1), 0)],
+            ),
+            PortfolioState::new(1_000.0),
+            0,
+            strategy,
+        );
+
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                100.0,
+                60_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("primary candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn optional_secondary_stale_returns_unit_for_candle_and_candles() {
+        let source = source_returning(
+            r#"
+let H1 = timeframe("1h");
+if market.candle(H1) == () && market.candles(H1) == () {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::with_config(
+            RuntimeConfig::with_secondary_configs(
+                "BTC-USD",
+                Timeframe::minutes(1),
+                [SecondaryTimeframeConfig::optional(Timeframe::hours(1), 0)],
+            ),
+            PortfolioState::new(1_000.0),
+            0,
+            strategy,
+        );
+
+        runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                150.0,
+                0,
+                Timeframe::hours(1),
+            )))
+            .expect("secondary candle should be accepted");
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                100.0,
+                3_600_001,
+                Timeframe::minutes(1),
+            )))
+            .expect("primary candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn required_secondary_missing_blocks_before_rhai_on_tick() {
+        let source = source_returning("decision::open_long(1.0)");
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::with_config(
+            RuntimeConfig::with_secondary_configs(
+                "BTC-USD",
+                Timeframe::minutes(1),
+                [SecondaryTimeframeConfig::required(Timeframe::hours(1), 0)],
+            ),
+            PortfolioState::new(1_000.0),
+            0,
+            strategy,
+        );
+
+        let primary = candle_at(100.0, 60_000, Timeframe::minutes(1));
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(primary.clone()))
+            .expect("primary candle should be accepted");
+
+        assert!(step.events.contains(&RuntimeEvent::StrategyTickBlocked {
+            candle: primary,
+            blocked_contexts: vec![crate::BlockedSecondaryContext {
+                timeframe: Timeframe::hours(1),
+                reason: crate::SecondaryContextUnavailableReason::Missing,
+            }],
+        }));
+        assert!(!step.events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::StrategyTickStarted { .. }
+                | RuntimeEvent::StrategyDecisionProduced { .. }
+                | RuntimeEvent::PositionOpened { .. }
+        )));
+    }
+
+    #[test]
+    fn unconfigured_typed_timeframe_access_is_strategy_error_without_portfolio_transition() {
+        for access in ["market.candle(H4)", "market.candles(H4)"] {
+            let source = source_returning(&format!(
+                r#"
+let H4 = timeframe("4h");
+let ignored = {access};
+decision::open_long(1.0)
+"#
+            ));
+            let step = run_completed_tick(&source);
+            let message = strategy_error_message(&step);
+
+            assert!(message.contains("unconfigured timeframe `4h`"), "{message}");
+            assert!(!step.events.iter().any(|event| matches!(
+                event,
+                RuntimeEvent::StrategyDecisionProduced { .. }
+                    | RuntimeEvent::ExecutionActionPlanned { .. }
+                    | RuntimeEvent::PositionOpened { .. }
+            )));
+        }
+    }
+
+    #[test]
+    fn indicators_work_over_secondary_history() {
+        let source = source_returning(
+            r#"
+let H1 = timeframe("1h");
+let average = indicators::sma(market.candles(H1), 2);
+if average != () && average == 175.0 {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::with_config(
+            RuntimeConfig::with_secondary_configs(
+                "BTC-USD",
+                Timeframe::minutes(1),
+                [SecondaryTimeframeConfig::required(Timeframe::hours(1), 0)],
+            ),
+            PortfolioState::new(1_000.0),
+            0,
+            strategy,
+        );
+
+        runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                150.0,
+                0,
+                Timeframe::hours(1),
+            )))
+            .expect("first secondary candle should be accepted");
+        runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                200.0,
+                3_600_000,
+                Timeframe::hours(1),
+            )))
+            .expect("second secondary candle should be accepted");
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                100.0,
+                3_600_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("primary candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
     }
 
     #[test]
