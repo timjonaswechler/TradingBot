@@ -26,6 +26,7 @@ pub mod runtime;
 pub mod step;
 pub mod strategy;
 pub mod strategy_config;
+pub mod warmup;
 
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
@@ -54,3 +55,4 @@ pub use strategy::{
     StrategyState, StrategyStateValue, StrategyTickInput, StrategyTickResult,
 };
 pub use strategy_config::StrategyConfiguration;
+pub use warmup::{detect_auto_warmup, resolve_effective_warmup, resolve_warmup_plan, WarmupPlan};
