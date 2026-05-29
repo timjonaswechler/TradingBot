@@ -38,6 +38,13 @@ impl<'a> MarketView<'a> {
         self.primary_candle
     }
 
+    /// Chronological Primary Timeframe history visible to this Strategy Tick.
+    pub fn primary_history(&self) -> &'a [Candle] {
+        self.market_state
+            .history(self.primary_timeframe)
+            .expect("primary timeframe history should be configured")
+    }
+
     /// Latest candle currently held by Market State for a configured timeframe.
     pub fn latest_candle(&self, timeframe: Timeframe) -> Option<&'a Candle> {
         self.market_state
