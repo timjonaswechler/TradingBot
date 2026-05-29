@@ -14,6 +14,7 @@
 //! The old `engine` crate remains only donor material for strategy-handling
 //! behavior; this crate must stay independent from it.
 
+pub mod anchored;
 pub mod decision;
 pub mod events;
 pub mod execution;
@@ -28,6 +29,11 @@ pub mod strategy;
 pub mod strategy_config;
 pub mod warmup;
 
+pub use anchored::{
+    AnchoredConfiguration, AnchoredConfigurationError, AnchoredDetectorSpec,
+    AnchoredEvaluatorConfiguration, AnchoredEvaluatorSpec, AnchoredOutput, AnchoredOutputs,
+    AnchoredRuntime, PivotDetectorConfiguration, PivotEvent, PivotSide,
+};
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
@@ -43,9 +49,7 @@ pub use market_state::MarketState;
 pub use portfolio::{
     ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,
 };
-pub use rhai_strategy::{
-    AnchoredConfiguration, RhaiStrategy, RhaiStrategyHooks, RhaiStrategyLoadError,
-};
+pub use rhai_strategy::{RhaiStrategy, RhaiStrategyHooks, RhaiStrategyLoadError};
 pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;
 pub use shared::{Timeframe, TimeframeParseError, TimeframeUnit};

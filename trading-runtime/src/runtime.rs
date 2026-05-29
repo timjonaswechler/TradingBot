@@ -101,6 +101,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     fn on_completed_primary_before_warmup_complete(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
+        self.notify_strategy_market_input_accepted(&candle);
 
         RuntimeStep::new(
             vec![RuntimeEvent::MarketInputAccepted {
@@ -112,6 +113,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     fn on_secondary_completed_candle(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
+        self.notify_strategy_market_input_accepted(&candle);
 
         RuntimeStep::new(
             vec![RuntimeEvent::MarketInputAccepted {
@@ -123,6 +125,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     pub fn on_warmup_input(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
+        self.notify_strategy_market_input_accepted(&candle);
         let timeframe = candle.timeframe;
         let current_warmup_input_count = self.advance_warmup_progress(timeframe);
 
@@ -149,6 +152,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     fn handle_completed_primary_after_warmup(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
+        self.notify_strategy_market_input_accepted(&candle);
 
         let mut events = vec![RuntimeEvent::MarketInputAccepted {
             candle: candle.clone(),
@@ -393,6 +397,14 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     fn required_warmup_inputs(&self, timeframe: Timeframe) -> usize {
         self.warmup_plan.requirement_for(timeframe).unwrap_or(0)
+    }
+
+    fn notify_strategy_market_input_accepted(&mut self, candle: &Candle) {
+        self.strategy_handler.on_market_input_accepted(
+            &self.market_state,
+            candle,
+            self.config.primary_timeframe,
+        );
     }
 
     fn advance_warmup_progress(&mut self, timeframe: Timeframe) -> usize {

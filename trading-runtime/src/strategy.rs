@@ -231,6 +231,18 @@ impl From<StrategyDecision> for StrategyTickResult {
 
 /// Strategy Tick evaluator used by the runtime.
 pub trait StrategyHandler {
+    /// Notify Strategy Handling that market input has been accepted into Runtime Market State.
+    ///
+    /// Rhai-backed handlers use this to update runtime-owned Compute State such as
+    /// anchored/structure-aware outputs. Test handlers can keep the default no-op.
+    fn on_market_input_accepted(
+        &mut self,
+        _market_state: &MarketState,
+        _candle: &Candle,
+        _primary_timeframe: Timeframe,
+    ) {
+    }
+
     fn on_tick(&mut self, input: StrategyTickInput<'_>) -> StrategyTickResult;
 }
 

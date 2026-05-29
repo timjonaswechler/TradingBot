@@ -8,24 +8,16 @@
 //! stale for the current Strategy Tick.
 
 use crate::{
+    AnchoredConfiguration, AnchoredEvaluatorConfiguration, AnchoredOutput, AnchoredOutputs,
+    AnchoredRuntime, MarketState, PivotDetectorConfiguration, PivotEvent, PivotSide,
     RuntimePortfolioSnapshot, SecondaryTimeframeConfig, StrategyConfiguration, StrategyDecision,
     StrategyError, StrategyHandler, StrategyState, StrategyStateValue, StrategyTickInput,
     StrategyTickResult,
 };
-use indicators::trend::sma::sma;
+use indicators::{anchored::evaluators::TrendLine, trend::sma::sma};
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
 use shared::{Candle, Position, Timeframe};
 use std::{collections::HashMap, error::Error, fmt, path::Path, sync::Arc};
-
-/// Placeholder typed anchored configuration returned by `anchored_config()`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AnchoredConfiguration;
-
-impl AnchoredConfiguration {
-    pub fn new() -> Self {
-        Self
-    }
-}
 
 /// Strategy hooks detected during Rhai strategy loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +35,7 @@ pub struct RhaiStrategy {
     hooks: RhaiStrategyHooks,
     strategy_config: StrategyConfiguration,
     anchored_config: Option<AnchoredConfiguration>,
+    anchored_runtime: Option<AnchoredRuntime>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,10 +43,14 @@ struct RhaiMarketView {
     current: RhaiCandle,
     primary_history: RhaiCandleHistory,
     histories_by_timeframe: HashMap<Timeframe, Option<RhaiCandleHistory>>,
+    anchored_outputs: Option<AnchoredOutputs>,
 }
 
 impl RhaiMarketView {
-    fn from_runtime(market: &crate::MarketView<'_>) -> Self {
+    fn from_runtime(
+        market: &crate::MarketView<'_>,
+        anchored_outputs: Option<AnchoredOutputs>,
+    ) -> Self {
         let primary_history = RhaiCandleHistory::new(market.primary_history().to_vec());
         let mut view = Self {
             current: RhaiCandle::new(market.primary_candle().clone()),
@@ -62,6 +59,7 @@ impl RhaiMarketView {
                 market.primary_timeframe(),
                 Some(primary_history),
             )]),
+            anchored_outputs,
         };
 
         for timeframe in market.configured_timeframes() {
@@ -136,6 +134,28 @@ impl RhaiCandleHistory {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RhaiTrendLine {
+    line: TrendLine,
+}
+
+impl RhaiTrendLine {
+    fn new(line: TrendLine) -> Self {
+        Self { line }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RhaiPivotEvent {
+    event: PivotEvent,
+}
+
+impl RhaiPivotEvent {
+    fn new(event: PivotEvent) -> Self {
+        Self { event }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RhaiStrategyContext {
     portfolio: RhaiPortfolioSnapshot,
@@ -182,8 +202,32 @@ impl RhaiPosition {
 }
 
 impl StrategyHandler for RhaiStrategy {
+    fn on_market_input_accepted(
+        &mut self,
+        market_state: &MarketState,
+        candle: &Candle,
+        primary_timeframe: Timeframe,
+    ) {
+        let Some(runtime) = &mut self.anchored_runtime else {
+            return;
+        };
+        if candle.timeframe != primary_timeframe {
+            return;
+        }
+        let Some(history) = market_state.history(primary_timeframe) else {
+            return;
+        };
+
+        runtime.on_market_input_accepted(candle, history);
+    }
+
     fn on_tick(&mut self, input: StrategyTickInput<'_>) -> StrategyTickResult {
-        let market = RhaiMarketView::from_runtime(&input.market);
+        let market = RhaiMarketView::from_runtime(
+            &input.market,
+            self.anchored_runtime
+                .as_ref()
+                .map(|runtime| runtime.outputs().clone()),
+        );
         let context =
             RhaiStrategyContext::from_runtime(input.context.portfolio, input.context.state);
 
@@ -246,6 +290,15 @@ impl RhaiStrategy {
         } else {
             None
         };
+        let anchored_runtime = anchored_config
+            .as_ref()
+            .filter(|config| !config.is_empty())
+            .map(AnchoredRuntime::from_config)
+            .transpose()
+            .map_err(|error| RhaiStrategyLoadError::HookEvaluation {
+                hook: ANCHORED_CONFIG_HOOK,
+                message: error.to_string(),
+            })?;
 
         let hooks = RhaiStrategyHooks {
             has_on_tick: true,
@@ -260,6 +313,7 @@ impl RhaiStrategy {
             hooks,
             strategy_config,
             anchored_config,
+            anchored_runtime,
         })
     }
 
@@ -377,6 +431,11 @@ fn new_rhai_engine() -> RhaiEngine {
     engine.register_type_with_name::<StrategyConfiguration>("StrategyConfig");
     engine.register_type_with_name::<SecondaryTimeframeConfig>("SecondaryConfig");
     engine.register_type_with_name::<AnchoredConfiguration>("AnchoredConfig");
+    engine.register_type_with_name::<PivotDetectorConfiguration>("PivotDetectorConfig");
+    engine.register_type_with_name::<AnchoredEvaluatorConfiguration>("AnchoredEvaluatorConfig");
+    engine.register_type_with_name::<PivotSide>("PivotSide");
+    engine.register_type_with_name::<RhaiTrendLine>("TrendLine");
+    engine.register_type_with_name::<RhaiPivotEvent>("PivotEvent");
     engine.register_type_with_name::<StrategyDecision>("StrategyDecision");
     engine.register_type_with_name::<RhaiMarketView>("MarketView");
     engine.register_type_with_name::<RhaiCandle>("Candle");
@@ -389,6 +448,7 @@ fn new_rhai_engine() -> RhaiEngine {
     register_market_view_api(&mut engine);
     register_strategy_context_api(&mut engine);
     register_indicator_api(&mut engine);
+    register_anchored_api(&mut engine);
 
     engine.register_fn("timeframe", parse_timeframe);
     engine.register_fn("==", |left: Timeframe, right: Timeframe| left == right);
@@ -400,9 +460,19 @@ fn new_rhai_engine() -> RhaiEngine {
     );
     engine.register_fn("with_secondary", with_secondary);
     engine.register_fn("with_max_missing_candles", with_max_missing_candles);
+    engine.register_fn("with_detector", anchored_config_with_detector);
+    engine.register_fn("with_evaluator", anchored_config_with_evaluator);
+    engine.register_fn("with_left_bars", pivot_detector_with_left_bars);
+    engine.register_fn("with_right_bars", pivot_detector_with_right_bars);
+    engine.register_fn("with_side", anchored_evaluator_with_side);
+    engine.register_fn("with_pivot_buffer", anchored_evaluator_with_pivot_buffer);
+    engine.register_fn("with_tolerance", anchored_evaluator_with_tolerance);
+    engine.register_fn("with_min_touches", anchored_evaluator_with_min_touches);
+    engine.register_fn("with_max_lines", anchored_evaluator_with_max_lines);
 
     engine.register_fn("__runtime_strategy_config_new", StrategyConfiguration::new);
     engine.register_fn("__runtime_anchored_config_new", AnchoredConfiguration::new);
+    engine.register_fn("__runtime_pivot_detector_new", pivot_detector_new);
 
     let mut strategy_config_module = Module::new();
     strategy_config_module.set_native_fn("new", || Ok(StrategyConfiguration::new()));
@@ -420,6 +490,24 @@ fn new_rhai_engine() -> RhaiEngine {
     let mut anchored_config_module = Module::new();
     anchored_config_module.set_native_fn("new", || Ok(AnchoredConfiguration::new()));
     engine.register_static_module("anchored_config", Arc::new(anchored_config_module));
+
+    let mut pivot_detector_module = Module::new();
+    pivot_detector_module.set_native_fn("new", |id: &str| Ok(PivotDetectorConfiguration::new(id)));
+    engine.register_static_module("pivot_detector", Arc::new(pivot_detector_module));
+
+    let mut pivot_side_module = Module::new();
+    pivot_side_module.set_native_fn("high", || Ok(PivotSide::high()));
+    pivot_side_module.set_native_fn("low", || Ok(PivotSide::low()));
+    engine.register_static_module("pivot_side", Arc::new(pivot_side_module));
+
+    let mut anchored_module = Module::new();
+    anchored_module.set_native_fn("trendline", |expose_as: &str, pivot_source: &str| {
+        Ok(AnchoredEvaluatorConfiguration::trendline(
+            expose_as,
+            pivot_source,
+        ))
+    });
+    engine.register_static_module("anchored", Arc::new(anchored_module));
 
     let mut decision_module = Module::new();
     decision_module.set_native_fn("hold", || Ok(StrategyDecision::hold()));
@@ -452,9 +540,10 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
     // lower only these approved typed constructors to private runtime function
     // names before compilation. This is intentionally lexical enough to avoid
     // rewriting string literals or comments.
-    const REPLACEMENTS: [(&str, &str); 2] = [
+    const REPLACEMENTS: [(&str, &str); 3] = [
         ("strategy_config::new(", "__runtime_strategy_config_new("),
         ("anchored_config::new(", "__runtime_anchored_config_new("),
+        ("pivot_detector::new(", "__runtime_pivot_detector_new("),
     ];
 
     let mut output = String::with_capacity(source.len());
@@ -677,6 +766,76 @@ fn register_market_view_api(engine: &mut RhaiEngine) {
     });
 }
 
+fn register_anchored_api(engine: &mut RhaiEngine) {
+    engine.register_fn(
+        "anchored",
+        |market: &mut RhaiMarketView, name: &str| -> Dynamic {
+            let Some(outputs) = &market.anchored_outputs else {
+                return Dynamic::UNIT;
+            };
+
+            match outputs.values.get(name) {
+                Some(AnchoredOutput::Trendlines(lines)) => {
+                    let lines: rhai::Array = lines
+                        .iter()
+                        .copied()
+                        .map(|line| Dynamic::from(RhaiTrendLine::new(line)))
+                        .collect();
+                    Dynamic::from(lines)
+                }
+                None => Dynamic::UNIT,
+            }
+        },
+    );
+    engine.register_fn(
+        "last_pivot",
+        |market: &mut RhaiMarketView, detector_id: &str, side: PivotSide| -> Dynamic {
+            let Some(outputs) = &market.anchored_outputs else {
+                return Dynamic::UNIT;
+            };
+
+            let event = match side {
+                PivotSide::High => outputs.last_pivot_high.get(detector_id),
+                PivotSide::Low => outputs.last_pivot_low.get(detector_id),
+            };
+
+            event
+                .copied()
+                .map(|event| Dynamic::from(RhaiPivotEvent::new(event)))
+                .unwrap_or(Dynamic::UNIT)
+        },
+    );
+
+    engine.register_get("slope", |line: &mut RhaiTrendLine| line.line.slope);
+    engine.register_get("intercept", |line: &mut RhaiTrendLine| line.line.intercept);
+    engine.register_get("touches", |line: &mut RhaiTrendLine| {
+        line.line.touches as INT
+    });
+    engine.register_get("anchor_start_bar", |line: &mut RhaiTrendLine| {
+        line.line.anchor_start_bar as INT
+    });
+    engine.register_get("anchor_end_bar", |line: &mut RhaiTrendLine| {
+        line.line.anchor_end_bar as INT
+    });
+    engine.register_get("side", |line: &mut RhaiTrendLine| match line.line.side {
+        indicators::anchored::evaluators::TrendlineSide::Resistance => "resistance".to_string(),
+        indicators::anchored::evaluators::TrendlineSide::Support => "support".to_string(),
+    });
+    engine.register_fn("y_at", |line: &mut RhaiTrendLine, bar: INT| {
+        line.line.y_at(bar.max(0) as u64)
+    });
+
+    engine.register_get("bar", |pivot: &mut RhaiPivotEvent| pivot.event.bar as INT);
+    engine.register_get("price", |pivot: &mut RhaiPivotEvent| pivot.event.price);
+    engine.register_get("volume", |pivot: &mut RhaiPivotEvent| pivot.event.volume);
+    engine.register_get("side", |pivot: &mut RhaiPivotEvent| {
+        match pivot.event.side {
+            PivotSide::High => "high".to_string(),
+            PivotSide::Low => "low".to_string(),
+        }
+    });
+}
+
 fn register_indicator_api(engine: &mut RhaiEngine) {
     let mut indicators_module = Module::new();
     indicators_module.set_native_fn(
@@ -817,6 +976,122 @@ fn with_max_missing_candles(
     Ok(secondary)
 }
 
+fn pivot_detector_new(id: &str) -> PivotDetectorConfiguration {
+    PivotDetectorConfiguration::new(id)
+}
+
+fn anchored_config_with_detector(
+    config: AnchoredConfiguration,
+    detector: PivotDetectorConfiguration,
+) -> Result<AnchoredConfiguration, Box<EvalAltResult>> {
+    ensure_non_empty_label(detector_id(&detector), "pivot detector id")?;
+    Ok(config.with_detector(detector))
+}
+
+fn anchored_config_with_evaluator(
+    config: AnchoredConfiguration,
+    evaluator: AnchoredEvaluatorConfiguration,
+) -> Result<AnchoredConfiguration, Box<EvalAltResult>> {
+    ensure_non_empty_label(evaluator_name(&evaluator), "anchored evaluator name")?;
+    ensure_non_empty_label(
+        evaluator_source(&evaluator),
+        "anchored evaluator pivot source",
+    )?;
+    Ok(config.with_evaluator(evaluator))
+}
+
+fn pivot_detector_with_left_bars(
+    detector: PivotDetectorConfiguration,
+    left_bars: INT,
+) -> Result<PivotDetectorConfiguration, Box<EvalAltResult>> {
+    let left_bars = positive_usize(left_bars, "left_bars")?;
+    Ok(detector.with_left_bars(left_bars))
+}
+
+fn pivot_detector_with_right_bars(
+    detector: PivotDetectorConfiguration,
+    right_bars: INT,
+) -> Result<PivotDetectorConfiguration, Box<EvalAltResult>> {
+    let right_bars = positive_usize(right_bars, "right_bars")?;
+    Ok(detector.with_right_bars(right_bars))
+}
+
+fn anchored_evaluator_with_side(
+    evaluator: AnchoredEvaluatorConfiguration,
+    side: PivotSide,
+) -> AnchoredEvaluatorConfiguration {
+    evaluator.with_side(side)
+}
+
+fn anchored_evaluator_with_pivot_buffer(
+    evaluator: AnchoredEvaluatorConfiguration,
+    pivot_buffer: INT,
+) -> Result<AnchoredEvaluatorConfiguration, Box<EvalAltResult>> {
+    let pivot_buffer = positive_usize(pivot_buffer, "pivot_buffer")?;
+    if pivot_buffer < 3 {
+        return Err("pivot_buffer must be >= 3".into());
+    }
+    Ok(evaluator.with_pivot_buffer(pivot_buffer))
+}
+
+fn anchored_evaluator_with_tolerance(
+    evaluator: AnchoredEvaluatorConfiguration,
+    tolerance: FLOAT,
+) -> Result<AnchoredEvaluatorConfiguration, Box<EvalAltResult>> {
+    if !(tolerance.is_finite() && tolerance > 0.0 && tolerance < 0.5) {
+        return Err("tolerance must be finite and in (0.0, 0.5)".into());
+    }
+    Ok(evaluator.with_tolerance(tolerance))
+}
+
+fn anchored_evaluator_with_min_touches(
+    evaluator: AnchoredEvaluatorConfiguration,
+    min_touches: INT,
+) -> Result<AnchoredEvaluatorConfiguration, Box<EvalAltResult>> {
+    let min_touches = u32::try_from(min_touches)
+        .map_err(|_| "min_touches must be a non-negative integer fitting u32".to_string())?;
+    if min_touches < 3 {
+        return Err("min_touches must be >= 3".into());
+    }
+    Ok(evaluator.with_min_touches(min_touches))
+}
+
+fn anchored_evaluator_with_max_lines(
+    evaluator: AnchoredEvaluatorConfiguration,
+    max_lines: INT,
+) -> Result<AnchoredEvaluatorConfiguration, Box<EvalAltResult>> {
+    let max_lines = positive_usize(max_lines, "max_lines")?;
+    Ok(evaluator.with_max_lines(max_lines))
+}
+
+fn positive_usize(value: INT, name: &str) -> Result<usize, Box<EvalAltResult>> {
+    let value = usize::try_from(value).map_err(|_| format!("{name} must be a positive integer"))?;
+    if value == 0 {
+        return Err(format!("{name} must be a positive integer").into());
+    }
+    Ok(value)
+}
+
+fn ensure_non_empty_label(value: &str, name: &str) -> Result<(), Box<EvalAltResult>> {
+    if value.is_empty() {
+        Err(format!("{name} must not be empty").into())
+    } else {
+        Ok(())
+    }
+}
+
+fn detector_id(detector: &PivotDetectorConfiguration) -> &str {
+    detector.id()
+}
+
+fn evaluator_name(evaluator: &AnchoredEvaluatorConfiguration) -> &str {
+    evaluator.expose_as()
+}
+
+fn evaluator_source(evaluator: &AnchoredEvaluatorConfiguration) -> &str {
+    evaluator.pivot_source()
+}
+
 fn with_stop_loss(
     decision: StrategyDecision,
     stop_loss: FLOAT,
@@ -911,12 +1186,19 @@ fn call_typed_anchored_config(
     ast: &AST,
 ) -> Result<AnchoredConfiguration, RhaiStrategyLoadError> {
     let result = call_load_time_hook(engine, scope, ast, ANCHORED_CONFIG_HOOK)?;
-    result
-        .try_cast::<AnchoredConfiguration>()
-        .ok_or(RhaiStrategyLoadError::InvalidHookReturn {
+    let config = result.try_cast::<AnchoredConfiguration>().ok_or(
+        RhaiStrategyLoadError::InvalidHookReturn {
             hook: ANCHORED_CONFIG_HOOK,
             expected: "a typed AnchoredConfig from `anchored_config::new()`",
-        })
+        },
+    )?;
+    config
+        .validate()
+        .map_err(|error| RhaiStrategyLoadError::HookEvaluation {
+            hook: ANCHORED_CONFIG_HOOK,
+            message: error.to_string(),
+        })?;
+    Ok(config)
 }
 
 fn call_load_time_hook(
@@ -966,12 +1248,23 @@ fn on_tick(market, context) {
     }
 
     fn candle_at(close: f64, timestamp: i64, timeframe: Timeframe) -> Candle {
+        candle_ohlc_at(close, close, close, close, timestamp, timeframe)
+    }
+
+    fn candle_ohlc_at(
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        timestamp: i64,
+        timeframe: Timeframe,
+    ) -> Candle {
         Candle {
             timestamp,
             symbol: "BTC-USD".into(),
-            open: close,
-            high: close,
-            low: close,
+            open,
+            high,
+            low,
             close,
             volume: 1_000.0,
             timeframe,
@@ -2060,6 +2353,15 @@ fn on_tick(market, context) {
         let source = r#"
 fn anchored_config() {
     anchored_config::new()
+        .with_detector(
+            pivot_detector::new("swing")
+                .with_left_bars(1)
+                .with_right_bars(1)
+        )
+        .with_evaluator(
+            anchored::trendline("trend", "swing")
+                .with_side(pivot_side::high())
+        )
 }
 
 fn on_tick(market, context) {
@@ -2068,9 +2370,211 @@ fn on_tick(market, context) {
 "#;
 
         let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let config = strategy
+            .anchored_config()
+            .expect("anchored config should load");
 
         assert!(strategy.hooks().has_anchored_config);
-        assert_eq!(strategy.anchored_config(), Some(&AnchoredConfiguration));
+        assert_eq!(config.detectors().len(), 1);
+        assert_eq!(config.evaluators().len(), 1);
+    }
+
+    #[test]
+    fn missing_anchored_config_loads_and_market_outputs_are_unit() {
+        let source = source_returning(
+            r#"
+let lines = market.anchored("trend");
+let pivot = market.last_pivot("swing", pivot_side::high());
+if lines == () && pivot == () {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+
+        let step = run_completed_tick(&source);
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn invalid_typed_anchored_config_fails_load() {
+        let source = r#"
+fn anchored_config() {
+    anchored_config::new()
+        .with_detector(pivot_detector::new("swing"))
+        .with_detector(pivot_detector::new("swing"))
+        .with_evaluator(anchored::trendline("trend", "swing"))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RhaiStrategyLoadError::HookEvaluation {
+                hook: ANCHORED_CONFIG_HOOK,
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("duplicate detector id"));
+    }
+
+    #[test]
+    fn invalid_pivot_detector_bars_fail_load() {
+        let source = r#"
+fn anchored_config() {
+    anchored_config::new()
+        .with_detector(pivot_detector::new("swing").with_left_bars(0))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RhaiStrategyLoadError::HookEvaluation {
+                hook: ANCHORED_CONFIG_HOOK,
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("left_bars"));
+    }
+
+    #[test]
+    fn anchored_pivot_outputs_update_from_warmup_market_state_and_are_visible_on_market_view() {
+        let source = r#"
+fn anchored_config() {
+    anchored_config::new()
+        .with_detector(
+            pivot_detector::new("swing")
+                .with_left_bars(1)
+                .with_right_bars(1)
+        )
+}
+
+fn on_tick(market, context) {
+    let pivot = market.last_pivot("swing", pivot_side::high());
+    if pivot != () && pivot.bar == 1 && pivot.price == 3.0 && pivot.side == "high" {
+        decision::open_long(1.0)
+    } else {
+        decision::hold()
+    }
+}
+"#;
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 3, strategy);
+
+        for (index, high) in [1.0, 3.0, 1.0].into_iter().enumerate() {
+            runtime
+                .on_market_input(MarketInput::WarmupCandle(candle_ohlc_at(
+                    high,
+                    high,
+                    high,
+                    high,
+                    index as i64,
+                    Timeframe::minutes(1),
+                )))
+                .expect("warmup candle should be accepted");
+        }
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                3,
+                Timeframe::minutes(1),
+            )))
+            .expect("completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn market_anchored_returns_trendline_output_from_runtime_market_state() {
+        let source = r#"
+fn anchored_config() {
+    anchored_config::new()
+        .with_detector(
+            pivot_detector::new("swing")
+                .with_left_bars(1)
+                .with_right_bars(1)
+        )
+        .with_evaluator(
+            anchored::trendline("trend", "swing")
+                .with_side(pivot_side::high())
+                .with_pivot_buffer(3)
+                .with_min_touches(3)
+                .with_max_lines(1)
+        )
+}
+
+fn on_tick(market, context) {
+    let lines = market.anchored("trend");
+    if lines != () && lines.len() == 1 && lines[0].touches == 3 && lines[0].side == "resistance" {
+        decision::open_long(1.0)
+    } else {
+        decision::hold()
+    }
+}
+"#;
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+        let highs = [90.0, 100.0, 90.0, 100.0, 90.0, 100.0, 90.0];
+        let mut last_step = None;
+
+        for (index, high) in highs.into_iter().enumerate() {
+            last_step = Some(
+                runtime
+                    .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                        90.0,
+                        high,
+                        80.0,
+                        90.0,
+                        index as i64,
+                        Timeframe::minutes(1),
+                    )))
+                    .expect("completed primary candle should be accepted"),
+            );
+        }
+
+        let final_step = last_step.expect("test should feed candles");
+        assert_eq!(
+            produced_decision(&final_step),
+            StrategyDecision::open_long(1.0)
+        );
+    }
+
+    #[test]
+    fn context_does_not_expose_anchored_compatibility_alias() {
+        let source = source_returning(
+            r#"
+let forbidden = context.anchored("trend");
+decision::hold()
+"#,
+        );
+
+        let step = run_completed_tick(&source);
+        let message = strategy_error_message(&step);
+
+        assert!(
+            message.contains("Function not found") || message.contains("function"),
+            "{message}"
+        );
+        assert!(!step
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
     }
 
     #[test]
