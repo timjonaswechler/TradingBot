@@ -1,15 +1,16 @@
 //! Rhai strategy loading and hook validation for the trading runtime.
 //!
 //! This module owns compile/load-time Rhai strategy handling inside the
-//! `trading-runtime` crate and the typed decision API used at the strategy tick
-//! boundary. Full strategy-facing Market View and Context APIs are implemented
-//! in later Strategy Handling slices.
+//! `trading-runtime` crate, the typed decision API, and grouped Strategy Context
+//! / Strategy State used at the strategy tick boundary. Full strategy-facing
+//! Market View APIs are implemented in later Strategy Handling slices.
 
 use crate::{
-    StrategyDecision, StrategyError, StrategyHandler, StrategyTickInput, StrategyTickResult,
+    RuntimePortfolioSnapshot, StrategyDecision, StrategyError, StrategyHandler, StrategyState,
+    StrategyStateValue, StrategyTickInput, StrategyTickResult,
 };
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
-use shared::Timeframe;
+use shared::{Position, Timeframe};
 use std::{error::Error, fmt, path::Path, sync::Arc};
 
 /// Typed strategy-declared configuration returned by `strategy_config()`.
@@ -61,20 +62,69 @@ pub struct RhaiStrategy {
     anchored_config: Option<AnchoredConfiguration>,
 }
 
+#[derive(Debug, Clone)]
+struct RhaiStrategyContext {
+    portfolio: RhaiPortfolioSnapshot,
+    state: StrategyState,
+}
+
+impl RhaiStrategyContext {
+    fn from_runtime(portfolio: &RuntimePortfolioSnapshot, state: &StrategyState) -> Self {
+        Self {
+            portfolio: RhaiPortfolioSnapshot::from_runtime(portfolio),
+            state: state.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RhaiPortfolioSnapshot {
+    realized_cash_balance: f64,
+    equity: f64,
+    completed_trades: INT,
+    position: Option<RhaiPosition>,
+}
+
+impl RhaiPortfolioSnapshot {
+    fn from_runtime(snapshot: &RuntimePortfolioSnapshot) -> Self {
+        Self {
+            realized_cash_balance: snapshot.realized_cash_balance,
+            equity: snapshot.current_equity,
+            completed_trades: snapshot.completed_trade_count as INT,
+            position: snapshot.open_position.clone().map(RhaiPosition::new),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RhaiPosition {
+    position: Position,
+}
+
+impl RhaiPosition {
+    fn new(position: Position) -> Self {
+        Self { position }
+    }
+}
+
 impl StrategyHandler for RhaiStrategy {
-    fn on_tick(&mut self, _input: StrategyTickInput<'_>) -> StrategyTickResult {
-        let result =
-            match self
-                .engine
-                .call_fn::<Dynamic>(&mut self.scope, &self.ast, ON_TICK_HOOK, ((), ()))
-            {
-                Ok(result) => result,
-                Err(error) => {
-                    return StrategyTickResult::Error(StrategyError::new(format!(
-                        "strategy hook `on_tick` failed: {error}"
-                    )))
-                }
-            };
+    fn on_tick(&mut self, input: StrategyTickInput<'_>) -> StrategyTickResult {
+        let context =
+            RhaiStrategyContext::from_runtime(input.context.portfolio, input.context.state);
+
+        let result = match self.engine.call_fn::<Dynamic>(
+            &mut self.scope,
+            &self.ast,
+            ON_TICK_HOOK,
+            ((), context),
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                return StrategyTickResult::Error(StrategyError::new(format!(
+                    "strategy hook `on_tick` failed: {error}"
+                )))
+            }
+        };
 
         let actual_type = result.type_name().to_string();
         match result.try_cast::<StrategyDecision>() {
@@ -252,6 +302,12 @@ fn new_rhai_engine() -> RhaiEngine {
     engine.register_type_with_name::<StrategyConfiguration>("StrategyConfig");
     engine.register_type_with_name::<AnchoredConfiguration>("AnchoredConfig");
     engine.register_type_with_name::<StrategyDecision>("StrategyDecision");
+    engine.register_type_with_name::<RhaiStrategyContext>("StrategyContext");
+    engine.register_type_with_name::<RhaiPortfolioSnapshot>("PortfolioSnapshot");
+    engine.register_type_with_name::<RhaiPosition>("Position");
+    engine.register_type_with_name::<StrategyState>("StrategyState");
+
+    register_strategy_context_api(&mut engine);
 
     engine.register_fn("timeframe", parse_timeframe);
     engine.register_fn(
@@ -394,9 +450,152 @@ fn copy_until_string_end(source: &str, start: usize, output: &mut String) -> usi
     end
 }
 
+fn register_strategy_context_api(engine: &mut RhaiEngine) {
+    engine.register_get("portfolio", |context: &mut RhaiStrategyContext| {
+        context.portfolio.clone()
+    });
+    engine.register_get("state", |context: &mut RhaiStrategyContext| {
+        context.state.clone()
+    });
+
+    engine.register_get(
+        "realized_cash_balance",
+        |portfolio: &mut RhaiPortfolioSnapshot| portfolio.realized_cash_balance,
+    );
+    engine.register_get("equity", |portfolio: &mut RhaiPortfolioSnapshot| {
+        portfolio.equity
+    });
+    engine.register_get(
+        "completed_trades",
+        |portfolio: &mut RhaiPortfolioSnapshot| portfolio.completed_trades,
+    );
+    engine.register_get(
+        "position",
+        |portfolio: &mut RhaiPortfolioSnapshot| -> Dynamic {
+            portfolio
+                .position
+                .clone()
+                .map(Dynamic::from)
+                .unwrap_or(Dynamic::UNIT)
+        },
+    );
+
+    engine.register_get("side", |position: &mut RhaiPosition| {
+        position.position.side.to_string()
+    });
+    engine.register_get("entry_price", |position: &mut RhaiPosition| {
+        position.position.entry_price
+    });
+    engine.register_get("size", |position: &mut RhaiPosition| position.position.size);
+    engine.register_get("entry_time", |position: &mut RhaiPosition| {
+        position.position.entry_time
+    });
+    engine.register_get("stop_loss", |position: &mut RhaiPosition| -> Dynamic {
+        position
+            .position
+            .stop_loss
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT)
+    });
+    engine.register_get("take_profit", |position: &mut RhaiPosition| -> Dynamic {
+        position
+            .position
+            .take_profit
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT)
+    });
+
+    engine.register_fn("get", strategy_state_get_int);
+    engine.register_fn("get", strategy_state_get_float);
+    engine.register_fn("get", strategy_state_get_bool);
+    engine.register_fn("get", strategy_state_get_string);
+    engine.register_fn("set", strategy_state_set_int);
+    engine.register_fn("set", strategy_state_set_float);
+    engine.register_fn("set", strategy_state_set_bool);
+    engine.register_fn("set", strategy_state_set_string);
+}
+
 fn parse_timeframe(raw: &str) -> Result<Timeframe, Box<EvalAltResult>> {
     raw.parse::<Timeframe>()
         .map_err(|error| format!("invalid timeframe `{raw}`: {error}").into())
+}
+
+fn strategy_state_get_int(
+    state: StrategyState,
+    key: &str,
+    default: INT,
+) -> Result<INT, Box<EvalAltResult>> {
+    match state.get(key) {
+        Some(StrategyStateValue::Int(value)) => Ok(value),
+        Some(value) => Err(strategy_state_type_error(key, "int", value)),
+        None => Ok(default),
+    }
+}
+
+fn strategy_state_get_float(
+    state: StrategyState,
+    key: &str,
+    default: FLOAT,
+) -> Result<FLOAT, Box<EvalAltResult>> {
+    match state.get(key) {
+        Some(StrategyStateValue::Float(value)) => Ok(value),
+        Some(value) => Err(strategy_state_type_error(key, "float", value)),
+        None => Ok(default),
+    }
+}
+
+fn strategy_state_get_bool(
+    state: StrategyState,
+    key: &str,
+    default: bool,
+) -> Result<bool, Box<EvalAltResult>> {
+    match state.get(key) {
+        Some(StrategyStateValue::Bool(value)) => Ok(value),
+        Some(value) => Err(strategy_state_type_error(key, "bool", value)),
+        None => Ok(default),
+    }
+}
+
+fn strategy_state_get_string(
+    state: StrategyState,
+    key: &str,
+    default: &str,
+) -> Result<String, Box<EvalAltResult>> {
+    match state.get(key) {
+        Some(StrategyStateValue::String(value)) => Ok(value),
+        Some(value) => Err(strategy_state_type_error(key, "string", value)),
+        None => Ok(default.to_string()),
+    }
+}
+
+fn strategy_state_set_int(state: StrategyState, key: &str, value: INT) {
+    state.set(key, StrategyStateValue::Int(value));
+}
+
+fn strategy_state_set_float(state: StrategyState, key: &str, value: FLOAT) {
+    state.set(key, StrategyStateValue::Float(value));
+}
+
+fn strategy_state_set_bool(state: StrategyState, key: &str, value: bool) {
+    state.set(key, StrategyStateValue::Bool(value));
+}
+
+fn strategy_state_set_string(state: StrategyState, key: &str, value: &str) {
+    state.set(key, StrategyStateValue::String(value.to_string()));
+}
+
+fn strategy_state_type_error(
+    key: &str,
+    expected: &'static str,
+    actual: StrategyStateValue,
+) -> Box<EvalAltResult> {
+    let actual = match actual {
+        StrategyStateValue::Int(_) => "int",
+        StrategyStateValue::Float(_) => "float",
+        StrategyStateValue::Bool(_) => "bool",
+        StrategyStateValue::String(_) => "string",
+    };
+    format!("strategy state key `{key}` contains {actual}, not requested {expected}").into()
 }
 
 fn with_minimum_warmup(
@@ -593,6 +792,233 @@ fn on_tick(market, context) {{
                 _ => None,
             })
             .expect("step should include a produced strategy decision")
+    }
+
+    fn strategy_error_message(step: &crate::RuntimeStep) -> String {
+        step.events
+            .iter()
+            .find_map(|event| match event {
+                RuntimeEvent::StrategyError { error, .. } => Some(error.message.clone()),
+                _ => None,
+            })
+            .expect("step should include a strategy error")
+    }
+
+    #[test]
+    fn grouped_context_exposes_flat_portfolio_snapshot_without_flat_context_aliases() {
+        let source = source_returning(
+            r#"
+if context.portfolio.equity == 1000.0
+        && context.portfolio.realized_cash_balance == 1000.0
+        && context.portfolio.completed_trades == 0
+        && context.portfolio.position == () {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+
+        let step = run_completed_tick(&source);
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn grouped_context_exposes_open_position_details() {
+        let source = source_returning(
+            r#"
+let position = context.portfolio.position;
+if position != ()
+        && position.side == "long"
+        && position.entry_price == 100.0
+        && position.size == 2.0
+        && position.entry_time == 1
+        && position.stop_loss == 90.0
+        && position.take_profit == 120.0 {
+    decision::close_long()
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut portfolio = PortfolioState::new(1_000.0);
+        portfolio
+            .open_long_from_flat(&candle(100.0), 2.0, Some(90.0), Some(120.0))
+            .expect("position should open");
+        let mut runtime = TradingRuntime::new(portfolio, 0, strategy);
+
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(105.0)))
+            .expect("completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::close_long());
+    }
+
+    #[test]
+    fn strategy_state_get_set_persists_primitives_between_strategy_ticks() {
+        let source = source_returning(
+            r#"
+let seen = context.state.get("seen", 0);
+context.state.set("seen", seen + 1);
+
+if seen == 0 {
+    decision::hold()
+} else {
+    decision::open_long(1.0)
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+
+        let first = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(100.0)))
+            .expect("first completed primary candle should be accepted");
+        let second = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(101.0)))
+            .expect("second completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&first), StrategyDecision::hold());
+        assert_eq!(produced_decision(&second), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn strategy_state_starts_empty_for_each_runtime_session() {
+        let source = source_returning(
+            r#"
+let seen = context.state.get("seen", 0);
+context.state.set("seen", seen + 1);
+
+if seen == 0 {
+    decision::hold()
+} else {
+    decision::open_long(1.0)
+}
+"#,
+        );
+
+        let first_step_in_first_runtime = run_completed_tick(&source);
+        let first_step_in_second_runtime = run_completed_tick(&source);
+
+        assert_eq!(
+            produced_decision(&first_step_in_first_runtime),
+            StrategyDecision::hold()
+        );
+        assert_eq!(
+            produced_decision(&first_step_in_second_runtime),
+            StrategyDecision::hold()
+        );
+    }
+
+    #[test]
+    fn warmup_input_does_not_mutate_strategy_state() {
+        let source = source_returning(
+            r#"
+let seen = context.state.get("seen", 0);
+context.state.set("seen", seen + 1);
+
+if seen == 0 {
+    decision::hold()
+} else {
+    decision::open_long(1.0)
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 1, strategy);
+
+        runtime
+            .on_market_input(MarketInput::WarmupCandle(candle(99.0)))
+            .expect("warmup candle should be accepted");
+        let first_strategy_tick = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(100.0)))
+            .expect("completed primary candle should be accepted");
+
+        assert_eq!(
+            produced_decision(&first_strategy_tick),
+            StrategyDecision::hold()
+        );
+    }
+
+    #[test]
+    fn strategy_state_supports_float_bool_and_string_values() {
+        let source = source_returning(
+            r#"
+let price = context.state.get("price", 1.5);
+let enabled = context.state.get("enabled", false);
+let label = context.state.get("label", "cold");
+
+context.state.set("price", price + 1.0);
+context.state.set("enabled", true);
+context.state.set("label", "warm");
+
+if price == 2.5 && enabled && label == "warm" {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+
+        let first = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(100.0)))
+            .expect("first completed primary candle should be accepted");
+        let second = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(101.0)))
+            .expect("second completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&first), StrategyDecision::hold());
+        assert_eq!(produced_decision(&second), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn unsupported_strategy_state_values_fail_at_tick_time() {
+        for expression in [
+            r#"context.state.set("items", [1, 2, 3]);"#,
+            r#"context.state.set("shape", #{ seen: 1 });"#,
+        ] {
+            let source = source_returning(&format!(
+                r#"
+{expression}
+decision::hold()
+"#
+            ));
+            let step = run_completed_tick(&source);
+            let message = strategy_error_message(&step);
+
+            assert!(message.contains("set"), "{message}");
+            assert!(!step
+                .events
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+        }
+    }
+
+    #[test]
+    fn context_does_not_expose_market_data_or_old_flat_portfolio_aliases() {
+        for expression in ["context.balance", "context.candle", "context.close"] {
+            let source = source_returning(&format!(
+                r#"
+let forbidden = {expression};
+decision::hold()
+"#
+            ));
+            let step = run_completed_tick(&source);
+            let message = strategy_error_message(&step);
+
+            assert!(
+                message.contains("Property") || message.contains("property"),
+                "{expression}: {message}"
+            );
+            assert!(!step
+                .events
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+        }
     }
 
     #[test]

@@ -4,11 +4,12 @@
 //! strategy-decision planning, runtime-local portfolio state, realized-cash
 //! portfolio transitions, explicit force-close commands, warmup progression,
 //! ordered runner-neutral runtime events, Rhai strategy loading/hook validation,
-//! and [`RuntimeStep`] return values.
+//! typed Rhai decisions, grouped Rhai Strategy Context/Strategy State, and
+//! [`RuntimeStep`] return values.
 //!
-//! This slice intentionally does not include Rhai strategy tick execution,
-//! database persistence, live-daemon or backtester wiring, real broker execution,
-//! dynamic risk updates, or full typed Market View / Strategy Context Rhai APIs.
+//! This slice intentionally does not include database persistence, live-daemon or
+//! backtester wiring, real broker execution, dynamic risk updates, or the full
+//! typed Market View Rhai API.
 //! The old `engine` crate remains only donor material for strategy-handling
 //! behavior; this crate must stay independent from it.
 
@@ -49,5 +50,5 @@ pub use shared::{Timeframe, TimeframeParseError, TimeframeUnit};
 pub use step::RuntimeStep;
 pub use strategy::{
     MarketView, PredeterminedStrategyHandler, StrategyContext, StrategyError, StrategyHandler,
-    StrategyState, StrategyTickInput, StrategyTickResult,
+    StrategyState, StrategyStateValue, StrategyTickInput, StrategyTickResult,
 };

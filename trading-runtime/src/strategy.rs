@@ -2,7 +2,10 @@
 
 use crate::{MarketState, RuntimePortfolioSnapshot, StrategyDecision};
 use shared::{Candle, Timeframe};
-use std::collections::VecDeque;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, RwLock},
+};
 
 /// Strategy-facing read-only view over runtime-owned Market State for one tick.
 #[derive(Debug, Clone, Copy)]
@@ -43,12 +46,61 @@ impl<'a> MarketView<'a> {
     }
 }
 
+/// Primitive value stored in session-local Strategy State.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StrategyStateValue {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    String(String),
+}
+
 /// Session-local Strategy State handle.
 ///
-/// This issue only establishes the typed boundary. Concrete state value APIs are
-/// intentionally left to later Strategy Context/State work.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StrategyState;
+/// Strategy State is runtime-owned memory for one running strategy. Clones share
+/// the same underlying session-local storage so strategy-facing adapters can pass
+/// lightweight handles into script runtimes without losing mutations.
+#[derive(Debug, Clone, Default)]
+pub struct StrategyState {
+    values: Arc<RwLock<HashMap<String, StrategyStateValue>>>,
+}
+
+impl StrategyState {
+    pub fn get(&self, key: &str) -> Option<StrategyStateValue> {
+        self.values
+            .read()
+            .expect("strategy state lock should not be poisoned")
+            .get(key)
+            .cloned()
+    }
+
+    pub fn set(&self, key: impl Into<String>, value: StrategyStateValue) {
+        self.values
+            .write()
+            .expect("strategy state lock should not be poisoned")
+            .insert(key.into(), value);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values
+            .read()
+            .expect("strategy state lock should not be poisoned")
+            .is_empty()
+    }
+}
+
+impl PartialEq for StrategyState {
+    fn eq(&self, other: &Self) -> bool {
+        *self
+            .values
+            .read()
+            .expect("strategy state lock should not be poisoned")
+            == *other
+                .values
+                .read()
+                .expect("strategy state lock should not be poisoned")
+    }
+}
 
 /// Grouped strategy-facing runtime context for one Strategy Tick.
 pub struct StrategyContext<'a> {
