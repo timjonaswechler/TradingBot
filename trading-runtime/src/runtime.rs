@@ -3,9 +3,10 @@
 use crate::market_input::MarketInputTimeframeRole;
 use crate::{
     evaluate_risk_exit, plan_execution, BlockedSecondaryContext, ExecutionAction, ExitKind,
-    ForceCloseIgnoredReason, MarketInput, MarketState, PortfolioState, RuntimeConfig, RuntimeEvent,
-    RuntimeInputError, RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness,
-    SecondaryTimeframeConfig, StrategyHandler,
+    ForceCloseIgnoredReason, MarketInput, MarketState, MarketView, PortfolioState, RuntimeConfig,
+    RuntimeEvent, RuntimeInputError, RuntimeStep, SecondaryContextUnavailableReason,
+    SecondaryReadiness, SecondaryTimeframeConfig, StrategyContext, StrategyHandler, StrategyState,
+    StrategyTickInput, StrategyTickResult,
 };
 use shared::{Candle, PositionSide, Timeframe};
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ pub struct TradingRuntime<S> {
     warmup_progress: HashMap<Timeframe, usize>,
     warmup_requirement: usize,
     warmup_completed: bool,
+    strategy_state: StrategyState,
     strategy_handler: S,
 }
 
@@ -52,6 +54,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             warmup_progress,
             warmup_requirement,
             warmup_completed: warmup_requirement == 0,
+            strategy_state: StrategyState::default(),
             strategy_handler,
         }
     }
@@ -198,9 +201,27 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         });
 
         let portfolio_before_decision = self.portfolio.snapshot(candle.close);
-        let decision = self
-            .strategy_handler
-            .next_decision(&candle, &portfolio_before_decision);
+        let tick_input = StrategyTickInput {
+            market: MarketView::new(&self.market_state, self.config.primary_timeframe, &candle),
+            context: StrategyContext {
+                portfolio: &portfolio_before_decision,
+                state: &mut self.strategy_state,
+            },
+            primary_candle: &candle,
+        };
+        let decision = match self.strategy_handler.on_tick(tick_input) {
+            StrategyTickResult::Decision(decision) => decision,
+            StrategyTickResult::Error(error) => {
+                events.push(RuntimeEvent::StrategyError {
+                    candle: candle.clone(),
+                    error,
+                });
+                events.push(RuntimeEvent::StrategyTickCompleted);
+                events.push(RuntimeEvent::TradableCandleCompleted);
+
+                return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
+            }
+        };
         events.push(RuntimeEvent::StrategyDecisionProduced {
             decision: decision.clone(),
         });

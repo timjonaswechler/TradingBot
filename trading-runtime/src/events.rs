@@ -2,7 +2,7 @@
 
 use crate::{
     ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RiskExitTriggered,
-    RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision,
+    RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision, StrategyError,
 };
 use shared::{Candle, Position, Timeframe};
 
@@ -61,6 +61,10 @@ pub enum RuntimeEvent {
     },
     StrategyDecisionProduced {
         decision: StrategyDecision,
+    },
+    StrategyError {
+        candle: Candle,
+        error: StrategyError,
     },
     ExecutionActionPlanned {
         action: ExecutionAction,

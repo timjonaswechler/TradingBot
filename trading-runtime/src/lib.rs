@@ -41,4 +41,7 @@ pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;
 pub use shared::{Timeframe, TimeframeParseError, TimeframeUnit};
 pub use step::RuntimeStep;
-pub use strategy::{PredeterminedStrategyHandler, StrategyHandler};
+pub use strategy::{
+    MarketView, PredeterminedStrategyHandler, StrategyContext, StrategyError, StrategyHandler,
+    StrategyState, StrategyTickInput, StrategyTickResult,
+};
