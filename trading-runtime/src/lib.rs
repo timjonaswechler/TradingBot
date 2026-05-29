@@ -3,13 +3,14 @@
 //! This crate is the first runtime-core slice for one runtime asset. It owns
 //! strategy-decision planning, runtime-local portfolio state, realized-cash
 //! portfolio transitions, explicit force-close commands, warmup progression,
-//! ordered runner-neutral runtime events, and [`RuntimeStep`] return values.
+//! ordered runner-neutral runtime events, Rhai strategy loading/hook validation,
+//! and [`RuntimeStep`] return values.
 //!
-//! This slice intentionally does not include Rhai strategy execution, database
-//! persistence, live-daemon or backtester wiring, real broker execution,
-//! secondary timeframe market views, dynamic risk updates, or stop-loss /
-//! take-profit trigger rules. The old `engine` crate remains only a future donor
-//! for strategy-handling behavior; this crate must stay independent from it.
+//! This slice intentionally does not include Rhai strategy tick execution,
+//! database persistence, live-daemon or backtester wiring, real broker execution,
+//! dynamic risk updates, or full typed Market View / Strategy Context Rhai APIs.
+//! The old `engine` crate remains only donor material for strategy-handling
+//! behavior; this crate must stay independent from it.
 
 pub mod decision;
 pub mod events;
@@ -17,6 +18,7 @@ pub mod execution;
 pub mod market_input;
 pub mod market_state;
 pub mod portfolio;
+pub mod rhai_strategy;
 pub mod risk_exit;
 pub mod runtime;
 pub mod step;
@@ -36,6 +38,10 @@ pub use market_input::{
 pub use market_state::MarketState;
 pub use portfolio::{
     ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,
+};
+pub use rhai_strategy::{
+    AnchoredConfiguration, RhaiStrategy, RhaiStrategyHooks, RhaiStrategyLoadError,
+    StrategyConfiguration,
 };
 pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;
