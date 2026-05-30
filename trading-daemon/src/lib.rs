@@ -7,5 +7,6 @@ pub mod cli;
 pub mod config;
 pub mod live_engine;
 pub mod order_executor;
+pub mod protective_shutdown;
 pub mod seed;
 pub mod warmup;

@@ -1,5 +1,5 @@
 /// TOML-based runtime configuration for the trading daemon.
-use serde::Deserialize;
+use serde::{de, Deserialize, Deserializer};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -67,6 +67,56 @@ pub struct AssetConfig {
     /// and restored on next startup.
     #[serde(default = "default_liquidate")]
     pub liquidate_on_shutdown: bool,
+
+    /// Live-runner safety policy for repeated required Secondary context loss.
+    #[serde(default)]
+    pub protective_shutdown: ProtectiveShutdownConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProtectiveShutdownConfig {
+    /// Enable Protective Runner Shutdown for repeated required Secondary blocks.
+    pub enabled: bool,
+
+    /// Number of consecutive Primary candles blocked by the same required
+    /// Secondary Timeframe before the live runner stops that runtime.
+    pub required_secondary_failure_threshold: u32,
+}
+
+impl Default for ProtectiveShutdownConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_protective_shutdown_enabled(),
+            required_secondary_failure_threshold: default_required_secondary_failure_threshold(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProtectiveShutdownConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawProtectiveShutdownConfig {
+            #[serde(default = "default_protective_shutdown_enabled")]
+            enabled: bool,
+            #[serde(default = "default_required_secondary_failure_threshold")]
+            required_secondary_failure_threshold: u32,
+        }
+
+        let raw = RawProtectiveShutdownConfig::deserialize(deserializer)?;
+        if raw.required_secondary_failure_threshold == 0 {
+            return Err(de::Error::custom(
+                "protective_shutdown.required_secondary_failure_threshold must be greater than 0; set protective_shutdown.enabled = false to disable the policy",
+            ));
+        }
+
+        Ok(Self {
+            enabled: raw.enabled,
+            required_secondary_failure_threshold: raw.required_secondary_failure_threshold,
+        })
+    }
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -86,6 +136,12 @@ fn default_balance() -> f64 {
 fn default_liquidate() -> bool {
     true
 }
+fn default_protective_shutdown_enabled() -> bool {
+    true
+}
+fn default_required_secondary_failure_threshold() -> u32 {
+    3
+}
 
 // ── Loader ───────────────────────────────────────────────────────────────────
 
@@ -96,5 +152,84 @@ impl Config {
         let config: Config = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Invalid TOML in '{}': {}", path, e))?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_asset(toml: &str) -> Result<Config, toml::de::Error> {
+        toml::from_str(toml)
+    }
+
+    #[test]
+    fn protective_shutdown_defaults_to_enabled_with_threshold_three() {
+        let config = parse_asset(
+            r#"
+[[assets]]
+symbol = "BTC-USD"
+intervals = ["1m"]
+strategy = "strategy.rhai"
+"#,
+        )
+        .expect("config should parse");
+
+        assert_eq!(
+            config.assets[0].protective_shutdown,
+            ProtectiveShutdownConfig::default()
+        );
+        assert!(config.assets[0].protective_shutdown.enabled);
+        assert_eq!(
+            config.assets[0]
+                .protective_shutdown
+                .required_secondary_failure_threshold,
+            3
+        );
+    }
+
+    #[test]
+    fn protective_shutdown_nested_config_overrides_defaults() {
+        let config = parse_asset(
+            r#"
+[[assets]]
+symbol = "BTC-USD"
+intervals = ["1m"]
+strategy = "strategy.rhai"
+
+[assets.protective_shutdown]
+enabled = false
+required_secondary_failure_threshold = 5
+"#,
+        )
+        .expect("config should parse");
+
+        assert_eq!(
+            config.assets[0].protective_shutdown,
+            ProtectiveShutdownConfig {
+                enabled: false,
+                required_secondary_failure_threshold: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn protective_shutdown_rejects_zero_threshold() {
+        let error = parse_asset(
+            r#"
+[[assets]]
+symbol = "BTC-USD"
+intervals = ["1m"]
+strategy = "strategy.rhai"
+
+[assets.protective_shutdown]
+required_secondary_failure_threshold = 0
+"#,
+        )
+        .expect_err("zero threshold should be rejected");
+
+        assert!(error.to_string().contains(
+            "protective_shutdown.required_secondary_failure_threshold must be greater than 0"
+        ));
     }
 }

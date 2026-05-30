@@ -15,10 +15,16 @@ use shared::{Candle, Timeframe};
 use spacetimedb_sdk::Table;
 use trading_runtime::{
     resolve_warmup_plan, MarketInput, PortfolioState, RhaiStrategy, RuntimeConfig,
-    RuntimeInputError, RuntimeStep, SecondaryTimeframeConfig, TradingRuntime,
+    RuntimeInputError, RuntimePortfolioSnapshot, RuntimeStep, SecondaryTimeframeConfig,
+    TradingRuntime,
 };
 
-use crate::config::AssetConfig;
+use crate::{
+    config::AssetConfig,
+    protective_shutdown::{ProtectiveShutdownPolicy, ProtectiveShutdownTrigger},
+};
+
+const PROTECTIVE_RUNNER_SHUTDOWN_REASON: &str = "protective runner shutdown";
 
 /// Live runtime wrapper for one configured Runtime Asset.
 struct LiveRuntimeAsset {
@@ -112,8 +118,13 @@ pub async fn run(
         primary_timeframe = %primary_timeframe,
         secondary_timeframes = ?runtime_asset.config.secondary_timeframes,
         warmup_requirement = runtime_asset.warmup_requirement(),
+        protective_shutdown_enabled = asset.protective_shutdown.enabled,
+        protective_shutdown_threshold = asset.protective_shutdown.required_secondary_failure_threshold,
         "Live runtime configured"
     );
+
+    let mut protective_shutdown =
+        ProtectiveShutdownPolicy::new(symbol.clone(), primary_timeframe, asset.protective_shutdown);
 
     let conn: Arc<DbConnection> = client.conn.clone();
     let warmup_requirement = runtime_asset.warmup_requirement();
@@ -191,6 +202,36 @@ pub async fn run(
                 match runtime_asset.on_completed_candle(candle) {
                     Ok(step) => {
                         info!(events = ?step.events, snapshot = ?step.portfolio_snapshot, "Runtime step completed");
+                        if let Some(trigger) = protective_shutdown.observe_step(&step) {
+                            warn!(
+                                symbol,
+                                primary_timeframe = %primary_timeframe,
+                                threshold = trigger.threshold,
+                                blocked_contexts = ?trigger.blocked_contexts,
+                                counters = ?trigger.counters,
+                                "Protective Runner Shutdown triggered"
+                            );
+
+                            let mark = latest_primary_mark_candle(
+                                &conn,
+                                &symbol,
+                                primary_timeframe,
+                                last_primary_candle.clone(),
+                            );
+                            if let Some(force_close_step) = complete_protective_shutdown(
+                                &mut runtime_asset,
+                                &step.portfolio_snapshot,
+                                mark,
+                                &trigger,
+                            )? {
+                                info!(
+                                    events = ?force_close_step.events,
+                                    snapshot = ?force_close_step.portfolio_snapshot,
+                                    "Protective Runner Shutdown force-close request completed"
+                                );
+                            }
+                            break;
+                        }
                     }
                     Err(e) => {
                         error!(error = %e, "Runtime input error");
@@ -201,17 +242,12 @@ pub async fn run(
             _ = cancel.cancelled() => {
                 info!(symbol, primary_timeframe = %primary_timeframe, "Live runtime shutting down");
                 if asset.liquidate_on_shutdown {
-                    let mark = last_primary_candle.clone().or_else(|| {
-                        get_candles_before(
-                            &conn,
-                            &symbol,
-                            &primary_timeframe.to_string(),
-                            i64::MAX,
-                            1,
-                        )
-                        .into_iter()
-                        .next_back()
-                    });
+                    let mark = latest_primary_mark_candle(
+                        &conn,
+                        &symbol,
+                        primary_timeframe,
+                        last_primary_candle.clone(),
+                    );
 
                     if let Some(candle) = mark {
                         let step = runtime_asset.force_close(candle, "shutdown liquidation");
@@ -262,6 +298,48 @@ fn runtime_config_from_asset(asset: &AssetConfig) -> Result<RuntimeConfig> {
 fn parse_timeframe(raw: &str) -> Result<Timeframe> {
     raw.parse()
         .map_err(|e| anyhow!("Invalid configured interval '{}': {e}", raw))
+}
+
+fn latest_primary_mark_candle(
+    conn: &DbConnection,
+    symbol: &str,
+    primary_timeframe: Timeframe,
+    last_primary_candle: Option<Candle>,
+) -> Option<Candle> {
+    last_primary_candle.or_else(|| {
+        get_candles_before(conn, symbol, &primary_timeframe.to_string(), i64::MAX, 1)
+            .into_iter()
+            .next_back()
+    })
+}
+
+fn complete_protective_shutdown(
+    runtime_asset: &mut LiveRuntimeAsset,
+    snapshot: &RuntimePortfolioSnapshot,
+    mark_candle: Option<Candle>,
+    trigger: &ProtectiveShutdownTrigger,
+) -> Result<Option<RuntimeStep>> {
+    if snapshot.open_position.is_none() {
+        info!(
+            runtime_asset = %trigger.runtime_asset,
+            primary_timeframe = %trigger.primary_timeframe,
+            "Protective Runner Shutdown stopping flat runtime without force-close"
+        );
+        return Ok(None);
+    }
+
+    let Some(mark_candle) = mark_candle else {
+        bail!(
+            "Protective Runner Shutdown for asset '{}' on Primary timeframe '{}' found an open position but no completed Primary mark candle was available for runtime force_close",
+            trigger.runtime_asset,
+            trigger.primary_timeframe,
+        );
+    };
+
+    Ok(Some(runtime_asset.force_close(
+        mark_candle,
+        PROTECTIVE_RUNNER_SHUTDOWN_REASON,
+    )))
 }
 
 fn warmup_runtime_asset(
@@ -336,7 +414,8 @@ fn runtime_input_error(error: RuntimeInputError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trading_runtime::{RuntimeEvent, StrategyDecisionIntent};
+    use crate::config::ProtectiveShutdownConfig;
+    use trading_runtime::{ExitKind, RuntimeEvent, StrategyDecisionIntent};
 
     fn asset() -> AssetConfig {
         AssetConfig {
@@ -345,6 +424,7 @@ mod tests {
             strategy: "strategy.rhai".into(),
             balance: 10_000.0,
             liquidate_on_shutdown: true,
+            protective_shutdown: ProtectiveShutdownConfig::default(),
         }
     }
 
@@ -358,6 +438,16 @@ mod tests {
             close,
             volume: 1_000.0,
             timeframe: timeframe.parse().expect("valid timeframe"),
+        }
+    }
+
+    fn trigger() -> ProtectiveShutdownTrigger {
+        ProtectiveShutdownTrigger {
+            runtime_asset: "BTC-USD".into(),
+            primary_timeframe: "1m".parse().expect("valid timeframe"),
+            threshold: 1,
+            blocked_contexts: Vec::new(),
+            counters: Vec::new(),
         }
     }
 
@@ -398,5 +488,91 @@ fn on_tick(market, context) {
             .events
             .iter()
             .any(|event| matches!(event, RuntimeEvent::PositionOpened { .. })));
+    }
+
+    #[test]
+    fn protective_shutdown_when_flat_stops_without_force_close() {
+        let source = r#"
+fn on_tick(market, context) {
+    decision::hold().with_reason("flat")
+}
+"#;
+        let mut runner = LiveRuntimeAsset::from_strategy_source(asset(), source)
+            .expect("runtime asset should build");
+        let step = runner
+            .on_completed_candle(candle("1m", 60_000, 100.0))
+            .expect("primary candle should be accepted");
+
+        let force_close_step = complete_protective_shutdown(
+            &mut runner,
+            &step.portfolio_snapshot,
+            Some(candle("1m", 120_000, 101.0)),
+            &trigger(),
+        )
+        .expect("flat shutdown should succeed");
+
+        assert!(force_close_step.is_none());
+    }
+
+    #[test]
+    fn protective_shutdown_with_open_position_requests_runtime_force_close() {
+        let source = r#"
+fn on_tick(market, context) {
+    decision::open_long(2.0).with_reason("entry")
+}
+"#;
+        let mut runner = LiveRuntimeAsset::from_strategy_source(asset(), source)
+            .expect("runtime asset should build");
+        let step = runner
+            .on_completed_candle(candle("1m", 60_000, 100.0))
+            .expect("primary candle should open a position");
+
+        assert!(step.portfolio_snapshot.open_position.is_some());
+
+        let force_close_step = complete_protective_shutdown(
+            &mut runner,
+            &step.portfolio_snapshot,
+            Some(candle("1m", 120_000, 101.0)),
+            &trigger(),
+        )
+        .expect("open-position shutdown with a mark should succeed")
+        .expect("force-close step should be returned");
+
+        assert!(force_close_step
+            .events
+            .contains(&RuntimeEvent::ForceCloseRequested {
+                candle: candle("1m", 120_000, 101.0),
+                reason: PROTECTIVE_RUNNER_SHUTDOWN_REASON.into(),
+            }));
+        assert!(force_close_step.events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::PositionClosed {
+                exit_kind: ExitKind::ForceClose,
+                ..
+            }
+        )));
+        assert!(force_close_step.portfolio_snapshot.open_position.is_none());
+    }
+
+    #[test]
+    fn protective_shutdown_with_open_position_and_no_mark_returns_clear_error() {
+        let source = r#"
+fn on_tick(market, context) {
+    decision::open_long(1.0).with_reason("entry")
+}
+"#;
+        let mut runner = LiveRuntimeAsset::from_strategy_source(asset(), source)
+            .expect("runtime asset should build");
+        let step = runner
+            .on_completed_candle(candle("1m", 60_000, 100.0))
+            .expect("primary candle should open a position");
+
+        let error =
+            complete_protective_shutdown(&mut runner, &step.portfolio_snapshot, None, &trigger())
+                .expect_err("missing mark should stop with an error");
+
+        assert!(error
+            .to_string()
+            .contains("no completed Primary mark candle"));
     }
 }

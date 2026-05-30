@@ -13,13 +13,23 @@ from = "2020-01-01"
 
 # ── Assets ────────────────────────────────────────────────────────────────────
 # Each asset can have multiple intervals.
-# strategy and balance are only used by the `run` subcommand.
+# strategy, balance, liquidate_on_shutdown, and protective_shutdown are only
+# used by the `run` subcommand.
 
 [[assets]]
 symbol    = "AAPL"
 intervals = ["30m", "60m", "1d"]
 strategy  = "strategies/sma_cross.rhai"
 balance   = 10000.0
+
+# Protective Runner Shutdown is live-runner policy for repeated required
+# Secondary-Timeframe context loss. It consumes Trading Runtime
+# StrategyTickBlocked events; optional Secondary diagnostics do not count.
+# Defaults are enabled = true and required_secondary_failure_threshold = 3.
+# Set enabled = false to disable. Threshold 0 is invalid.
+[assets.protective_shutdown]
+enabled = true
+required_secondary_failure_threshold = 3
 
 # [[assets]]
 # symbol    = "BTC-USD"
