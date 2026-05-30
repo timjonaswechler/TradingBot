@@ -1,12 +1,12 @@
 //! Trading runtime entrypoints.
 
 use crate::market_input::MarketInputTimeframeRole;
+use crate::secondary_context::secondary_context_unavailable_reason;
 use crate::{
     evaluate_risk_exit, plan_execution, BlockedSecondaryContext, ExecutionAction, ExitKind,
     ForceCloseIgnoredReason, MarketInput, MarketState, MarketView, PortfolioState, RuntimeConfig,
-    RuntimeEvent, RuntimeInputError, RuntimeStep, SecondaryContextUnavailableReason,
-    SecondaryReadiness, SecondaryTimeframeConfig, StrategyContext, StrategyHandler, StrategyState,
-    StrategyTickInput, StrategyTickResult, WarmupPlan,
+    RuntimeEvent, RuntimeInputError, RuntimeStep, SecondaryReadiness, StrategyContext,
+    StrategyHandler, StrategyState, StrategyTickInput, StrategyTickResult, WarmupPlan,
 };
 use shared::{Candle, PositionSide, Timeframe};
 use std::collections::HashMap;
@@ -428,7 +428,9 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         let mut blocked_contexts = Vec::new();
 
         for secondary in self.config.secondary_configs() {
-            if let Some(reason) = self.secondary_unavailable_reason(primary_candle, secondary) {
+            if let Some(reason) =
+                secondary_context_unavailable_reason(&self.market_state, primary_candle, secondary)
+            {
                 match secondary.readiness {
                     SecondaryReadiness::Required => {
                         blocked_contexts.push(BlockedSecondaryContext {
@@ -449,26 +451,6 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         }
 
         blocked_contexts
-    }
-
-    fn secondary_unavailable_reason(
-        &self,
-        primary_candle: &Candle,
-        secondary: &SecondaryTimeframeConfig,
-    ) -> Option<SecondaryContextUnavailableReason> {
-        let Some(latest_secondary) = self
-            .market_state
-            .latest_completed_candle(secondary.timeframe)
-        else {
-            return Some(SecondaryContextUnavailableReason::Missing);
-        };
-        let duration_ms = secondary.timeframe.duration_ms();
-        let allowed_until = latest_secondary.timestamp.saturating_add(
-            duration_ms.saturating_mul(i64::from(secondary.max_missing_candles) + 1),
-        );
-
-        (primary_candle.timestamp > allowed_until)
-            .then_some(SecondaryContextUnavailableReason::Stale)
     }
 
     /// Inspect a configured timeframe's chronological Market State history.

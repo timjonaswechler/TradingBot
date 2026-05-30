@@ -24,6 +24,7 @@ pub mod portfolio;
 pub mod rhai_strategy;
 pub mod risk_exit;
 pub mod runtime;
+mod secondary_context;
 pub mod step;
 pub mod strategy;
 pub mod strategy_config;

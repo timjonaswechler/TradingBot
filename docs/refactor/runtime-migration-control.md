@@ -194,7 +194,6 @@ These are known gaps, not permission to invent local duplicate behavior:
 - #84 — Anchored v2.
 - #85 — Rhai `::new` workaround cleanup.
 - #87 — Per-timeframe warmup decision.
-- #88 — Optional shared Secondary readiness/visibility refactor.
 
 ## How to update this document during grilling
 

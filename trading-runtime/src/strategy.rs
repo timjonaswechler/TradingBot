@@ -1,6 +1,9 @@
 //! Strategy tick boundary abstractions for the trading runtime.
 
-use crate::{MarketState, RuntimePortfolioSnapshot, SecondaryTimeframeConfig, StrategyDecision};
+use crate::{
+    secondary_context::secondary_context_unavailable_reason, MarketState, RuntimePortfolioSnapshot,
+    SecondaryTimeframeConfig, StrategyDecision,
+};
 use shared::{Candle, Timeframe};
 use std::{
     collections::{HashMap, VecDeque},
@@ -77,7 +80,9 @@ impl<'a> MarketView<'a> {
             .find(|secondary| secondary.timeframe == timeframe)
             .ok_or(MarketViewTimeframeError::UnconfiguredTimeframe { timeframe })?;
 
-        if self.secondary_context_is_unavailable(secondary) {
+        if secondary_context_unavailable_reason(self.market_state, self.primary_candle, secondary)
+            .is_some()
+        {
             Ok(None)
         } else {
             Ok(self.market_state.history(timeframe))
@@ -99,19 +104,6 @@ impl<'a> MarketView<'a> {
         self.market_state
             .history(timeframe)
             .and_then(|history| history.last())
-    }
-
-    fn secondary_context_is_unavailable(&self, secondary: &SecondaryTimeframeConfig) -> bool {
-        let Some(latest_secondary) = self.latest_candle(secondary.timeframe) else {
-            return true;
-        };
-
-        let duration_ms = secondary.timeframe.duration_ms();
-        let allowed_until = latest_secondary.timestamp.saturating_add(
-            duration_ms.saturating_mul(i64::from(secondary.max_missing_candles) + 1),
-        );
-
-        self.primary_candle.timestamp > allowed_until
     }
 }
 
