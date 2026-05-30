@@ -195,6 +195,7 @@ dependencies = [
  "shared",
  "tracing",
  "tracing-subscriber",
+ "trading-runtime",
 ]
 
 [[package]]

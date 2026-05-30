@@ -16,10 +16,10 @@ use tracing::info;
 
 use backtester::{
     plan::{execute_plan, render_markdown},
-    run_backtest, BacktestConfig,
+    run_runtime_backtest_with_loader, RuntimeBacktestConfig,
 };
 use db_layer::{get_candles, SpacetimeClient};
-use engine::{detect_warmup_period, Engine};
+use shared::Timeframe;
 
 #[derive(Parser, Debug)]
 #[command(name = "backtester", about = "In-memory backtester — no DB writes")]
@@ -112,8 +112,9 @@ fn run_plan_mode(cli: &Cli, strategy_src: &str, plan_path: &str) -> Result<()> {
     );
     let client = SpacetimeClient::connect(&cli.db_url, &cli.db_module)?;
 
-    let report = execute_plan(strategy_src, &plan_src, |symbol, interval| {
-        let candles = get_candles(&client.conn, symbol, interval, cli.max_candles);
+    let report = execute_plan(strategy_src, &plan_src, |symbol, timeframe| {
+        let interval = timeframe.to_string();
+        let candles = get_candles(&client.conn, symbol, &interval, cli.max_candles);
         if !candles.is_empty() {
             info!(
                 symbol,
@@ -129,11 +130,13 @@ fn run_plan_mode(cli: &Cli, strategy_src: &str, plan_path: &str) -> Result<()> {
     Ok(())
 }
 
+fn parse_timeframe(raw: &str) -> Result<Timeframe> {
+    raw.parse()
+        .map_err(|e| anyhow!("Invalid interval '{}': {e}", raw))
+}
+
 fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
-    // ── Load strategy + build engine (single compile, AST reused for warmup) ──
-    let mut engine = Engine::new(strategy_src)?;
-    let warmup_bars = detect_warmup_period(engine.ast(), engine.scope());
-    info!(strategy = cli.strategy, warmup_bars, "Strategy compiled");
+    let primary_timeframe = parse_timeframe(&cli.interval)?;
 
     // ── Load candles from SpacetimeDB ─────────────────────────────────────────
     info!(
@@ -142,25 +145,33 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
         "Connecting to SpacetimeDB"
     );
     let client = SpacetimeClient::connect(&cli.db_url, &cli.db_module)?;
-    let candles = get_candles(&client.conn, symbol, &cli.interval, cli.max_candles);
-    if candles.is_empty() {
+    // ── Run ──────────────────────────────────────────────────────────────────
+    let runtime_result = run_runtime_backtest_with_loader(
+        strategy_src,
+        RuntimeBacktestConfig::new(symbol.to_string(), primary_timeframe, cli.balance),
+        |symbol, timeframe| {
+            let interval = timeframe.to_string();
+            let candles = get_candles(&client.conn, symbol, &interval, cli.max_candles);
+            if !candles.is_empty() {
+                info!(symbol, interval, count = candles.len(), "Candles loaded");
+            }
+            Ok(candles)
+        },
+    )?;
+    if runtime_result.result.equity_curve.is_empty() {
         return Err(anyhow!(
-            "No candles for {}/{} — run `just seed` first.",
+            "No tradable candles for {}/{} — run `just seed` first.",
             symbol,
             cli.interval,
         ));
     }
-    info!(count = candles.len(), "Candles loaded");
-
-    // ── Run ──────────────────────────────────────────────────────────────────
-    let result = run_backtest(
-        &mut engine,
-        candles,
-        BacktestConfig {
-            initial_balance: cli.balance,
-            warmup_bars,
-        },
-    )?;
+    info!(
+        primary_timeframe = %runtime_result.effective_config.primary_timeframe,
+        secondary_timeframes = ?runtime_result.effective_config.secondary_timeframes,
+        warmup_requirement = runtime_result.warmup_plan.effective_requirement(),
+        "Runtime backtest configured"
+    );
+    let result = runtime_result.result;
 
     // ── Report ───────────────────────────────────────────────────────────────
     let m = result.metrics;

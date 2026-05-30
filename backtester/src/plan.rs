@@ -1,11 +1,10 @@
 use std::fmt::Write as _;
 
 use anyhow::{anyhow, Result};
-use engine::{detect_warmup_period, Engine as StrategyEngine};
 use rhai::{Dynamic, Engine as RhaiEngine, Map, Scope, AST, FLOAT, INT};
-use shared::Candle;
+use shared::{Candle, Timeframe};
 
-use crate::{run_backtest, BacktestConfig, BacktestResult};
+use crate::{run_runtime_backtest_with_loader, BacktestResult, RuntimeBacktestConfig};
 
 #[derive(Debug, Clone)]
 pub struct PlanReport {
@@ -36,35 +35,26 @@ pub fn execute_plan<F>(
     mut load_candles: F,
 ) -> Result<PlanReport>
 where
-    F: FnMut(&str, &str) -> Result<Vec<Candle>>,
+    F: FnMut(&str, Timeframe) -> Result<Vec<Candle>>,
 {
-    let warmup_bars = {
-        let strategy = StrategyEngine::new(strategy_src)?;
-        detect_warmup_period(strategy.ast(), strategy.scope())
-    };
-
     let (title, specs) = parse_plan(plan_src)?;
     let mut tests = Vec::with_capacity(specs.len());
 
     for spec in specs {
-        let candles = load_candles(&spec.symbol, &spec.interval)?;
-        if candles.is_empty() {
+        let primary_timeframe = parse_timeframe(&spec.interval)?;
+        let runtime_result = run_runtime_backtest_with_loader(
+            strategy_src,
+            RuntimeBacktestConfig::new(spec.symbol.clone(), primary_timeframe, spec.balance),
+            |symbol, timeframe| load_candles(symbol, timeframe),
+        )?;
+        if runtime_result.result.equity_curve.is_empty() {
             return Err(anyhow!(
-                "No candles for {}/{} — run `just seed` first.",
+                "No tradable candles for {}/{} — run `just seed` first.",
                 spec.symbol,
                 spec.interval,
             ));
         }
-
-        let mut engine = StrategyEngine::new(strategy_src)?;
-        let result = run_backtest(
-            &mut engine,
-            candles,
-            BacktestConfig {
-                initial_balance: spec.balance,
-                warmup_bars,
-            },
-        )?;
+        let result = runtime_result.result;
 
         tests.push(BaselinePlanTest {
             name: spec.name,
@@ -156,6 +146,11 @@ fn parse_plan(plan_src: &str) -> Result<(Option<String>, Vec<BaselinePlanSpec>)>
     Ok((title, specs))
 }
 
+fn parse_timeframe(raw: &str) -> Result<Timeframe> {
+    raw.parse()
+        .map_err(|e| anyhow!("Invalid plan interval '{}': {e}", raw))
+}
+
 fn compile_plan(rhai: &RhaiEngine, plan_src: &str) -> Result<AST> {
     let ast = rhai
         .compile(plan_src)
@@ -220,8 +215,8 @@ mod tests {
     }
 
     const HOLD_STRATEGY: &str = r#"
-fn on_tick(candles, context) {
-    #{ signal: "HOLD" }
+fn on_tick(market, context) {
+    decision::hold()
 }
 "#;
 
@@ -243,9 +238,9 @@ fn plan() {
 
     #[test]
     fn executes_one_baseline_plan_and_renders_markdown() {
-        let report = execute_plan(HOLD_STRATEGY, BASELINE_PLAN, |symbol, interval| {
+        let report = execute_plan(HOLD_STRATEGY, BASELINE_PLAN, |symbol, timeframe| {
             assert_eq!(symbol, "AAPL");
-            assert_eq!(interval, "1d");
+            assert_eq!(timeframe, Timeframe::days(1));
             Ok(candles())
         })
         .unwrap();
@@ -262,7 +257,7 @@ fn plan() {
 
     #[test]
     fn missing_plan_function_fails_clearly() {
-        let err = execute_plan(HOLD_STRATEGY, "let x = 1;", |_symbol, _interval| {
+        let err = execute_plan(HOLD_STRATEGY, "let x = 1;", |_symbol, _timeframe| {
             Ok(candles())
         })
         .unwrap_err();

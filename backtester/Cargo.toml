@@ -15,6 +15,7 @@ path = "src/main.rs"
 shared     = { path = "../shared" }
 engine     = { path = "../engine" }
 db-layer   = { path = "../db-layer" }
+trading-runtime = { path = "../trading-runtime" }
 anyhow     = { workspace = true }
 clap       = { workspace = true }
 tracing            = { workspace = true }
