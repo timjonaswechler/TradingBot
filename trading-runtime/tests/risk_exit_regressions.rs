@@ -2,8 +2,8 @@ use shared::{Candle, Position, PositionSide, Timeframe};
 use std::{cell::RefCell, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, MarketInput, PortfolioState, RiskExitKind,
-    RiskExitTriggered, RuntimeEvent, RuntimePortfolioSnapshot, RuntimeStep, StrategyDecision,
-    StrategyHandler, TradingRuntime,
+    RiskExitTriggered, RuntimeEvent, RuntimeStep, StrategyDecision, StrategyHandler,
+    TradingRuntime,
 };
 
 fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
@@ -51,13 +51,12 @@ struct CountingStrategyHandler {
 }
 
 impl StrategyHandler for CountingStrategyHandler {
-    fn next_decision(
+    fn on_tick(
         &mut self,
-        _candle: &Candle,
-        _portfolio: &RuntimePortfolioSnapshot,
-    ) -> StrategyDecision {
+        _input: trading_runtime::StrategyTickInput<'_>,
+    ) -> trading_runtime::StrategyTickResult {
         *self.calls.borrow_mut() += 1;
-        StrategyDecision::hold()
+        trading_runtime::StrategyTickResult::Decision(StrategyDecision::hold())
     }
 }
 

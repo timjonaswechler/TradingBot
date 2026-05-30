@@ -5,8 +5,8 @@ This file documents the domain language used by TradingBot2 contributors and str
 ## Language
 
 **Strategy State**:
-Memory that belongs to one running strategy and persists between ticks. Strategy State is visible to Rhai strategies through the strategy context and is not the authoritative account or portfolio state.
-_Avoid_: State, Engine State
+Session-local memory that belongs to one running strategy and persists between Strategy Ticks. Strategy State is visible through the Strategy Context and is distinct from Market State, Compute State, and Portfolio State.
+_Avoid_: State, Engine State, Portfolio State, Market State
 
 **Portfolio State**:
 The canonical trading state of a live or simulated trading session: realized cash balance, open position, and completed trade count. Equity is derived from Portfolio State and current market prices rather than treated as independent account truth; a run may start from an initial completed trade count and then continue counting completed trades from there.
@@ -31,6 +31,14 @@ _Avoid_: Strategy Engine when portfolio/execution coordination is meant
 **Strategy Hook**:
 A named strategy function that the runtime may call at a defined point in the trading session. Missing optional hooks use runtime defaults or no-op behavior.
 _Avoid_: Callback, magic function
+
+**Strategy Configuration**:
+Strategy-declared requirements or defaults that the Trading Runtime can inspect before Strategy Ticks, such as minimum warmup and Secondary-Timeframe requirements. Strategy Configuration does not choose the Runtime Asset, Primary Timeframe, live/backtest mode, or Portfolio State.
+_Avoid_: Run Configuration, Strategy State
+
+**Run Configuration**:
+Operator- or runner-owned configuration for a Trading Runtime, including the Runtime Asset, Primary Timeframe, mode/source choices, and authoritative overrides for configured Secondary Timeframes.
+_Avoid_: Strategy Configuration, Strategy State
 
 **Strategy Decision**:
 The strategy-produced intent for the current Strategy Tick, using explicit direction-aware intents such as HOLD, OPEN_LONG, CLOSE_LONG, OPEN_SHORT, and CLOSE_SHORT. Opening decisions use quantity to mean asset units/contracts, not a balance fraction; a Strategy Decision is interpreted by the Trading Runtime before any portfolio transition occurs.
@@ -65,7 +73,7 @@ A change to Portfolio State, such as opening a position, closing a position, or 
 _Avoid_: DB update, backtest metric
 
 **Warmup Requirement**:
-The amount of market history a Trading Runtime needs before Strategy Ticks are allowed. For multi-timeframe runs, the first model applies the same Warmup Requirement as a per-timeframe history requirement to the Primary Timeframe and configured Secondary Timeframes. The Trading Runtime determines the Warmup Requirement; runners are responsible for fetching and supplying the required market data.
+The amount of market history a Trading Runtime needs before Strategy Ticks are allowed. In multi-timeframe runs, Warmup Requirements are understood per configured timeframe; the first model may resolve the same requirement for every configured timeframe. The Trading Runtime determines the Warmup Requirement; runners are responsible for fetching and supplying the required market data.
 _Avoid_: Runner warmup policy, arbitrary startup delay
 
 **Warmup Phase**:
@@ -121,7 +129,7 @@ The runtime-held market history available to strategy evaluation, potentially ac
 _Avoid_: Candle argument when multiple timeframes are meant
 
 **Market View**:
-The strategy-facing view of Market State. A Market View exposes the current Primary Timeframe candle by default and can expose the latest known completed Secondary-Timeframe candles when requested. Market View candle histories keep the existing strategy-facing convention that index 1 is the newest visible candle and higher indexes move backward in that timeframe. If an optional Secondary Timeframe is unavailable, the corresponding Market View access returns no value; if a required Secondary Timeframe is unavailable, the Strategy Tick is blocked before strategy evaluation.
+The strategy-facing view of Market State and market-derived structure outputs. A Market View exposes the current Primary Timeframe candle by default, can expose latest known completed Secondary-Timeframe candles when requested, and may expose anchored/structure-aware outputs derived from market history. Market View candle histories keep the existing strategy-facing convention that index 1 is the newest visible candle and higher indexes move backward in that timeframe. If an optional Secondary Timeframe is unavailable, the corresponding Market View access returns no value; if a required Secondary Timeframe is unavailable, the Strategy Tick is blocked before strategy evaluation.
 _Avoid_: Context when market data is meant
 
 **Strategy Context**:

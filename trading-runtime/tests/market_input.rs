@@ -80,15 +80,16 @@ impl CountingStrategyHandler {
 }
 
 impl StrategyHandler for CountingStrategyHandler {
-    fn next_decision(
+    fn on_tick(
         &mut self,
-        _candle: &Candle,
-        _portfolio: &RuntimePortfolioSnapshot,
-    ) -> StrategyDecision {
+        _input: trading_runtime::StrategyTickInput<'_>,
+    ) -> trading_runtime::StrategyTickResult {
         *self.calls.borrow_mut() += 1;
-        self.decisions
-            .pop_front()
-            .unwrap_or_else(StrategyDecision::hold)
+        trading_runtime::StrategyTickResult::Decision(
+            self.decisions
+                .pop_front()
+                .unwrap_or_else(StrategyDecision::hold),
+        )
     }
 }
 

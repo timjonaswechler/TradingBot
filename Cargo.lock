@@ -3264,6 +3264,8 @@ dependencies = [
 name = "trading-runtime"
 version = "0.1.0"
 dependencies = [
+ "indicators",
+ "rhai",
  "shared",
 ]
 

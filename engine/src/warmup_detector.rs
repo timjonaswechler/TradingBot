@@ -275,10 +275,19 @@ mod tests {
     }
 
     #[test]
-    fn sma_cross_strategy_detects_slow_period() {
-        let src = std::fs::read_to_string("../strategies/sma_cross.rhai").unwrap();
-        let (ast, scope) = compile(&src);
-        // Strategy currently uses FAST=50, SLOW=200 → max+1 = 201
+    fn legacy_sma_cross_fixture_detects_slow_period() {
+        let src = r#"
+            const FAST = 50;
+            const SLOW = 200;
+
+            fn on_tick(candles, context) {
+                let fast = indicators::sma(candles, FAST);
+                let slow = indicators::sma(candles, SLOW);
+                #{ signal: "HOLD" }
+            }
+        "#;
+        let (ast, scope) = compile(src);
+        // Legacy engine donor fixture uses FAST=50, SLOW=200 → max+1 = 201.
         assert_eq!(detect_warmup_period(&ast, &scope), 201);
     }
 }

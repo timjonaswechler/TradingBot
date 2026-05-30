@@ -1,86 +1,121 @@
-# Strategy reference
+# Typed Strategy Reference
 
-This file documents the current public Rhai API for strategies in this repo.
+This file documents the current strategy-author Rhai surface for the Trading
+Runtime typed Strategy Handling path. It intentionally describes the target
+runtime API, not the legacy `engine` API.
 
-It is intentionally limited to what strategy authors can use today through
-`on_tick`, `anchored_config`, `candles`, `context`, and `indicators::...`.
-Not every Rust helper in `indicators/` is exposed to Rhai.
+See [ADR 0005](../docs/adr/0005-use-typed-rhai-strategy-api.md) for the decision
+to use typed constructors and fluent methods instead of loose maps and magic
+strings.
 
 ## Strategy file contract
 
-Every strategy must define:
+Required hook:
 
 ```rhai
-fn on_tick(candles, context) {
-    #{ signal: "HOLD" }   // or BUY / SELL / SHORT / COVER
+fn on_tick(market, context) {
+    decision::hold()
 }
 ```
 
-Optionally:
+Optional load-time hooks:
 
 ```rhai
+fn strategy_config() {
+    strategy_config::new()
+}
+
 fn anchored_config() {
-    #{ detectors: [...], evaluators: [...] }
+    anchored_config::new()
 }
 ```
 
 Notes:
-- Top-level code runs once at load time.
-- `anchored_config()` is called once at load time if present.
-- `on_tick(candles, context)` is called on each tick.
-- A strategy file may include an optional metadata comment such as:
+
+- Top-level code runs once when the strategy is loaded.
+- `on_tick(market, context)` is called only for Strategy Ticks after warmup and
+  required Secondary readiness checks pass.
+- `strategy_config()` may declare minimum warmup and Secondary-Timeframe
+  requirements/defaults.
+- `anchored_config()` may declare typed anchored/structure compute.
+- A strategy file may include an optional metadata comment such as
+  `// name: "sma_cross"`.
+
+## Decisions
+
+`on_tick` must return a typed `StrategyDecision` from `decision::*`.
+
+| Constructor | Meaning |
+| --- | --- |
+| `decision::hold()` | No strategy-driven position transition. |
+| `decision::open_long(quantity)` | Open a long position with quantity in asset units/contracts. |
+| `decision::close_long()` | Close an existing long position. |
+| `decision::open_short(quantity)` | Open a short position with quantity in asset units/contracts. |
+| `decision::close_short()` | Close an existing short position. |
+
+Fluent methods:
+
+| Method | Valid on | Effect |
+| --- | --- | --- |
+| `.with_stop_loss(price)` | opening decisions only | Adds a runtime-managed hard stop-loss entry risk parameter. |
+| `.with_take_profit(price)` | opening decisions only | Adds a runtime-managed hard take-profit entry risk parameter. |
+| `.with_reason(text)` | all decisions | Adds diagnostic context; no execution semantics. |
+
+Risk-parameter example:
 
 ```rhai
-// name: "sma_cross"
+fn on_tick(market, context) {
+    let c = market.candle();
+
+    decision::open_long(1.0)
+        .with_stop_loss(c.close * 0.95)
+        .with_take_profit(c.close * 1.10)
+        .with_reason("risk managed long")
+}
 ```
 
-## `on_tick` return shape
+Returning `()`, strings, arrays, or object maps is a Strategy Error.
 
-`on_tick` must return a Rhai object map.
+## Market View
 
-| Field | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `signal` | string | yes | — | `BUY`, `SELL`, `HOLD`, `SHORT`, `COVER` |
-| `size` | float | no | `1.0` for directional signals, `0.0` for `HOLD` | Portfolio fraction `0.0..=1.0` |
-| `stop_loss` | float | no | — | Hard stop price |
-| `take_profit` | float | no | — | Take-profit price |
-| `reason` | string | no | — | Logged alongside the trade |
+`market` exposes market data and market-derived structure outputs.
 
-Example:
-
-```rhai
-return #{
-    signal: "BUY",
-    size: 0.5,
-    stop_loss: candles[1].low * 0.98,
-    take_profit: candles[1].close * 1.10,
-    reason: "fast crossed above slow",
-};
-```
-
-## `candles` API
-
-`candles` is a `CandleList`.
-
-### Indexing and helpers
-
-`candles[n]` is 1-indexed and newest-first.
+Primary-Timeframe access:
 
 | Expression | Returns |
 | --- | --- |
-| `candles[1]` | current candle, or `()` if empty |
-| `candles[n]` | nth candle back, or `()` if out of range |
-| `candles.len()` | number of visible candles |
-| `candles.closes()` | plain Rhai array of closes, newest first |
-| `candles.opens()` | plain Rhai array of opens, newest first |
-| `candles.highs()` | plain Rhai array of highs, newest first |
-| `candles.lows()` | plain Rhai array of lows, newest first |
-| `candles.volumes()` | plain Rhai array of volumes, newest first |
+| `market.candle()` | current Primary candle |
+| `market.candles()` | Primary `CandleHistory` |
+| `market.candles()[1]` | current Primary candle |
 
-Important:
-- `candles[1]` is 1-indexed.
-- helper arrays like `candles.closes()` are plain Rhai arrays, so they are 0-indexed.
-- therefore `candles[1].close == candles.closes()[0]` when data exists.
+Secondary-Timeframe access uses typed `Timeframe` values:
+
+```rhai
+const H1 = timeframe("1h");
+
+fn on_tick(market, context) {
+    let h1 = market.candle(H1);
+    let h1_history = market.candles(H1);
+
+    if h1 == () || h1_history == () {
+        return decision::hold().with_reason("optional H1 unavailable");
+    }
+
+    decision::hold()
+}
+```
+
+Rules:
+
+- `market.candle()` / `market.candles()` read the Primary Timeframe.
+- `market.candle(tf)` / `market.candles(tf)` read a configured Secondary
+  Timeframe.
+- Candle histories are 1-indexed and newest-first for strategy authors.
+- Out-of-range history indexes return `()`.
+- Optional unavailable/stale Secondary context returns `()`.
+- Required unavailable/stale Secondary context blocks the Strategy Tick before
+  `on_tick`.
+- Accessing an unconfigured timeframe is a Strategy Error.
 
 ### `Candle` fields and methods
 
@@ -93,64 +128,71 @@ Important:
 | `candle.volume` | float |
 | `candle.timestamp` | integer |
 | `candle.symbol` | string |
-| `candle.bar` | integer, absolute 0-based bar index |
+| `candle.timeframe` | `Timeframe` |
 | `candle.body()` | float |
 | `candle.range()` | float |
 
-## `context` API
-
-`context` is a `Context` wrapper with portfolio state, anchored outputs, and a
-small persistent key-value store.
-
-### Portfolio fields
+### `CandleHistory`
 
 | Expression | Returns |
 | --- | --- |
-| `context.balance` | cash balance |
-| `context.equity` | balance plus open-position value |
-| `context.trades_count` | number of closed trades so far |
-| `context.position` | `Position` or `()` |
-| `context.has_position()` | bool |
+| `history[n]` | nth candle back, 1-indexed newest-first, or `()` |
+| `history.len()` | number of visible candles |
 
-### Persistent state API
+## Indicators
 
-State persists between ticks for one strategy instance.
+Indicator bindings consume `CandleHistory` values from `market.candles(...)`.
+The typed runtime currently exposes:
 
-| Expression | Returns / effect |
+| Function | Returns |
 | --- | --- |
-| `context.state(name, default_int)` | stored integer-like value or the provided default |
-| `context.state_f(name, default_float)` | stored float-like value or the provided default |
-| `context.set_state(name, value)` | stores an integer-like value |
-| `context.set_state_f(name, value)` | stores a float-like value |
-
-Use matching read/write pairs per key.
+| `indicators::sma(history, period)` | `float` or `()` |
+| `indicators::sma(history, period, offset)` | `float` or `()` |
 
 Example:
 
 ```rhai
-let peak = context.state_f("peak_pnl", 0.0);
-if context.position != () {
-    let pnl = context.position.pnl();
-    if pnl > peak {
-        context.set_state_f("peak_pnl", pnl);
+fn on_tick(market, context) {
+    let fast = indicators::sma(market.candles(), 20);
+    let slow = indicators::sma(market.candles(), 50);
+
+    if fast == () || slow == () {
+        return decision::hold().with_reason("warming up");
+    }
+
+    if fast > slow {
+        decision::open_long(1.0).with_reason("fast above slow")
+    } else {
+        decision::hold()
     }
 }
 ```
 
-### Anchored output access
+Most history-dependent indicators return `()` until enough visible history is
+available. Keep explicit warmup guards in strategy code.
+
+## Strategy Context
+
+`context` is grouped. Market data is not exposed through `context`.
 
 | Expression | Returns |
 | --- | --- |
-| `context.anchored(name)` | anchored evaluator output, or `()` |
-| `context.last_pivot(id, "high"|"low")` | `PivotEvent` or `()` |
+| `context.portfolio` | runtime Portfolio Snapshot |
+| `context.state` | session-local Strategy State handle |
 
-`context.anchored(name)` returns:
-- `Array<TrendLine>` for `trendline`
-- `float` or `()` for `slope_between_pivots`
+### Portfolio Snapshot
 
-## `Position` API
+| Expression | Returns |
+| --- | --- |
+| `context.portfolio.realized_cash_balance` | realized cash balance |
+| `context.portfolio.equity` | current equity derived from Portfolio State and mark price |
+| `context.portfolio.completed_trades` | number of completed trades |
+| `context.portfolio.position` | `Position` or `()` |
 
-`context.position` exposes these fields and methods when non-empty:
+`context.portfolio` is runtime-local Portfolio State. It is not an external
+broker/account snapshot.
+
+### `Position`
 
 | Expression | Returns |
 | --- | --- |
@@ -160,103 +202,170 @@ if context.position != () {
 | `position.entry_time` | integer timestamp |
 | `position.stop_loss` | float or `()` |
 | `position.take_profit` | float or `()` |
-| `position.pnl()` | unrealized PnL at current price |
-| `position.value()` | current notional value at current price |
 
-## Anchored indicators
+Example:
 
-Anchored indicators are event-driven. They do not recompute every bar. They
-recompute when their source detector fires.
+```rhai
+fn on_tick(market, context) {
+    let position = context.portfolio.position;
 
-### `anchored_config()` shape
+    if position == () {
+        return decision::open_long(1.0).with_reason("enter");
+    }
+
+    if position.side == "Long" && market.candle().close < position.entry_price * 0.98 {
+        return decision::close_long().with_reason("strategy exit");
+    }
+
+    decision::hold()
+}
+```
+
+## Strategy State
+
+Strategy State is runtime-owned, session-local memory for one running strategy.
+It persists between Strategy Ticks in one runtime session and starts empty for a
+new session/backtest. V1 does not persist Strategy State across live process
+restarts.
+
+Primitive-only API:
+
+| Expression | Returns / effect |
+| --- | --- |
+| `context.state.get(name, default_int)` | stored int or default |
+| `context.state.get(name, default_float)` | stored float or default |
+| `context.state.get(name, default_bool)` | stored bool or default |
+| `context.state.get(name, default_string)` | stored string or default |
+| `context.state.set(name, value)` | stores an int, float, bool, or string |
+
+Use one primitive type per key. Reading a key as a different type is a Strategy
+Error.
+
+```rhai
+fn on_tick(market, context) {
+    let seen = context.state.get("seen", 0);
+    context.state.set("seen", seen + 1);
+
+    decision::hold().with_reason("seen tick")
+}
+```
+
+## Strategy Configuration
+
+`strategy_config()` returns a typed `StrategyConfig`.
+
+| Expression | Meaning |
+| --- | --- |
+| `strategy_config::new()` | Empty/default Strategy Configuration. |
+| `.with_minimum_warmup(n)` | Declares a global minimum warmup. |
+| `.with_secondary(secondary)` | Declares a Secondary-Timeframe requirement/default. |
+| `timeframe("1h")` | Parses and validates a typed `Timeframe`. |
+| `secondary::required(tf)` | Requires Secondary context before Strategy Ticks. |
+| `secondary::optional(tf)` | Allows Strategy Ticks when Secondary context is unavailable. |
+| `.with_max_missing_candles(n)` | Sets Secondary freshness tolerance. |
+
+```rhai
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_minimum_warmup(200)
+        .with_secondary(
+            secondary::required(H1)
+                .with_max_missing_candles(1)
+        )
+}
+```
+
+Strategy Configuration does not choose the Runtime Asset, Primary Timeframe,
+live/backtest mode, provider, broker, portfolio state, or execution semantics.
+Run Configuration remains authoritative.
+
+## Warmup
+
+The runtime resolves effective warmup from:
+
+```text
+max(auto_detected_warmup, strategy_config_minimum_warmup, runtime_minimum_warmup)
+```
+
+Warmup input rebuilds Market State/compute state but does not call `on_tick`,
+does not mutate Strategy State, and does not produce Strategy Decisions or
+Portfolio Transitions. In multi-timeframe runs, warmup must satisfy each
+configured timeframe in the Warmup Plan before Strategy Ticks begin.
+
+## Anchored / structure-aware compute
+
+`anchored_config()` returns a typed `AnchoredConfig`. Anchored outputs are read
+through `market`.
+
+### Config builders
+
+| Expression | Meaning |
+| --- | --- |
+| `anchored_config::new()` | Empty anchored config. |
+| `.with_detector(detector)` | Adds a detector. |
+| `.with_evaluator(evaluator)` | Adds an evaluator. |
+| `pivot_detector::new("id")` | Creates a pivot detector. |
+| `.with_left_bars(n)` / `.with_right_bars(n)` | Configures pivot confirmation windows. |
+| `anchored::trendline("name", "pivot_id")` | Creates a trendline evaluator. |
+| `.with_side(pivot_side::high())` | Resistance-style high-pivot trendline. |
+| `.with_side(pivot_side::low())` | Support-style low-pivot trendline. |
+| `.with_pivot_buffer(n)` | Number of pivots retained for fitting. |
+| `.with_tolerance(x)` | Touch tolerance. |
+| `.with_min_touches(n)` | Minimum touches; must be at least 3. |
+| `.with_max_lines(n)` | Maximum output lines. |
 
 ```rhai
 fn anchored_config() {
-    #{
-        detectors: [
-            #{ id: "p", kind: "pivot", left: 5, right: 5 },
-            #{ id: "lon", kind: "session", session: "LONDON",
-               start: "0900", end: "1700", tz: 2 },
-        ],
-        evaluators: [
-            #{
-                expose_as: "res",
-                kind: "trendline",
-                side: "resistance",
-                pivot_source: "p",
-                pivot_buffer: 6,
-                tolerance: 0.002,
-                min_touches: 3,
-                max_lines: 1,
-            },
-            #{
-                expose_as: "trend_slope",
-                kind: "slope_between_pivots",
-                pivot_source: "p",
-                side: "low",
-            },
-        ],
-    }
+    anchored_config::new()
+        .with_detector(
+            pivot_detector::new("swing")
+                .with_left_bars(3)
+                .with_right_bars(3)
+        )
+        .with_evaluator(
+            anchored::trendline("resistance", "swing")
+                .with_side(pivot_side::high())
+                .with_pivot_buffer(6)
+                .with_tolerance(0.002)
+                .with_min_touches(3)
+                .with_max_lines(1)
+        )
 }
 ```
 
-Validation happens at load time.
+### Output access
 
-Load-time errors include:
-- duplicate detector `id`
-- duplicate evaluator `expose_as`
-- unknown `pivot_source`
-- invalid parameter ranges
+| Expression | Returns |
+| --- | --- |
+| `market.anchored(name)` | anchored evaluator output, or `()` |
+| `market.last_pivot(detector_id, pivot_side::high())` | last high `PivotEvent`, or `()` |
+| `market.last_pivot(detector_id, pivot_side::low())` | last low `PivotEvent`, or `()` |
 
-### Supported detectors
+Currently supported anchored evaluator output:
 
-| `kind` | Required fields | Emits |
-| --- | --- | --- |
-| `pivot` | `id`, `left`, `right` | pivot high / low events |
-| `session` | `id`, `session`, `start`, `end`, `tz` | session open / close events |
+- `anchored::trendline(...)` returns `Array<TrendLine>` or `()` via
+  `market.anchored(name)`.
 
-Session values:
-- `"ASIA"`
-- `"LONDON"`
-- `"NEWYORK"`
-- `"NY"`
-- a numeric string that parses to `u8` for custom IDs
-
-### Supported evaluators
-
-| `kind` | Output | Required fields |
-| --- | --- | --- |
-| `trendline` | `Array<TrendLine>` | `expose_as`, `side`, `pivot_source`, `pivot_buffer`, `tolerance`, `min_touches`, `max_lines` |
-| `slope_between_pivots` | `float` or `()` | `expose_as`, `pivot_source`, `side` |
-
-`trendline.side` must be `"resistance"` or `"support"`.
-
-`slope_between_pivots.side` must be `"high"` or `"low"`.
-
-### Reading anchored outputs
+Example:
 
 ```rhai
-let lines = context.anchored("res");
-if type_of(lines) == "array" && lines.len() > 0 {
-    let line = lines[0];
-    let y = line.y_at(candles[1].bar);
-    if candles[1].close > y {
-        return #{ signal: "BUY", reason: "break above resistance" };
+fn on_tick(market, context) {
+    let lines = market.anchored("resistance");
+    if type_of(lines) == "array" && lines.len() > 0 {
+        let current_bar = market.candles().len() - 1;
+        let line = lines[0];
+        if market.candle().close > line.y_at(current_bar) {
+            return decision::open_long(1.0).with_reason("break above resistance");
+        }
     }
-}
 
-let slope = context.anchored("trend_slope");
-if type_of(slope) == "f64" && slope > 0.0 {
-    // trend filter
-}
-
-let p = context.last_pivot("p", "high");
-if p != () {
-    // use p.bar, p.price, p.volume, p.side
+    decision::hold()
 }
 ```
 
-### `TrendLine` API
+### `TrendLine`
 
 | Expression | Returns |
 | --- | --- |
@@ -268,7 +377,7 @@ if p != () {
 | `line.side` | `"resistance"` or `"support"` |
 | `line.y_at(bar)` | float |
 
-### `PivotEvent` API
+### `PivotEvent`
 
 | Expression | Returns |
 | --- | --- |
@@ -277,153 +386,9 @@ if p != () {
 | `pivot.volume` | float |
 | `pivot.side` | `"high"` or `"low"` |
 
-### Tick semantics
+## Legacy donor API is not supported here
 
-1. A new candle arrives.
-2. Detectors run.
-3. Evaluators recompute only if their source detector fired this tick.
-4. `on_tick` sees the current anchored outputs.
-5. Broken trendlines are pruned after `on_tick`, so the break bar still sees them and the next tick does not.
-
-That means breakout detection should compare the current candle against the
-current line value on the same bar.
-
-## `indicators::...` API
-
-All indicator functions below are currently exposed to Rhai.
-
-Unless noted otherwise, indicators return `()` when there is insufficient data.
-
-### Trend
-
-| Function | Returns |
-| --- | --- |
-| `indicators::sma(candles, period)` | `float` or `()` |
-| `indicators::sma(candles, period, offset)` | `float` or `()` |
-| `indicators::ema(candles, period)` | `float` or `()` |
-| `indicators::ema(candles, period, offset)` | `float` or `()` |
-| `indicators::dema(candles, period)` | `float` or `()` |
-| `indicators::dema(candles, period, offset)` | `float` or `()` |
-| `indicators::tema(candles, period)` | `float` or `()` |
-| `indicators::tema(candles, period, offset)` | `float` or `()` |
-| `indicators::macd(candles, fast, slow, signal)` | `#{ line, signal, histogram }` or `()` |
-| `indicators::macd(candles, fast, slow, signal, offset)` | `#{ line, signal, histogram }` or `()` |
-| `indicators::sar(candles, step, max)` | `#{ value, side, reversed, ep, af }` or `()` |
-| `indicators::sar(candles, step, max, offset)` | `#{ value, side, reversed, ep, af }` or `()` |
-| `indicators::adx(candles, period)` | `#{ adx, plus_di, minus_di }` or `()` |
-| `indicators::adx(candles, period, offset)` | `#{ adx, plus_di, minus_di }` or `()` |
-| `indicators::ichimoku(candles)` | `#{ tenkan, kijun, span_a, span_b, chikou }` or `()` |
-| `indicators::ichimoku(candles, offset)` | `#{ tenkan, kijun, span_a, span_b, chikou }` or `()` |
-
-### Momentum
-
-| Function | Returns |
-| --- | --- |
-| `indicators::rsi(candles, period)` | `float` or `()` |
-| `indicators::rsi(candles, period, offset)` | `float` or `()` |
-| `indicators::cci(candles, period)` | `float` or `()` |
-| `indicators::cci(candles, period, offset)` | `float` or `()` |
-| `indicators::stochastic_fast(candles, period)` | `#{ k, d }` or `()` |
-| `indicators::stochastic_fast(candles, period, offset)` | `#{ k, d }` or `()` |
-| `indicators::stochastic_slow(candles, period)` | `#{ k, d }` or `()` |
-| `indicators::stochastic_slow(candles, period, offset)` | `#{ k, d }` or `()` |
-| `indicators::stochastic_full(candles, period)` | `#{ k, d }` or `()` (k_smooth=3, d_period=3) |
-| `indicators::stochastic_full(candles, period, k_smooth)` | `#{ k, d }` or `()` |
-| `indicators::stochastic_full(candles, period, k_smooth, d_period)` | `#{ k, d }` or `()` |
-| `indicators::williams_r(candles, period)` | `float` or `()` |
-| `indicators::williams_r(candles, period, offset)` | `float` or `()` |
-| `indicators::roc(candles, period)` | `float` or `()` |
-| `indicators::roc(candles, period, offset)` | `float` or `()` |
-
-### Volatility
-
-| Function | Returns |
-| --- | --- |
-| `indicators::bollinger(candles, period, std_dev)` | `#{ upper, middle, lower }` or `()` |
-| `indicators::bollinger(candles, period, std_dev, offset)` | `#{ upper, middle, lower }` or `()` |
-| `indicators::atr(candles, period)` | `float` or `()` |
-| `indicators::atr(candles, period, offset)` | `float` or `()` |
-| `indicators::keltner(candles, period, multiplier)` | `#{ upper, middle, lower }` or `()` |
-| `indicators::keltner(candles, period, multiplier, offset)` | `#{ upper, middle, lower }` or `()` |
-
-### Volume
-
-| Function | Returns |
-| --- | --- |
-| `indicators::obv(candles)` | `float` or `()` |
-| `indicators::obv(candles, offset)` | `float` or `()` |
-| `indicators::vwap(candles)` | `float` or `()` |
-| `indicators::vwap(candles, offset)` | `float` or `()` |
-| `indicators::mfi(candles, period)` | `float` or `()` |
-| `indicators::mfi(candles, period, offset)` | `float` or `()` |
-| `indicators::volume_profile(candles, buckets)` | `Array<#{ price, volume }>` or `()` |
-| `indicators::volume_profile(candles, buckets, offset)` | `Array<#{ price, volume }>` or `()` |
-
-### Support / resistance and geometry
-
-| Function | Returns |
-| --- | --- |
-| `indicators::pivot_points(candles)` | `#{ pp, r1, r2, r3, s1, s2, s3 }` or `()` |
-| `indicators::pivot_points(candles, offset)` | `#{ pp, r1, r2, r3, s1, s2, s3 }` or `()` |
-| `indicators::fibonacci(candles, low, high)` | `Array<float>` |
-| `indicators::slope(candles, period)` | `float` or `()` |
-| `indicators::slope(candles, period, offset)` | `float` or `()` |
-
-## Public API boundary
-
-This reference is about the Rhai authoring surface, not every Rust helper in
-`indicators/`.
-
-Examples of Rust helpers that exist today but are not exposed directly to Rhai:
-- `ema_series`
-- `atr_series`
-- `ichimoku_custom`
-
-`fibonacci` is the one public indicator without an offset overload because its
-result depends only on the explicit `low` and `high` arguments, not on candle
-history.
-
-Likewise, the anchored Rust module contains internal event types that are not
-currently configurable from strategy code. The public strategy surface today is:
-- detectors: `pivot`, `session`
-- evaluators: `trendline`, `slope_between_pivots`
-
-## Engine gotchas
-
-### Warmup
-
-Always expect warmup.
-
-```rhai
-let s = indicators::sma(candles, 20);
-if s == () {
-    return #{ signal: "HOLD", reason: "warming up" };
-}
-```
-
-The backtester tries to infer warmup from `indicators::*` calls and top-level
-constants. If it cannot resolve periods, it falls back to `200` bars.
-
-### Expression complexity
-
-Large nested return maps can trip Rhai's expression complexity limit.
-
-```rhai
-// Better
-let tp = candles[1].close * 1.10;
-return #{
-    signal: "BUY",
-    take_profit: tp,
-    reason: "break above resistance",
-};
-```
-
-### Use top-level constants for strategy parameters
-
-Top-level `const` values run once at load time and are visible to both
-`anchored_config()` and `on_tick()`.
-
-```rhai
-const FAST = 20;
-const SLOW = 50;
-```
+The old hook `fn on_tick(candles, context)` and loose return maps such as
+`#{ signal: "BUY", size: 0.5 }` are legacy old-engine donor material only. They
+are not the target Strategy Handling API and are not compatibility-mapped by the
+Trading Runtime typed Rhai path.

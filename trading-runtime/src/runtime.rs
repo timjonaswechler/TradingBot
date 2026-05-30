@@ -3,9 +3,10 @@
 use crate::market_input::MarketInputTimeframeRole;
 use crate::{
     evaluate_risk_exit, plan_execution, BlockedSecondaryContext, ExecutionAction, ExitKind,
-    ForceCloseIgnoredReason, MarketInput, MarketState, PortfolioState, RuntimeConfig, RuntimeEvent,
-    RuntimeInputError, RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness,
-    SecondaryTimeframeConfig, StrategyHandler,
+    ForceCloseIgnoredReason, MarketInput, MarketState, MarketView, PortfolioState, RuntimeConfig,
+    RuntimeEvent, RuntimeInputError, RuntimeStep, SecondaryContextUnavailableReason,
+    SecondaryReadiness, SecondaryTimeframeConfig, StrategyContext, StrategyHandler, StrategyState,
+    StrategyTickInput, StrategyTickResult, WarmupPlan,
 };
 use shared::{Candle, PositionSide, Timeframe};
 use std::collections::HashMap;
@@ -17,8 +18,9 @@ pub struct TradingRuntime<S> {
     market_state: MarketState,
     portfolio: PortfolioState,
     warmup_progress: HashMap<Timeframe, usize>,
-    warmup_requirement: usize,
+    warmup_plan: WarmupPlan,
     warmup_completed: bool,
+    strategy_state: StrategyState,
     strategy_handler: S,
 }
 
@@ -38,20 +40,35 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         warmup_requirement: usize,
         strategy_handler: S,
     ) -> Self {
+        let warmup_plan = WarmupPlan::same_requirement(&config, warmup_requirement);
+        Self::with_warmup_plan(config, portfolio, warmup_plan, strategy_handler)
+    }
+
+    pub fn with_warmup_plan(
+        config: RuntimeConfig,
+        portfolio: PortfolioState,
+        warmup_plan: WarmupPlan,
+        strategy_handler: S,
+    ) -> Self {
         let market_state = MarketState::from_config(&config);
         let warmup_progress = config
             .configured_timeframes()
             .into_iter()
             .map(|timeframe| (timeframe, 0))
             .collect();
+        let warmup_completed = config
+            .configured_timeframes()
+            .iter()
+            .all(|timeframe| warmup_plan.requirement_for(*timeframe).unwrap_or(0) == 0);
 
         Self {
             config,
             market_state,
             portfolio,
             warmup_progress,
-            warmup_requirement,
-            warmup_completed: warmup_requirement == 0,
+            warmup_plan,
+            warmup_completed,
+            strategy_state: StrategyState::default(),
             strategy_handler,
         }
     }
@@ -84,6 +101,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     fn on_completed_primary_before_warmup_complete(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
+        self.notify_strategy_market_input_accepted(&candle);
 
         RuntimeStep::new(
             vec![RuntimeEvent::MarketInputAccepted {
@@ -95,6 +113,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     fn on_secondary_completed_candle(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
+        self.notify_strategy_market_input_accepted(&candle);
 
         RuntimeStep::new(
             vec![RuntimeEvent::MarketInputAccepted {
@@ -106,6 +125,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     pub fn on_warmup_input(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
+        self.notify_strategy_market_input_accepted(&candle);
         let timeframe = candle.timeframe;
         let current_warmup_input_count = self.advance_warmup_progress(timeframe);
 
@@ -116,14 +136,14 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         events.push(RuntimeEvent::WarmupAdvanced {
             timeframe,
             current_warmup_input_count,
-            required_warmup_inputs: self.warmup_requirement,
+            required_warmup_inputs: self.required_warmup_inputs(timeframe),
         });
 
         if !self.warmup_completed && self.is_warmup_complete() {
             self.warmup_completed = true;
             events.push(RuntimeEvent::WarmupCompleted {
                 completed_timeframes: self.config.configured_timeframes(),
-                required_warmup_inputs: self.warmup_requirement,
+                required_warmup_inputs: self.warmup_requirement(),
             });
         }
 
@@ -132,6 +152,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
 
     fn handle_completed_primary_after_warmup(&mut self, candle: Candle) -> RuntimeStep {
         self.market_state.record_accepted_candle(candle.clone());
+        self.notify_strategy_market_input_accepted(&candle);
 
         let mut events = vec![RuntimeEvent::MarketInputAccepted {
             candle: candle.clone(),
@@ -198,9 +219,32 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         });
 
         let portfolio_before_decision = self.portfolio.snapshot(candle.close);
-        let decision = self
-            .strategy_handler
-            .next_decision(&candle, &portfolio_before_decision);
+        let tick_input = StrategyTickInput {
+            market: MarketView::new(
+                &self.market_state,
+                self.config.primary_timeframe,
+                self.config.secondary_configs(),
+                &candle,
+            ),
+            context: StrategyContext {
+                portfolio: &portfolio_before_decision,
+                state: &mut self.strategy_state,
+            },
+            primary_candle: &candle,
+        };
+        let decision = match self.strategy_handler.on_tick(tick_input) {
+            StrategyTickResult::Decision(decision) => decision,
+            StrategyTickResult::Error(error) => {
+                events.push(RuntimeEvent::StrategyError {
+                    candle: candle.clone(),
+                    error,
+                });
+                events.push(RuntimeEvent::StrategyTickCompleted);
+                events.push(RuntimeEvent::TradableCandleCompleted);
+
+                return RuntimeStep::new(events, self.portfolio.snapshot(candle.close));
+            }
+        };
         events.push(RuntimeEvent::StrategyDecisionProduced {
             decision: decision.clone(),
         });
@@ -344,7 +388,23 @@ impl<S: StrategyHandler> TradingRuntime<S> {
     }
 
     pub fn warmup_requirement(&self) -> usize {
-        self.warmup_requirement
+        self.warmup_plan.effective_requirement()
+    }
+
+    pub fn warmup_plan(&self) -> &WarmupPlan {
+        &self.warmup_plan
+    }
+
+    fn required_warmup_inputs(&self, timeframe: Timeframe) -> usize {
+        self.warmup_plan.requirement_for(timeframe).unwrap_or(0)
+    }
+
+    fn notify_strategy_market_input_accepted(&mut self, candle: &Candle) {
+        self.strategy_handler.on_market_input_accepted(
+            &self.market_state,
+            candle,
+            self.config.primary_timeframe,
+        );
     }
 
     fn advance_warmup_progress(&mut self, timeframe: Timeframe) -> usize {
@@ -354,10 +414,10 @@ impl<S: StrategyHandler> TradingRuntime<S> {
     }
 
     fn is_warmup_complete(&self) -> bool {
-        self.warmup_requirement == 0
-            || self.config.configured_timeframes().iter().all(|timeframe| {
-                self.warmup_progress.get(timeframe).copied().unwrap_or(0) >= self.warmup_requirement
-            })
+        self.config.configured_timeframes().iter().all(|timeframe| {
+            self.warmup_progress.get(timeframe).copied().unwrap_or(0)
+                >= self.required_warmup_inputs(*timeframe)
+        })
     }
 
     fn evaluate_secondary_readiness(

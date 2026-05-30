@@ -963,14 +963,10 @@ fn on_tick(candles, context) {
     }
 
     #[test]
-    fn trendline_break_strategy_loads() {
-        // Loads the actual strategy file from disk — exercises the full spec parse.
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../strategies/trendline_break.rhai"
-        ))
-        .expect("read trendline_break.rhai");
-        let mut e = Engine::new(&src).expect("engine should load");
+    fn legacy_anchored_fixture_loads() {
+        // The maintained strategies/ examples now target the typed Trading Runtime API.
+        // Keep this old-engine donor coverage on an inline legacy fixture instead.
+        let mut e = Engine::new(ANCHORED).expect("engine should load legacy fixture");
         // A single HOLD tick must not crash (no anchored output yet).
         let d = e.tick(make_candle(100.0, 1), flat_ctx()).unwrap();
         assert_eq!(d.signal, Signal::Hold);
