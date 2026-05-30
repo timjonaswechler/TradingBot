@@ -238,7 +238,13 @@ mod tests {
         let fast = stochastic_fast(&c, 14).unwrap();
         let slow = stochastic_slow(&c, 14).unwrap();
 
-        // %D of slow is smoother (less volatile) than %K of fast
+        // Slow %K is the smoothed fast %K line, which matches fast %D for the same input.
+        assert!(
+            (slow.k - fast.d).abs() < 1e-10,
+            "slow %K {:.4} should match fast %D {:.4}",
+            slow.k,
+            fast.d
+        );
         assert!(slow.d <= 100.0 && slow.d >= 0.0);
     }
 
