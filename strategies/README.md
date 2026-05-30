@@ -6,7 +6,9 @@ Handling API. The current target API is the runtime-owned Rhai path described in
 `engine` API.
 
 Use this README as the practical guide for creating a new strategy. Use
-[`REFERENCE.md`](./REFERENCE.md) for the exact public Rhai API.
+[`REFERENCE.md`](./REFERENCE.md) for the exact public Rhai API. Maintainers who
+need runner/runtime event details should also read
+[`docs/refactor/runtime-market-state-semantics.md`](../docs/refactor/runtime-market-state-semantics.md).
 
 ## Quick start
 
@@ -135,7 +137,9 @@ let h1_history = market.candles(H1);
 Optional Secondary context that is unavailable or stale returns `()` from
 `market.candle(tf)` and `market.candles(tf)`. Required Secondary context that is
 unavailable or stale blocks the Strategy Tick before `on_tick` is called.
-Accessing an unconfigured timeframe is a Strategy Error.
+Runtime-managed Risk Exits are checked on a Tradable Primary candle before
+required Secondary blocking, so a hard exit may close an open position without
+calling `on_tick`. Accessing an unconfigured timeframe is a Strategy Error.
 
 ## Strategy State
 
@@ -180,8 +184,11 @@ broker account snapshot.
 
 Warmup is handled by the runtime before Strategy Ticks. The effective warmup is
 resolved from auto-detected indicator requirements, `strategy_config()` minimum
-warmup, and runtime configuration. During warmup, `on_tick` is not called and
-Strategy State is not mutated.
+warmup, and runtime configuration. V1 applies that resolved count to every
+configured timeframe in the Warmup Plan; the runtime does not start Strategy
+Ticks until the Primary Timeframe and each configured Secondary Timeframe have
+satisfied warmup. During warmup, `on_tick` is not called and Strategy State is
+not mutated.
 
 Indicators can still return `()` when there is insufficient visible history, so
 keep explicit guards in strategy logic:

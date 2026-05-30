@@ -2,7 +2,9 @@
 
 This file documents the current strategy-author Rhai surface for the Trading
 Runtime typed Strategy Handling path. It intentionally describes the target
-runtime API, not the legacy `engine` API.
+runtime API, not the legacy `engine` API. Maintainer-level event, runner, and
+backtester semantics are documented in
+[`docs/refactor/runtime-market-state-semantics.md`](../docs/refactor/runtime-market-state-semantics.md).
 
 See [ADR 0005](../docs/adr/0005-use-typed-rhai-strategy-api.md) for the decision
 to use typed constructors and fluent methods instead of loose maps and magic
@@ -115,6 +117,9 @@ Rules:
 - Optional unavailable/stale Secondary context returns `()`.
 - Required unavailable/stale Secondary context blocks the Strategy Tick before
   `on_tick`.
+- Runtime-managed Risk Exits are checked on Tradable Primary candles before
+  required Secondary blocking, so a hard exit can close an open position without
+  an `on_tick` call.
 - Accessing an unconfigured timeframe is a Strategy Error.
 
 ### `Candle` fields and methods
@@ -292,7 +297,10 @@ max(auto_detected_warmup, strategy_config_minimum_warmup, runtime_minimum_warmup
 Warmup input rebuilds Market State/compute state but does not call `on_tick`,
 does not mutate Strategy State, and does not produce Strategy Decisions or
 Portfolio Transitions. In multi-timeframe runs, warmup must satisfy each
-configured timeframe in the Warmup Plan before Strategy Ticks begin.
+configured timeframe in the Warmup Plan before Strategy Ticks begin. V1 resolves
+one global effective count and assigns it to every configured timeframe; the
+plan is keyed by timeframe so future per-timeframe requirements can be added
+without changing the strategy hook shape.
 
 ## Anchored / structure-aware compute
 

@@ -186,8 +186,6 @@ These are known gaps, not permission to invent local duplicate behavior:
 - #39 — External Account Snapshot / live account reconciliation.
 - #40 — Position Risk Update Intents.
 - #42 — Execution cost model for slippage, fees, and spread.
-- #65 — Maintainer/runner/backtester documentation after runtime integration.
-- #67 — Protective Runner Shutdown policy.
 - #81 — Strategy State v2.
 - #82 — Additional Runtime Rhai indicator bindings.
 - #83 — Market View candle history snapshot benchmark.
