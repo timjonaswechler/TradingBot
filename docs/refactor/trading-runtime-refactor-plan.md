@@ -8,6 +8,8 @@ The goal is to rebuild the backend architecture around one shared Trading Runtim
 
 Existing architecture documents are not treated as source of truth for this refactor. This plan is the new working source for the runtime cleanup.
 
+Use `docs/refactor/runtime-migration-control.md` as the operational control map for agents and maintainers during the migration: it classifies code as canonical, donor, transitional, or removable and records which intentional gaps are owned by follow-up issues.
+
 ## Solution
 
 Create a clean target architecture with these responsibilities:
