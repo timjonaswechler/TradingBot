@@ -72,7 +72,7 @@ async fn run_daemon(config_path: &str) -> Result<()> {
     )?);
     info!("Connected — cache ready");
 
-    // ── Spawn one live engine task per (asset × interval) ──────────────────────
+    // ── Spawn one live runtime task per Runtime Asset ─────────────────────────
     let cancel = CancellationToken::new();
     let mut handles = Vec::new();
 
@@ -86,21 +86,16 @@ async fn run_daemon(config_path: &str) -> Result<()> {
             continue;
         }
 
-        for interval in asset.intervals.clone() {
-            let client_clone = client.clone();
-            let cancel_clone = cancel.clone();
-            let asset_clone = asset.clone();
+        let client_clone = client.clone();
+        let cancel_clone = cancel.clone();
 
-            let handle = tokio::spawn(async move {
-                if let Err(e) =
-                    live_engine::run(client_clone, asset_clone, interval, cancel_clone).await
-                {
-                    tracing::error!(error = %e, "Live engine task failed");
-                }
-            });
+        let handle = tokio::spawn(async move {
+            if let Err(e) = live_engine::run(client_clone, asset, cancel_clone).await {
+                tracing::error!(error = %e, "Live runtime task failed");
+            }
+        });
 
-            handles.push(handle);
-        }
+        handles.push(handle);
     }
 
     // ── Wait for shutdown signal ───────────────────────────────────────────────

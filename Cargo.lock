@@ -3258,6 +3258,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "trading-runtime",
 ]
 
 [[package]]
