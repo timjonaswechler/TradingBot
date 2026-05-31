@@ -694,9 +694,205 @@ pub fn render_markdown(report: &PlanReport, strategy_label: &str) -> String {
             metrics.max_drawdown_pct * 100.0
         );
         let _ = writeln!(out, "- Trades: {}", metrics.trade_count);
+
+        if let Some(synthetic) = &test.synthetic {
+            render_synthetic_monte_carlo(&mut out, test, synthetic);
+        }
     }
 
     out
+}
+
+fn render_synthetic_monte_carlo(
+    out: &mut String,
+    test: &BaselinePlanTest,
+    synthetic: &SyntheticMonteCarloReport,
+) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "### Baseline vs synthetic Monte Carlo comparison");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "- Procedure: {}",
+        monte_carlo_procedure_label(&synthetic.procedure)
+    );
+    let _ = writeln!(out, "- Iterations: {}", synthetic.iterations.len());
+
+    if synthetic.iterations.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "_No synthetic iterations were produced._");
+        return;
+    }
+
+    let final_equity_summary = metric_summary(
+        test.result.metrics.final_equity,
+        synthetic
+            .iterations
+            .iter()
+            .map(|iteration| iteration.final_equity),
+    );
+    let max_drawdown_summary = metric_summary(
+        test.result.metrics.max_drawdown,
+        synthetic
+            .iterations
+            .iter()
+            .map(|iteration| iteration.max_drawdown),
+    );
+
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "| Metric | Baseline | Synthetic p5 | Synthetic p50 | Synthetic p95 | Baseline percentile |"
+    );
+    let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|");
+    render_metric_summary_row(out, "Final equity", final_equity_summary);
+    render_metric_summary_row(out, "Max drawdown", max_drawdown_summary);
+
+    let _ = writeln!(out);
+    let _ = writeln!(out, "#### Reduced iteration diagnostics");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "| Iteration | Seed | Final equity | Max drawdown | Trades | Blocked Strategy Ticks | Strategy Exits | Risk Exits | Force Closes |"
+    );
+    let _ = writeln!(out, "|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    for iteration in &synthetic.iterations {
+        let _ = writeln!(
+            out,
+            "| {} | {} | {:.2} | {:.2} | {} | {} | {} | {} | {} |",
+            iteration.iteration,
+            iteration.seed,
+            iteration.final_equity,
+            iteration.max_drawdown,
+            iteration.trade_count,
+            iteration.blocked_strategy_tick_count,
+            iteration.strategy_exit_count,
+            iteration.risk_exit_count,
+            iteration.force_close_count,
+        );
+    }
+}
+
+fn monte_carlo_procedure_label(procedure: &MonteCarloProcedure) -> &'static str {
+    match procedure {
+        MonteCarloProcedure::CandlePermutation => "Candle permutation",
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MonteCarloMetricSummary {
+    baseline: f64,
+    p5: f64,
+    p50: f64,
+    p95: f64,
+    baseline_percentile: f64,
+}
+
+fn metric_summary(
+    baseline: f64,
+    synthetic_values: impl Iterator<Item = f64>,
+) -> MonteCarloMetricSummary {
+    let samples = sorted_metric_samples(synthetic_values);
+    MonteCarloMetricSummary {
+        baseline,
+        p5: interpolated_percentile(&samples, 0.05),
+        p50: interpolated_percentile(&samples, 0.50),
+        p95: interpolated_percentile(&samples, 0.95),
+        baseline_percentile: baseline_percentile(&samples, baseline),
+    }
+}
+
+fn render_metric_summary_row(out: &mut String, label: &str, summary: MonteCarloMetricSummary) {
+    let _ = writeln!(
+        out,
+        "| {label} | {:.2} | {:.2} | {:.2} | {:.2} | {:.1}% |",
+        summary.baseline,
+        summary.p5,
+        summary.p50,
+        summary.p95,
+        summary.baseline_percentile * 100.0,
+    );
+}
+
+fn sorted_metric_samples(synthetic_values: impl Iterator<Item = f64>) -> Vec<f64> {
+    let mut samples = synthetic_values.collect::<Vec<_>>();
+    samples.sort_by(f64::total_cmp);
+    samples
+}
+
+/// Return a percentile using linear interpolation over sorted synthetic samples.
+fn interpolated_percentile(sorted_samples: &[f64], percentile: f64) -> f64 {
+    assert!(
+        !sorted_samples.is_empty(),
+        "percentile requires at least one synthetic sample"
+    );
+    assert!(
+        (0.0..=1.0).contains(&percentile),
+        "percentile must be in the inclusive range [0, 1]"
+    );
+
+    if sorted_samples.len() == 1 {
+        return sorted_samples[0];
+    }
+
+    let rank = percentile * (sorted_samples.len() - 1) as f64;
+    let lower_index = rank.floor() as usize;
+    let upper_index = rank.ceil() as usize;
+    let lower = sorted_samples[lower_index];
+    let upper = sorted_samples[upper_index];
+
+    if lower_index == upper_index {
+        lower
+    } else {
+        lower + (upper - lower) * (rank - lower_index as f64)
+    }
+}
+
+/// Return the baseline value's inverse linear position in the synthetic distribution.
+fn baseline_percentile(sorted_samples: &[f64], baseline: f64) -> f64 {
+    assert!(
+        !sorted_samples.is_empty(),
+        "baseline percentile requires at least one synthetic sample"
+    );
+
+    if sorted_samples.len() == 1 {
+        return match baseline.total_cmp(&sorted_samples[0]) {
+            std::cmp::Ordering::Less => 0.0,
+            std::cmp::Ordering::Equal => 0.5,
+            std::cmp::Ordering::Greater => 1.0,
+        };
+    }
+
+    let first = sorted_samples[0];
+    let last = sorted_samples[sorted_samples.len() - 1];
+    if first == last {
+        return match baseline.total_cmp(&first) {
+            std::cmp::Ordering::Less => 0.0,
+            std::cmp::Ordering::Equal => 0.5,
+            std::cmp::Ordering::Greater => 1.0,
+        };
+    }
+    if baseline <= first {
+        return 0.0;
+    }
+    if baseline >= last {
+        return 1.0;
+    }
+
+    for (lower_index, window) in sorted_samples.windows(2).enumerate() {
+        let lower = window[0];
+        let upper = window[1];
+        if baseline <= upper {
+            let local_fraction = if lower == upper {
+                0.0
+            } else {
+                (baseline - lower) / (upper - lower)
+            };
+            return (lower_index as f64 + local_fraction) / (sorted_samples.len() - 1) as f64;
+        }
+    }
+
+    1.0
 }
 
 fn parse_plan(plan_src: &str) -> Result<ValidatedPlanResultSpec> {
@@ -1189,6 +1385,122 @@ fn plan() {
         .with_test(msft_test)
 }
 "#;
+
+    fn result_with_metrics(
+        final_equity: f64,
+        max_drawdown: f64,
+        trade_count: usize,
+    ) -> BacktestResult {
+        BacktestResult {
+            trades: Vec::new(),
+            equity_curve: vec![crate::EquityPoint {
+                timestamp: day(2),
+                equity: final_equity,
+            }],
+            metrics: crate::BacktestMetrics {
+                trade_count,
+                wins: 0,
+                losses: 0,
+                win_rate: 0.0,
+                total_pnl: final_equity - 10_000.0,
+                max_drawdown,
+                max_drawdown_pct: max_drawdown / 10_000.0,
+                final_equity,
+                peak_equity: final_equity + max_drawdown,
+                cagr: 0.0,
+                sharpe: 0.0,
+                time_in_market_pct: 0.0,
+                years: 0.0,
+            },
+            benchmark: crate::Benchmark {
+                final_equity,
+                cagr: 0.0,
+                max_drawdown,
+                max_drawdown_pct: max_drawdown / 10_000.0,
+            },
+            final_balance: final_equity,
+        }
+    }
+
+    fn report_with_synthetic_iterations(
+        iterations: Vec<MonteCarloIterationDiagnostics>,
+    ) -> PlanReport {
+        PlanReport {
+            title: Some("Monte Carlo report".to_string()),
+            tests: vec![BaselinePlanTest {
+                name: "baseline vs candle permutation".to_string(),
+                symbol: "AAPL".to_string(),
+                interval: "1d".to_string(),
+                initial_balance: 10_000.0,
+                result: result_with_metrics(10_500.0, 15.0, 7),
+                synthetic: Some(SyntheticMonteCarloReport {
+                    procedure: MonteCarloProcedure::CandlePermutation,
+                    iterations,
+                }),
+            }],
+        }
+    }
+
+    #[test]
+    fn monte_carlo_percentiles_use_sorted_linear_interpolation() {
+        let samples = sorted_metric_samples([11_000.0, 9_000.0, 10_000.0].into_iter());
+
+        assert_eq!(interpolated_percentile(&samples, 0.05), 9_100.0);
+        assert_eq!(interpolated_percentile(&samples, 0.50), 10_000.0);
+        assert_eq!(interpolated_percentile(&samples, 0.95), 10_900.0);
+        assert_eq!(baseline_percentile(&samples, 10_500.0), 0.75);
+    }
+
+    #[test]
+    fn render_markdown_includes_monte_carlo_summary_and_iteration_diagnostics() {
+        let report = report_with_synthetic_iterations(vec![
+            MonteCarloIterationDiagnostics {
+                iteration: 1,
+                seed: 111,
+                final_equity: 9_000.0,
+                max_drawdown: 10.0,
+                trade_count: 1,
+                blocked_strategy_tick_count: 0,
+                strategy_exit_count: 1,
+                risk_exit_count: 0,
+                force_close_count: 0,
+            },
+            MonteCarloIterationDiagnostics {
+                iteration: 2,
+                seed: 222,
+                final_equity: 10_000.0,
+                max_drawdown: 20.0,
+                trade_count: 2,
+                blocked_strategy_tick_count: 1,
+                strategy_exit_count: 3,
+                risk_exit_count: 4,
+                force_close_count: 5,
+            },
+            MonteCarloIterationDiagnostics {
+                iteration: 3,
+                seed: 333,
+                final_equity: 11_000.0,
+                max_drawdown: 30.0,
+                trade_count: 3,
+                blocked_strategy_tick_count: 2,
+                strategy_exit_count: 0,
+                risk_exit_count: 1,
+                force_close_count: 0,
+            },
+        ]);
+
+        let markdown = render_markdown(&report, "strategies/test.rhai");
+
+        assert!(markdown.contains("### Baseline vs synthetic Monte Carlo comparison"));
+        assert!(markdown.contains("- Procedure: Candle permutation"));
+        assert!(markdown.contains("| Metric | Baseline | Synthetic p5 | Synthetic p50 | Synthetic p95 | Baseline percentile |"));
+        assert!(markdown
+            .contains("| Final equity | 10500.00 | 9100.00 | 10000.00 | 10900.00 | 75.0% |"));
+        assert!(markdown.contains("| Max drawdown | 15.00 | 11.00 | 20.00 | 29.00 | 25.0% |"));
+        assert!(markdown.contains("#### Reduced iteration diagnostics"));
+        assert!(markdown.contains("| Iteration | Seed | Final equity | Max drawdown | Trades | Blocked Strategy Ticks | Strategy Exits | Risk Exits | Force Closes |"));
+        assert!(markdown.contains("| 2 | 222 | 10000.00 | 20.00 | 2 | 1 | 3 | 4 | 5 |"));
+    }
 
     #[test]
     fn typed_plan_result_renders_multiple_tests_in_insertion_order() {
