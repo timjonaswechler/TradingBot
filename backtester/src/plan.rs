@@ -1,6 +1,7 @@
 use std::{fmt::Write as _, sync::Arc};
 
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, NaiveDate};
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
 use shared::{Candle, Timeframe};
 
@@ -43,9 +44,47 @@ struct PlanTestSpec {
 }
 
 #[derive(Debug, Clone)]
-struct BaselinePlanSpec {
+struct DatasetPlanSpec {
     symbol: String,
-    interval: String,
+    primary_timeframe: Timeframe,
+    start_ms: i64,
+    end_ms: i64,
+}
+
+impl DatasetPlanSpec {
+    fn window(&self) -> DatasetWindow {
+        DatasetWindow {
+            start_ms: self.start_ms,
+            end_ms: self.end_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlanTimestamp {
+    timestamp_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DatasetWindow {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct RunConfigPlanSpec {
+    balance: Option<f64>,
+}
+
+impl RunConfigPlanSpec {
+    fn new() -> Self {
+        Self { balance: None }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BaselinePlanSpec {
+    dataset: DatasetPlanSpec,
     balance: f64,
 }
 
@@ -67,7 +106,7 @@ pub fn execute_plan<F>(
     mut load_candles: F,
 ) -> Result<PlanReport>
 where
-    F: FnMut(&str, Timeframe) -> Result<Vec<Candle>>,
+    F: FnMut(&str, Timeframe, DatasetWindow) -> Result<Vec<Candle>>,
 {
     let plan = parse_plan(plan_src)?;
     let mut tests = Vec::with_capacity(plan.tests.len());
@@ -75,31 +114,50 @@ where
     for (index, test_spec) in plan.tests.into_iter().enumerate() {
         let test_identity = format!("plan test {} ('{}')", index + 1, test_spec.name);
         let baseline = test_spec.baseline;
-        let primary_timeframe = parse_timeframe(&baseline.interval)
-            .map_err(|error| anyhow!("{test_identity} failed: {error}"))?;
+        let dataset = baseline.dataset;
+        let primary_timeframe = dataset.primary_timeframe;
+        let window = dataset.window();
         let runtime_result = run_runtime_backtest_with_loader(
             strategy_src,
-            RuntimeBacktestConfig::new(
-                baseline.symbol.clone(),
-                primary_timeframe,
-                baseline.balance,
-            ),
-            |symbol, timeframe| load_candles(symbol, timeframe),
+            RuntimeBacktestConfig::new(dataset.symbol.clone(), primary_timeframe, baseline.balance),
+            |symbol, timeframe| {
+                let candles = load_candles(symbol, timeframe, window)?;
+                if candles
+                    .iter()
+                    .any(|candle| candle.timestamp < window.start_ms || candle.timestamp >= window.end_ms)
+                {
+                    return Err(anyhow!(
+                        "dataset::load for {symbol}/{timeframe} returned candles outside half-open window [{}, {})",
+                        window.start_ms,
+                        window.end_ms
+                    ));
+                }
+                if timeframe == primary_timeframe && candles.is_empty() {
+                    return Err(anyhow!(
+                        "dataset::load visible Primary window for {}/{} [{}, {}) contains no candles",
+                        dataset.symbol,
+                        primary_timeframe,
+                        window.start_ms,
+                        window.end_ms
+                    ));
+                }
+                Ok(candles)
+            },
         )
         .map_err(|error| anyhow!("{test_identity} failed: {error}"))?;
         if runtime_result.result.equity_curve.is_empty() {
             return Err(anyhow!(
                 "{test_identity} failed: No tradable candles for {}/{} — run `just seed` first.",
-                baseline.symbol,
-                baseline.interval,
+                dataset.symbol,
+                primary_timeframe,
             ));
         }
         let result = runtime_result.result;
 
         tests.push(BaselinePlanTest {
             name: test_spec.name,
-            symbol: baseline.symbol,
-            interval: baseline.interval,
+            symbol: dataset.symbol,
+            interval: primary_timeframe.to_string(),
             initial_balance: baseline.balance,
             result,
         });
@@ -166,7 +224,42 @@ fn parse_plan(plan_src: &str) -> Result<ValidatedPlanResultSpec> {
 
 fn parse_timeframe(raw: &str) -> Result<Timeframe> {
     raw.parse()
-        .map_err(|e| anyhow!("Invalid plan interval '{}': {e}", raw))
+        .map_err(|e| anyhow!("Invalid plan timeframe '{}': {e}", raw))
+}
+
+fn parse_plan_time(raw: &str) -> Result<PlanTimestamp> {
+    if is_date_only(raw) {
+        let date = NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+            .map_err(|e| anyhow!("Invalid plan time '{}': {e}", raw))?;
+        let datetime = date
+            .and_hms_opt(0, 0, 0)
+            .expect("UTC midnight should be a valid time")
+            .and_utc();
+        return Ok(PlanTimestamp {
+            timestamp_ms: datetime.timestamp_millis(),
+        });
+    }
+
+    DateTime::parse_from_rfc3339(raw)
+        .map(|datetime| PlanTimestamp {
+            timestamp_ms: datetime.timestamp_millis(),
+        })
+        .map_err(|e| {
+            anyhow!(
+                "Invalid plan time '{}': expected RFC3339 timestamp or date-only YYYY-MM-DD UTC date ({e})",
+                raw
+            )
+        })
+}
+
+fn is_date_only(raw: &str) -> bool {
+    raw.len() == 10
+        && raw.as_bytes()[4] == b'-'
+        && raw.as_bytes()[7] == b'-'
+        && raw
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
 }
 
 fn compile_plan(rhai: &RhaiEngine, plan_src: &str) -> Result<AST> {
@@ -189,27 +282,93 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_type_with_name::<PlanResultSpec>("PlanResult");
     rhai.register_type_with_name::<PlanTestSpec>("PlanTest");
     rhai.register_type_with_name::<BaselinePlanSpec>("BaselineRun");
+    rhai.register_type_with_name::<DatasetPlanSpec>("Dataset");
+    rhai.register_type_with_name::<RunConfigPlanSpec>("RunConfig");
+    rhai.register_type_with_name::<PlanTimestamp>("PlanTime");
+    rhai.register_type_with_name::<Timeframe>("Timeframe");
 
+    rhai.register_fn("timeframe", plan_timeframe);
+    rhai.register_fn("time", plan_time);
     rhai.register_fn("__backtester_plan_result_new", PlanResultSpec::new);
     rhai.register_fn("__backtester_plan_test_new", |name: &str| PlanTestSpec {
         name: name.to_string(),
         baseline: None,
     });
+    rhai.register_fn("__backtester_run_config_new", RunConfigPlanSpec::new);
     rhai.register_fn("with_title", |mut result: PlanResultSpec, title: &str| {
         result.title = Some(title.to_string());
         result
     });
     rhai.register_fn("with_test", with_test);
     rhai.register_fn("with_baseline", with_baseline);
+    rhai.register_fn("with_balance", with_balance_float);
+    rhai.register_fn("with_balance", with_balance_int);
+
+    let mut dataset_module = Module::new();
+    dataset_module.set_native_fn("load", dataset_load);
+    rhai.register_static_module("dataset", Arc::new(dataset_module));
 
     let mut baseline_module = Module::new();
-    baseline_module.set_native_fn("run", |symbol: &str, interval: &str, balance: FLOAT| {
-        baseline_run(symbol, interval, balance)
-    });
-    baseline_module.set_native_fn("run", |symbol: &str, interval: &str, balance: INT| {
-        baseline_run(symbol, interval, balance as f64)
-    });
+    baseline_module.set_native_fn("run", baseline_run);
     rhai.register_static_module("baseline", Arc::new(baseline_module));
+}
+
+fn plan_timeframe(raw: &str) -> std::result::Result<Timeframe, Box<EvalAltResult>> {
+    parse_timeframe(raw).map_err(|error| Box::<EvalAltResult>::from(error.to_string()))
+}
+
+fn plan_time(raw: &str) -> std::result::Result<PlanTimestamp, Box<EvalAltResult>> {
+    parse_plan_time(raw).map_err(|error| Box::<EvalAltResult>::from(error.to_string()))
+}
+
+fn dataset_load(
+    symbol: &str,
+    primary_timeframe: Timeframe,
+    start: PlanTimestamp,
+    end: PlanTimestamp,
+) -> std::result::Result<DatasetPlanSpec, Box<EvalAltResult>> {
+    if symbol.trim().is_empty() {
+        return Err("dataset::load symbol must not be empty".into());
+    }
+    if start.timestamp_ms >= end.timestamp_ms {
+        return Err(format!(
+            "dataset::load start must be before end (got [{}, {}))",
+            start.timestamp_ms, end.timestamp_ms
+        )
+        .into());
+    }
+
+    Ok(DatasetPlanSpec {
+        symbol: symbol.to_string(),
+        primary_timeframe,
+        start_ms: start.timestamp_ms,
+        end_ms: end.timestamp_ms,
+    })
+}
+
+fn with_balance_float(
+    config: RunConfigPlanSpec,
+    balance: FLOAT,
+) -> std::result::Result<RunConfigPlanSpec, Box<EvalAltResult>> {
+    with_balance(config, balance)
+}
+
+fn with_balance_int(
+    config: RunConfigPlanSpec,
+    balance: INT,
+) -> std::result::Result<RunConfigPlanSpec, Box<EvalAltResult>> {
+    with_balance(config, balance as f64)
+}
+
+fn with_balance(
+    mut config: RunConfigPlanSpec,
+    balance: f64,
+) -> std::result::Result<RunConfigPlanSpec, Box<EvalAltResult>> {
+    if !balance.is_finite() {
+        return Err("run_config.with_balance requires a finite balance".into());
+    }
+    config.balance = Some(balance);
+    Ok(config)
 }
 
 fn with_test(
@@ -239,25 +398,26 @@ fn with_baseline(
 }
 
 fn baseline_run(
-    symbol: &str,
-    interval: &str,
-    balance: f64,
+    dataset: Dynamic,
+    run_config: Dynamic,
 ) -> std::result::Result<BaselinePlanSpec, Box<EvalAltResult>> {
-    if symbol.trim().is_empty() {
-        return Err("baseline::run symbol must not be empty".into());
-    }
-    if interval.trim().is_empty() {
-        return Err("baseline::run interval must not be empty".into());
-    }
-    if !balance.is_finite() {
-        return Err("baseline::run balance must be finite".into());
-    }
+    let dataset = dataset.try_cast::<DatasetPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "baseline::run requires a Dataset host object from `dataset::load(...)`",
+        )
+    })?;
+    let run_config = run_config.try_cast::<RunConfigPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "baseline::run requires a RunConfig host object from `run_config::new()`",
+        )
+    })?;
+    let balance = run_config.balance.ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "baseline::run run config must set a balance with `.with_balance(...)`",
+        )
+    })?;
 
-    Ok(BaselinePlanSpec {
-        symbol: symbol.to_string(),
-        interval: interval.to_string(),
-        balance,
-    })
+    Ok(BaselinePlanSpec { dataset, balance })
 }
 
 fn validate_plan_result(result: PlanResultSpec) -> Result<ValidatedPlanResultSpec> {
@@ -292,9 +452,10 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
     // Rhai 1.24 reserves `new` even in module paths such as
     // `plan_result::new()`. Keep the approved plan-facing API and lower only
     // these typed constructors to private host functions before compilation.
-    const REPLACEMENTS: [(&str, &str); 2] = [
+    const REPLACEMENTS: [(&str, &str); 3] = [
         ("plan_result::new(", "__backtester_plan_result_new("),
         ("plan_test::new(", "__backtester_plan_test_new("),
+        ("run_config::new(", "__backtester_run_config_new("),
     ];
 
     let mut output = String::with_capacity(source.len());
@@ -384,24 +545,42 @@ fn copy_until_string_end(source: &str, start: usize, output: &mut String) -> usi
 mod tests {
     use super::*;
 
+    const DAY_MS: i64 = 86_400_000;
+    const JAN_1_2020: i64 = 1_577_836_800_000;
+
+    fn day(day_of_month: i64) -> i64 {
+        JAN_1_2020 + (day_of_month - 1) * DAY_MS
+    }
+
+    fn window(start_day: i64, end_day: i64) -> DatasetWindow {
+        DatasetWindow {
+            start_ms: day(start_day),
+            end_ms: day(end_day),
+        }
+    }
+
     fn make_candle(ts: i64, close: f64) -> Candle {
+        candle_for("AAPL", Timeframe::days(1), ts, close)
+    }
+
+    fn candle_for(symbol: &str, timeframe: Timeframe, ts: i64, close: f64) -> Candle {
         Candle {
             timestamp: ts,
-            symbol: "AAPL".into(),
+            symbol: symbol.into(),
             open: close - 0.5,
             high: close + 1.0,
             low: close - 1.0,
             close,
             volume: 1000.0,
-            timeframe: "1d".parse().unwrap(),
+            timeframe,
         }
     }
 
     fn candles() -> Vec<Candle> {
         vec![
-            make_candle(1, 100.0),
-            make_candle(2, 101.0),
-            make_candle(3, 102.0),
+            make_candle(day(2), 100.0),
+            make_candle(day(3), 101.0),
+            make_candle(day(4), 102.0),
         ]
     }
 
@@ -413,33 +592,45 @@ fn on_tick(market, context) {
 
     const TYPED_MULTI_TEST_PLAN: &str = r#"
 fn plan() {
+    let aapl = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let msft = dataset::load("MSFT", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let aapl_baseline = baseline::run(aapl, run_config::new().with_balance(10000.0));
+    let msft_baseline = baseline::run(msft, run_config::new().with_balance(5000));
+    let aapl_test = plan_test::new("AAPL baseline").with_baseline(aapl_baseline);
+    let msft_test = plan_test::new("MSFT baseline").with_baseline(msft_baseline);
+
     plan_result::new()
         .with_title("Smoke test")
-        .with_test(
-            plan_test::new("AAPL baseline")
-                .with_baseline(baseline::run("AAPL", "1d", 10000.0))
-        )
-        .with_test(
-            plan_test::new("MSFT baseline")
-                .with_baseline(baseline::run("MSFT", "1d", 5000))
-        )
+        .with_test(aapl_test)
+        .with_test(msft_test)
 }
 "#;
 
     #[test]
     fn typed_plan_result_renders_multiple_tests_in_insertion_order() {
         let mut requests = Vec::new();
-        let report = execute_plan(HOLD_STRATEGY, TYPED_MULTI_TEST_PLAN, |symbol, timeframe| {
-            requests.push((symbol.to_string(), timeframe));
-            Ok(candles())
-        })
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            TYPED_MULTI_TEST_PLAN,
+            |symbol, timeframe, window| {
+                requests.push((symbol.to_string(), timeframe, window));
+                Ok(candles()
+                    .into_iter()
+                    .map(|mut candle| {
+                        candle.symbol = symbol.to_string();
+                        candle.timeframe = timeframe;
+                        candle
+                    })
+                    .collect())
+            },
+        )
         .unwrap();
 
         assert_eq!(
             requests,
             vec![
-                ("AAPL".to_string(), Timeframe::days(1)),
-                ("MSFT".to_string(), Timeframe::days(1)),
+                ("AAPL".to_string(), Timeframe::days(1), window(2, 5)),
+                ("MSFT".to_string(), Timeframe::days(1), window(2, 5)),
             ]
         );
         assert_eq!(report.tests.len(), 2);
@@ -459,10 +650,155 @@ fn plan() {
     }
 
     #[test]
+    fn dataset_load_accepts_rfc3339_and_date_only_half_open_window() {
+        let mut requests = Vec::new();
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load(
+        "AAPL",
+        timeframe("1d"),
+        time("2020-01-02T01:00:00+01:00"),
+        time("2020-01-04"),
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("half-open")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#,
+            |symbol, timeframe, requested_window| {
+                requests.push((symbol.to_string(), timeframe, requested_window));
+                Ok(vec![
+                    candle_for(symbol, timeframe, day(2), 100.0),
+                    candle_for(symbol, timeframe, day(3), 101.0),
+                ])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            requests,
+            vec![("AAPL".to_string(), Timeframe::days(1), window(2, 4))]
+        );
+        assert_eq!(report.tests[0].result.equity_curve.len(), 2);
+    }
+
+    #[test]
+    fn dataset_loader_fetches_strategy_declared_secondary_timeframes() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let strategy = r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new().with_secondary(secondary::optional(H1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+        let mut requests = Vec::new();
+
+        execute_plan(
+            strategy,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1m"), time("2020-01-01"), time("2020-01-02"));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("secondary context")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#,
+            |symbol, timeframe, requested_window| {
+                requests.push((symbol.to_string(), timeframe, requested_window));
+                Ok(match timeframe {
+                    tf if tf == primary => vec![
+                        candle_for(symbol, primary, day(1) + 60_000, 100.0),
+                        candle_for(symbol, primary, day(1) + 120_000, 101.0),
+                    ],
+                    tf if tf == secondary => {
+                        vec![candle_for(symbol, secondary, day(1) + 3_600_000, 200.0)]
+                    }
+                    _ => Vec::new(),
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            requests,
+            vec![
+                ("AAPL".to_string(), primary, window(1, 2)),
+                ("AAPL".to_string(), secondary, window(1, 2)),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_visible_primary_window_fails_clearly() {
+        let err = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-03"));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("empty")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#,
+            |_symbol, _timeframe, _window| Ok(Vec::new()),
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("dataset::load"));
+        assert!(msg.contains("visible Primary window"));
+        assert!(msg.contains("contains no candles"));
+    }
+
+    #[test]
+    fn dataset_host_object_is_opaque_to_rhai() {
+        let err = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-03"));
+    let leaked = dataset.candles;
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("leak")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#,
+            |_symbol, _timeframe, _window| Ok(candles()),
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("plan()"));
+        assert!(msg.contains("candles"));
+    }
+
+    #[test]
     fn missing_plan_function_fails_clearly() {
-        let err = execute_plan(HOLD_STRATEGY, "let x = 1;", |_symbol, _timeframe| {
-            Ok(candles())
-        })
+        let err = execute_plan(
+            HOLD_STRATEGY,
+            "let x = 1;",
+            |_symbol, _timeframe, _window| Ok(candles()),
+        )
         .unwrap_err();
 
         assert!(err.to_string().contains("fn plan()"));
@@ -477,7 +813,7 @@ fn plan() {
     #{ tests: [#{ name: "legacy", symbol: "AAPL", interval: "1d", balance: 10000.0 }] }
 }
 "#,
-            |_symbol, _timeframe| Ok(candles()),
+            |_symbol, _timeframe, _window| Ok(candles()),
         )
         .unwrap_err();
 
@@ -494,7 +830,7 @@ fn plan() {
         .with_test(plan_test::new("missing baseline"))
 }
 "#,
-            |_symbol, _timeframe| Ok(candles()),
+            |_symbol, _timeframe, _window| Ok(candles()),
         )
         .unwrap_err();
 
@@ -517,7 +853,7 @@ fn plan() {
         )
 }
 "#,
-            |_symbol, _timeframe| Ok(candles()),
+            |_symbol, _timeframe, _window| Ok(candles()),
         )
         .unwrap_err();
 
@@ -527,24 +863,74 @@ fn plan() {
     }
 
     #[test]
+    fn baseline_run_requires_dataset_and_explicit_balance() {
+        let wrong_dataset = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    plan_result::new()
+        .with_test(
+            plan_test::new("wrong dataset")
+                .with_baseline(baseline::run(plan_test::new("not a dataset"), run_config::new().with_balance(10000.0)))
+        )
+}
+"#,
+            |_symbol, _timeframe, _window| Ok(candles()),
+        )
+        .unwrap_err();
+        assert!(wrong_dataset.to_string().contains("Dataset host object"));
+
+        let missing_balance = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-03"));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("missing balance")
+                .with_baseline(baseline::run(dataset, run_config::new()))
+        )
+}
+"#,
+            |_symbol, _timeframe, _window| Ok(candles()),
+        )
+        .unwrap_err();
+        assert!(missing_balance.to_string().contains("with_balance"));
+    }
+
+    #[test]
     fn plan_execution_fails_fast_with_failing_test_identity() {
         let mut requests = Vec::new();
         let err = execute_plan(
             HOLD_STRATEGY,
             r#"
 fn plan() {
+    let first = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let broken = dataset::load("BROKEN", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let should_not_run = dataset::load("MSFT", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let first_baseline = baseline::run(first, run_config::new().with_balance(10000.0));
+    let broken_baseline = baseline::run(broken, run_config::new().with_balance(10000.0));
+    let should_not_run_baseline = baseline::run(should_not_run, run_config::new().with_balance(10000.0));
+
     plan_result::new()
-        .with_test(plan_test::new("first").with_baseline(baseline::run("AAPL", "1d", 10000.0)))
-        .with_test(plan_test::new("broken").with_baseline(baseline::run("BROKEN", "1d", 10000.0)))
-        .with_test(plan_test::new("should not run").with_baseline(baseline::run("MSFT", "1d", 10000.0)))
+        .with_test(plan_test::new("first").with_baseline(first_baseline))
+        .with_test(plan_test::new("broken").with_baseline(broken_baseline))
+        .with_test(plan_test::new("should not run").with_baseline(should_not_run_baseline))
 }
 "#,
-            |symbol, _timeframe| {
+            |symbol, _timeframe, _window| {
                 requests.push(symbol.to_string());
                 if symbol == "BROKEN" {
                     Err(anyhow::anyhow!("loader exploded"))
                 } else {
-                    Ok(candles())
+                    Ok(candles()
+                        .into_iter()
+                        .map(|mut candle| {
+                            candle.symbol = symbol.to_string();
+                            candle
+                        })
+                        .collect())
                 }
             },
         )

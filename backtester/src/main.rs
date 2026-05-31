@@ -18,7 +18,7 @@ use backtester::{
     plan::{execute_plan, render_markdown},
     run_runtime_backtest_with_loader, RuntimeBacktestConfig,
 };
-use db_layer::{get_candles, SpacetimeClient};
+use db_layer::{get_candles, get_candles_in_range, SpacetimeClient};
 use shared::Timeframe;
 
 #[derive(Parser, Debug)]
@@ -112,15 +112,24 @@ fn run_plan_mode(cli: &Cli, strategy_src: &str, plan_path: &str) -> Result<()> {
     );
     let client = SpacetimeClient::connect(&cli.db_url, &cli.db_module)?;
 
-    let report = execute_plan(strategy_src, &plan_src, |symbol, timeframe| {
+    let report = execute_plan(strategy_src, &plan_src, |symbol, timeframe, window| {
         let interval = timeframe.to_string();
-        let candles = get_candles(&client.conn, symbol, &interval, cli.max_candles);
+        let candles = get_candles_in_range(
+            &client.conn,
+            symbol,
+            &interval,
+            window.start_ms,
+            window.end_ms,
+            cli.max_candles,
+        );
         if !candles.is_empty() {
             info!(
                 symbol,
                 interval,
+                start_ms = window.start_ms,
+                end_ms = window.end_ms,
                 count = candles.len(),
-                "Candles loaded for plan test"
+                "Candles loaded for plan dataset"
             );
         }
         Ok(candles)
