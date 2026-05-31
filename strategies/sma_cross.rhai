@@ -8,7 +8,9 @@ const SLOW = 200;
 const QUANTITY = 1.0;
 
 fn strategy_config() {
-    strategy_config::new().with_minimum_warmup(SLOW + 1)
+    strategy_config::new()
+        .with_primary(timeframe("1d"))
+        .with_minimum_warmup(SLOW + 1)
 }
 
 fn on_tick(market, context) {

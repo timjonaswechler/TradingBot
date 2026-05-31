@@ -3,14 +3,13 @@
 // Run after seeding AAPL daily candles, for example:
 //   just backtest --strategy strategies/sma_cross.rhai --plan backtest_plan/plan.rhai
 //
-// The plan names the Runtime Asset, Primary Timeframe, and visible Primary
-// window. The backtester loads the hidden Runtime WarmupPlan prefix before
-// START automatically.
+// The plan names the Runtime Asset and visible Primary window. The strategy
+// declares Primary/Secondary Timeframes; the backtester loads the hidden Runtime
+// WarmupPlan prefix before START automatically.
 
 fn plan() {
     let dataset = dataset::load(
         "AAPL",
-        timeframe("1d"),
         time("2021-01-04"),
         time("2022-01-03"),
     );

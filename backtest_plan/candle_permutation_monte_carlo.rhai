@@ -10,7 +10,6 @@
 fn plan() {
     let dataset = dataset::load(
         "AAPL",
-        timeframe("1d"),
         time("2021-01-04"),
         time("2022-01-03"),
     );

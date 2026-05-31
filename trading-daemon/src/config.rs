@@ -47,14 +47,13 @@ impl Default for SeedConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssetConfig {
     /// Ticker symbol, e.g. `"AAPL"` or `"BTC-USD"`.
     pub symbol: String,
 
-    /// List of timeframes to track, e.g. `["1d", "1h"]`.
-    pub intervals: Vec<String>,
-
-    /// Path to the Rhai strategy file (only used by `run` subcommand).
+    /// Path to the Rhai strategy file. The strategy's `strategy_config()`
+    /// declares the Primary and Secondary Timeframes used by run/seed.
     #[serde(default)]
     pub strategy: String,
 
@@ -169,7 +168,6 @@ mod tests {
             r#"
 [[assets]]
 symbol = "BTC-USD"
-intervals = ["1m"]
 strategy = "strategy.rhai"
 "#,
         )
@@ -194,7 +192,6 @@ strategy = "strategy.rhai"
             r#"
 [[assets]]
 symbol = "BTC-USD"
-intervals = ["1m"]
 strategy = "strategy.rhai"
 
 [assets.protective_shutdown]
@@ -214,12 +211,26 @@ required_secondary_failure_threshold = 5
     }
 
     #[test]
-    fn protective_shutdown_rejects_zero_threshold() {
+    fn asset_intervals_are_rejected_because_strategy_configuration_owns_timeframes() {
         let error = parse_asset(
             r#"
 [[assets]]
 symbol = "BTC-USD"
 intervals = ["1m"]
+strategy = "strategy.rhai"
+"#,
+        )
+        .expect_err("intervals should no longer be accepted");
+
+        assert!(error.to_string().contains("unknown field `intervals`"));
+    }
+
+    #[test]
+    fn protective_shutdown_rejects_zero_threshold() {
+        let error = parse_asset(
+            r#"
+[[assets]]
+symbol = "BTC-USD"
 strategy = "strategy.rhai"
 
 [assets.protective_shutdown]

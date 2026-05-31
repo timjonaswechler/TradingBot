@@ -12,13 +12,11 @@ module = "trading-bot"
 from = "2020-01-01"
 
 # ── Assets ────────────────────────────────────────────────────────────────────
-# Each asset can have multiple intervals.
-# strategy, balance, liquidate_on_shutdown, and protective_shutdown are only
-# used by the `run` subcommand.
+# Each asset binds a strategy to a symbol. The strategy file declares the
+# Primary Timeframe and any Secondary Timeframes used by run/seed.
 
 [[assets]]
 symbol    = "AAPL"
-intervals = ["30m", "60m", "1d"]
 strategy  = "strategies/sma_cross.rhai"
 balance   = 10000.0
 
@@ -33,6 +31,5 @@ required_secondary_failure_threshold = 3
 
 # [[assets]]
 # symbol    = "BTC-USD"
-# intervals = ["1d", "1h"]
 # strategy  = "strategies/sma_cross.rhai"
 # balance   = 10000.0

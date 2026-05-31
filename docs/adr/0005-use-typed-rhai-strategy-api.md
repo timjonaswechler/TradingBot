@@ -12,6 +12,7 @@ const H1 = timeframe("1h");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(timeframe("30m"))
         .with_minimum_warmup(200)
         .with_secondary(
             secondary::required(H1)
@@ -39,4 +40,4 @@ The old engine's legacy return shape, such as `#{ signal: "BUY", size: 0.5 }`, i
 
 ## Consequences
 
-Strategy examples and docs should use typed constructors and fluent methods such as `decision::*`, `strategy_config::new()`, `secondary::required(...)`, `.with_stop_loss(...)`, `.with_take_profit(...)`, and `.with_reason(...)`. Legacy `signal`/`size` returns are unsupported and should produce clear strategy errors rather than compatibility mapping. Fluent risk methods are part of the StrategyDecision custom type API; using them where they do not apply, such as on `hold` or close decisions, should produce a clear strategy error rather than silently mutating an irrelevant decision. `.with_reason(...)` is allowed for all decisions and remains diagnostic only.
+Strategy examples and docs should use typed constructors and fluent methods such as `decision::*`, `strategy_config::new().with_primary(...)`, `secondary::required(...)`, `.with_stop_loss(...)`, `.with_take_profit(...)`, and `.with_reason(...)`. Legacy `signal`/`size` returns are unsupported and should produce clear strategy errors rather than compatibility mapping. Fluent risk methods are part of the StrategyDecision custom type API; using them where they do not apply, such as on `hold` or close decisions, should produce a clear strategy error rather than silently mutating an irrelevant decision. `.with_reason(...)` is allowed for all decisions and remains diagnostic only.

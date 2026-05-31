@@ -10,6 +10,12 @@ const MIN_TOUCHES = 3;
 const MAX_LINES = 1;
 const QUANTITY = 1.0;
 
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1d"))
+        .with_minimum_warmup(PIVOT_LEFT + PIVOT_RIGHT + PIVOT_BUFFER)
+}
+
 fn anchored_config() {
     anchored_config::new()
         .with_detector(

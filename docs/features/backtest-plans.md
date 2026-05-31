@@ -14,15 +14,16 @@ path to the backtester:
 ```sh
 just db-start        # separate terminal, if the local DB is not running
 just db-setup        # first local setup only
-just seed            # uses trading-bot.toml; seeds AAPL 30m, 60m, and 1d from 2020-01-01
+just seed            # uses trading-bot.toml; seeds strategy-declared AAPL timeframes from 2020-01-01
 
 just backtest --strategy strategies/sma_cross.rhai --plan backtest_plan/plan.rhai
 just backtest --strategy strategies/sma_cross.rhai --plan backtest_plan/candle_permutation_monte_carlo.rhai
 ```
 
-In plan mode, `--strategy` is required and `--plan` is required. `--symbol`,
-`--interval`, and `--balance` are direct-backtest CLI settings; a plan declares
-its own Runtime Asset, Primary Timeframe, visible window, and run balance.
+In plan mode, `--strategy` is required and `--plan` is required. `--symbol`
+and `--balance` are direct-backtest CLI settings; a plan declares its own
+Runtime Asset, visible window, and run balance. The strategy declares the
+Primary Timeframe and any Secondary Timeframes.
 
 The same plan can be reused with another typed Runtime strategy:
 
@@ -32,8 +33,8 @@ just backtest --strategy strategies/min_loss.rhai --plan backtest_plan/plan.rhai
 
 A plan cannot choose or replace the strategy file. The backtester loads the
 strategy before plan execution so the Runtime configuration, Strategy
-Configuration, Secondary Timeframes, and WarmupPlan are known before datasets are
-loaded.
+Configuration, Primary/Secondary Timeframes, and WarmupPlan are known before
+datasets are loaded.
 
 ## Available example plans
 
@@ -57,7 +58,6 @@ typed result.
 fn plan() {
     let dataset = dataset::load(
         "AAPL",
-        timeframe("1d"),
         time("2021-01-04"),
         time("2022-01-03"),
     );
@@ -80,8 +80,8 @@ fn plan() {
 
 Current plan-facing constructors/functions:
 
-- `timeframe("1d")` and `time("2021-01-04")`
-- `dataset::load(asset, primary_timeframe, start, end)`
+- `time("2021-01-04")`
+- `dataset::load(asset, start, end)`
 - `run_config::new().with_balance(balance)`
 - `baseline::run(dataset, run_config)`
 - `monte_carlo_config::new(iterations, base_seed)`
@@ -91,22 +91,21 @@ Current plan-facing constructors/functions:
 
 ## Dataset loader contract
 
-`dataset::load(asset, primary_timeframe, start, end)` declares one visible
-Runtime-backed dataset window:
+`dataset::load(asset, start, end)` declares one visible Runtime-backed dataset
+window:
 
 - `asset` names the Runtime Asset, for example `"AAPL"`.
-- `primary_timeframe` names the Primary Timeframe whose completed candles become
-  Tradable Candles, for example `timeframe("1d")`.
-- `start` is the first visible Primary-Timeframe Tradable Candle.
+- `start` is the first visible Primary-Timeframe Tradable Candle for the
+  strategy-declared Primary Timeframe.
 - `end` is exclusive; visible Primary windows are half-open: `[start, end)`.
 - `time(...)` accepts RFC3339 timestamps and date-only `YYYY-MM-DD` as UTC
   midnight.
 - The loader reads the DB-backed historical candle source only.
 
-The plan author does not list Secondary Timeframes in `dataset::load`. The
-backtester loads the strategy first, merges `strategy_config()` into the Runtime
-configuration, resolves the Runtime `WarmupPlan`, and then loads every configured
-timeframe needed for the run.
+The plan author does not list Primary or Secondary Timeframes in
+`dataset::load`. The backtester loads the strategy first, derives RuntimeConfig
+from the Runtime Asset plus `strategy_config()`, resolves the Runtime
+`WarmupPlan`, and then loads every configured timeframe needed for the run.
 
 Warmup behavior:
 

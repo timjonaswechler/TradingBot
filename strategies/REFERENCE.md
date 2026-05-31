@@ -12,9 +12,13 @@ strings.
 
 ## Strategy file contract
 
-Required hook:
+Required hooks:
 
 ```rhai
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1d"))
+}
+
 fn on_tick(market, context) {
     decision::hold()
 }
@@ -23,10 +27,6 @@ fn on_tick(market, context) {
 Optional load-time hooks:
 
 ```rhai
-fn strategy_config() {
-    strategy_config::new()
-}
-
 fn anchored_config() {
     anchored_config::new()
 }
@@ -37,8 +37,8 @@ Notes:
 - Top-level code runs once when the strategy is loaded.
 - `on_tick(market, context)` is called only for Strategy Ticks after warmup and
   required Secondary readiness checks pass.
-- `strategy_config()` may declare minimum warmup and Secondary-Timeframe
-  requirements/defaults.
+- `strategy_config()` must declare exactly one Primary Timeframe and may declare
+  minimum warmup plus Secondary-Timeframe requirements/defaults.
 - `anchored_config()` may declare typed anchored/structure compute.
 - A strategy file may include an optional metadata comment such as
   `// name: "sma_cross"`.
@@ -261,7 +261,8 @@ fn on_tick(market, context) {
 
 | Expression | Meaning |
 | --- | --- |
-| `strategy_config::new()` | Empty/default Strategy Configuration. |
+| `strategy_config::new()` | Starts a Strategy Configuration. |
+| `.with_primary(tf)` | Declares the strategy's required Primary Timeframe. |
 | `.with_minimum_warmup(n)` | Declares a global minimum warmup. |
 | `.with_secondary(secondary)` | Declares a Secondary-Timeframe requirement/default. |
 | `timeframe("1h")` | Parses and validates a typed `Timeframe`. |
@@ -270,10 +271,12 @@ fn on_tick(market, context) {
 | `.with_max_missing_candles(n)` | Sets Secondary freshness tolerance. |
 
 ```rhai
+const PRIMARY = timeframe("1d");
 const H1 = timeframe("1h");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(PRIMARY)
         .with_minimum_warmup(200)
         .with_secondary(
             secondary::required(H1)
@@ -282,9 +285,10 @@ fn strategy_config() {
 }
 ```
 
-Strategy Configuration does not choose the Runtime Asset, Primary Timeframe,
-live/backtest mode, provider, broker, portfolio state, or execution semantics.
-Run Configuration remains authoritative.
+Strategy Configuration owns Primary and Secondary Timeframes, but does not
+choose the Runtime Asset, live/backtest mode, provider, broker, portfolio state,
+or execution semantics. Run Configuration binds the strategy contract to those
+runner inputs.
 
 ## Warmup
 

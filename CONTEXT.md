@@ -37,11 +37,11 @@ A named strategy function that the runtime may call at a defined point in the tr
 _Avoid_: Callback, magic function
 
 **Strategy Configuration**:
-Strategy-declared requirements or defaults that the Trading Runtime can inspect before Strategy Ticks, such as minimum warmup and Secondary-Timeframe requirements. Strategy Configuration does not choose the Runtime Asset, Primary Timeframe, live/backtest mode, or Portfolio State.
+Strategy-declared runtime requirements that the Trading Runtime can inspect before Strategy Ticks, including the Primary Timeframe, Secondary-Timeframe requirements, and minimum warmup. Strategy Configuration defines the timeframe contract a strategy expects, but does not choose the Runtime Asset, live/backtest mode, market data source, or Portfolio State.
 _Avoid_: Run Configuration, Strategy State
 
 **Run Configuration**:
-Operator- or runner-owned configuration for a Trading Runtime, including the Runtime Asset, Primary Timeframe, mode/source choices, and authoritative overrides for configured Secondary Timeframes.
+Operator- or runner-owned configuration for a Trading Runtime, including the Runtime Asset, mode/source choices, initial portfolio inputs, and runner policies. Run Configuration binds a strategy's timeframe contract to a concrete asset/source, but does not independently choose Primary or Secondary Timeframes.
 _Avoid_: Strategy Configuration, Strategy State
 
 **Strategy Decision**:
@@ -109,7 +109,7 @@ A Tradable Candle on which the strategy is actually evaluated. Risk Exits can cl
 _Avoid_: Tradable Candle when the distinction from strategy evaluation matters, Tradable Tick
 
 **Primary Timeframe**:
-The runner/config-selected timeframe whose completed candles can become Tradable Candles for a strategy. In a multi-timeframe strategy, only the Primary Timeframe should create trading decisions at first. A strategy may depend on the Primary Timeframe but does not choose it.
+The strategy-declared timeframe whose completed candles can become Tradable Candles for a strategy. In a multi-timeframe strategy, only the Primary Timeframe should create trading decisions at first.
 _Avoid_: Main interval, execution interval
 
 **Secondary Timeframe**:
@@ -168,7 +168,7 @@ _Avoid_: Live Tick Compute, Trading Runtime
 
 **Engine** is currently ambiguous. Use **Strategy Engine** for Rhai/script execution and **Trading Runtime** for the higher-level trading session coordinator.
 
-**Run configuration** owns market/source/runtime settings such as Runtime Asset and Primary Timeframe. The strategy may contribute warmup requirements and Secondary-Timeframe requirements or defaults, but it does not choose which timeframe is tradable. When run configuration and strategy-declared Secondary-Timeframe requirements conflict, run configuration is authoritative.
+**Run configuration** owns concrete runner/session settings such as Runtime Asset, mode/source choices, and portfolio inputs. **Strategy Configuration** owns the strategy timeframe contract: the Primary Timeframe plus any Secondary-Timeframe requirements/defaults. Avoid defining timeframes independently in both places.
 
 ## Example dialogue
 

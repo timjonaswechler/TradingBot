@@ -23,10 +23,10 @@ backtest behavior should match, the behavior belongs in `trading-runtime`.
 
 ## Runtime configuration and Market Input
 
-A `RuntimeConfig` describes one Runtime Asset, one Primary Timeframe, and zero or
-more configured Secondary Timeframes. The Primary Timeframe is the only timeframe
-whose completed candles can become Tradable Candles and Strategy Ticks. Secondary
-Timeframes are context only.
+A `RuntimeConfig` describes one Runtime Asset, one strategy-declared Primary
+Timeframe, and zero or more strategy-declared Secondary Timeframes. The Primary
+Timeframe is the only timeframe whose completed candles can become Tradable
+Candles and Strategy Ticks. Secondary Timeframes are context only.
 
 The runtime accepts two market-input forms:
 
@@ -169,16 +169,15 @@ No `StrategyTickStarted` is emitted for the Risk Exit path.
 
 ## Live runner behavior
 
-The live daemon runs one runtime task per configured asset. The first configured
-asset interval is the Primary Timeframe. Later configured intervals are Secondary
-Timeframes in run configuration. Strategy-declared Secondary requirements are
-merged into the runtime config; run configuration remains authoritative for any
-Secondary timeframe it already configured.
+The live daemon runs one runtime task per configured asset. The asset config
+binds a strategy file to a Runtime Asset and runner policies; the strategy's
+`strategy_config()` supplies the Primary Timeframe and any Secondary Timeframes.
 
 The live runner:
 
 1. Loads the typed Rhai strategy with `RhaiStrategy`.
-2. Merges strategy-declared Secondary requirements into `RuntimeConfig`.
+2. Builds `RuntimeConfig` from the Runtime Asset plus strategy-owned timeframe
+   contract.
 3. Resolves the Warmup Plan.
 4. Preloads Warmup Input per configured timeframe from the database.
 5. Subscribes to completed candles for all configured timeframes.
@@ -232,9 +231,10 @@ user-requested shutdown controlled by `liquidate_on_shutdown`.
 
 ## Backtester behavior
 
-Runtime-backed backtests load typed Runtime strategies, merge strategy-declared
-Secondary requirements, resolve the Warmup Plan, and replay historical Primary
-and Secondary candles into one `TradingRuntime`.
+Runtime-backed backtests load typed Runtime strategies, build `RuntimeConfig`
+from the Runtime Asset plus strategy-owned timeframe contract, resolve the Warmup
+Plan, and replay historical Primary and Secondary candles into one
+`TradingRuntime`.
 
 Historical replay is globally ordered by candle close timestamp across configured
 timeframes. At the same timestamp, Secondary input is replayed before Primary

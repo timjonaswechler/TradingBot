@@ -7,8 +7,7 @@
 //! ```
 //! backtester \
 //!     --strategy strategies/sma_cross.rhai \
-//!     --symbol   AAPL \
-//!     --interval 1d
+//!     --symbol   AAPL
 //! ```
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -19,7 +18,6 @@ use backtester::{
     run_runtime_backtest_with_loader, RuntimeBacktestConfig,
 };
 use db_layer::{get_candles, get_candles_before, get_candles_in_range, SpacetimeClient};
-use shared::Timeframe;
 
 #[derive(Parser, Debug)]
 #[command(name = "backtester", about = "In-memory backtester — no DB writes")]
@@ -35,10 +33,6 @@ struct Cli {
     /// Symbol to backtest (must already be seeded in SpacetimeDB).
     #[arg(short = 'S', long)]
     symbol: Option<String>,
-
-    /// Timeframe, e.g. `1d`, `1h`, `15m`.
-    #[arg(short, long, default_value = "1d")]
-    interval: String,
 
     /// Starting paper balance.
     #[arg(short, long, default_value_t = 10_000.0)]
@@ -152,14 +146,7 @@ fn run_plan_mode(cli: &Cli, strategy_src: &str, plan_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_timeframe(raw: &str) -> Result<Timeframe> {
-    raw.parse()
-        .map_err(|e| anyhow!("Invalid interval '{}': {e}", raw))
-}
-
 fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
-    let primary_timeframe = parse_timeframe(&cli.interval)?;
-
     // ── Load candles from SpacetimeDB ─────────────────────────────────────────
     info!(
         url = cli.db_url,
@@ -170,7 +157,7 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
     // ── Run ──────────────────────────────────────────────────────────────────
     let runtime_result = run_runtime_backtest_with_loader(
         strategy_src,
-        RuntimeBacktestConfig::new(symbol.to_string(), primary_timeframe, cli.balance),
+        RuntimeBacktestConfig::new(symbol.to_string(), cli.balance),
         |symbol, timeframe| {
             let interval = timeframe.to_string();
             let candles = get_candles(&client.conn, symbol, &interval, cli.max_candles);
@@ -184,7 +171,7 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
         return Err(anyhow!(
             "No tradable candles for {}/{} — run `just seed` first.",
             symbol,
-            cli.interval,
+            runtime_result.effective_config.primary_timeframe,
         ));
     }
     info!(
@@ -201,7 +188,10 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
     println!();
     println!("═══ Backtest summary ═══");
     println!("Strategy          : {}", cli.strategy);
-    println!("Symbol / interval : {} / {}", symbol, cli.interval);
+    println!(
+        "Symbol / interval : {} / {}",
+        symbol, runtime_result.effective_config.primary_timeframe
+    );
     println!("Period            : {:>12.2} years", m.years);
     println!("Initial balance   : {:>12.2}", cli.balance);
     println!("Final balance     : {:>12.2}", result.final_balance);

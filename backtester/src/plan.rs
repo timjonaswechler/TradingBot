@@ -78,7 +78,6 @@ struct PlanTestSpec {
 #[derive(Debug, Clone, PartialEq)]
 struct DatasetPlanSpec {
     symbol: String,
-    primary_timeframe: Timeframe,
     start_ms: i64,
     end_ms: i64,
 }
@@ -160,7 +159,6 @@ where
         let test_identity = format!("plan test {} ('{}')", index + 1, test_spec.name);
         let baseline = test_spec.baseline;
         let dataset = baseline.dataset;
-        let primary_timeframe = dataset.primary_timeframe;
         let prepared = prepare_plan_runtime(strategy_src, &dataset, baseline.balance)
             .map_err(|error| anyhow!("{test_identity} failed: {error}"))?;
         let market_data = load_warmup_aware_market_data(
@@ -184,7 +182,7 @@ where
             return Err(anyhow!(
                 "{test_identity} failed: No tradable candles for {}/{} — run `just seed` first.",
                 dataset.symbol,
-                primary_timeframe,
+                effective_config.primary_timeframe,
             ));
         }
 
@@ -207,7 +205,7 @@ where
         tests.push(BaselinePlanTest {
             name: test_spec.name,
             symbol: dataset.symbol,
-            interval: primary_timeframe.to_string(),
+            interval: effective_config.primary_timeframe.to_string(),
             initial_balance: baseline.balance,
             result,
             synthetic,
@@ -232,14 +230,11 @@ fn prepare_plan_runtime(
     initial_balance: f64,
 ) -> Result<PreparedPlanRuntime> {
     let strategy = RhaiStrategy::load(strategy_src)?;
-    let config = RuntimeBacktestConfig::new(
-        dataset.symbol.clone(),
-        dataset.primary_timeframe,
-        initial_balance,
-    );
-    let effective_config = config
-        .runtime_config
-        .merge_strategy_config(strategy.strategy_config());
+    let config = RuntimeBacktestConfig::new(dataset.symbol.clone(), initial_balance);
+    let effective_config = RuntimeConfig::from_strategy_config(
+        config.runtime_asset.clone(),
+        strategy.strategy_config(),
+    )?;
     let warmup_plan = resolve_warmup_plan(
         &effective_config,
         strategy.strategy_config(),
@@ -915,11 +910,6 @@ fn parse_plan(plan_src: &str) -> Result<ValidatedPlanResultSpec> {
     validate_plan_result(plan_result)
 }
 
-fn parse_timeframe(raw: &str) -> Result<Timeframe> {
-    raw.parse()
-        .map_err(|e| anyhow!("Invalid plan timeframe '{}': {e}", raw))
-}
-
 fn parse_plan_time(raw: &str) -> Result<PlanTimestamp> {
     if is_date_only(raw) {
         let date = NaiveDate::parse_from_str(raw, "%Y-%m-%d")
@@ -980,9 +970,6 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_type_with_name::<DatasetPlanSpec>("Dataset");
     rhai.register_type_with_name::<RunConfigPlanSpec>("RunConfig");
     rhai.register_type_with_name::<PlanTimestamp>("PlanTime");
-    rhai.register_type_with_name::<Timeframe>("Timeframe");
-
-    rhai.register_fn("timeframe", plan_timeframe);
     rhai.register_fn("time", plan_time);
     rhai.register_fn("__backtester_plan_result_new", PlanResultSpec::new);
     rhai.register_fn("__backtester_plan_test_new", |name: &str| PlanTestSpec {
@@ -1018,17 +1005,12 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_static_module("monte_carlo", Arc::new(monte_carlo_module));
 }
 
-fn plan_timeframe(raw: &str) -> std::result::Result<Timeframe, Box<EvalAltResult>> {
-    parse_timeframe(raw).map_err(|error| Box::<EvalAltResult>::from(error.to_string()))
-}
-
 fn plan_time(raw: &str) -> std::result::Result<PlanTimestamp, Box<EvalAltResult>> {
     parse_plan_time(raw).map_err(|error| Box::<EvalAltResult>::from(error.to_string()))
 }
 
 fn dataset_load(
     symbol: &str,
-    primary_timeframe: Timeframe,
     start: PlanTimestamp,
     end: PlanTimestamp,
 ) -> std::result::Result<DatasetPlanSpec, Box<EvalAltResult>> {
@@ -1045,7 +1027,6 @@ fn dataset_load(
 
     Ok(DatasetPlanSpec {
         symbol: symbol.to_string(),
-        primary_timeframe,
         start_ms: start.timestamp_ms,
         end_ms: end.timestamp_ms,
     })
@@ -1394,6 +1375,10 @@ mod tests {
     }
 
     const HOLD_STRATEGY: &str = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1d"))
+}
+
 fn on_tick(market, context) {
     decision::hold()
 }
@@ -1401,8 +1386,8 @@ fn on_tick(market, context) {
 
     const TYPED_MULTI_TEST_PLAN: &str = r#"
 fn plan() {
-    let aapl = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
-    let msft = dataset::load("MSFT", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let aapl = dataset::load("AAPL", time("2020-01-02"), time("2020-01-05"));
+    let msft = dataset::load("MSFT", time("2020-01-02"), time("2020-01-05"));
     let aapl_baseline = baseline::run(aapl, run_config::new().with_balance(10000.0));
     let msft_baseline = baseline::run(msft, run_config::new().with_balance(5000));
     let aapl_test = plan_test::new("AAPL baseline").with_baseline(aapl_baseline);
@@ -1639,7 +1624,6 @@ fn plan() {
 fn plan() {
     let dataset = dataset::load(
         "AAPL",
-        timeframe("1d"),
         time("2020-01-02T01:00:00+01:00"),
         time("2020-01-04"),
     );
@@ -1676,7 +1660,9 @@ fn plan() {
 const H1 = timeframe("1h");
 
 fn strategy_config() {
-    strategy_config::new().with_secondary(secondary::optional(H1))
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::optional(H1))
 }
 
 fn on_tick(market, context) {
@@ -1689,7 +1675,7 @@ fn on_tick(market, context) {
             strategy,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1m"), time("2020-01-01"), time("2020-01-02"));
+    let dataset = dataset::load("AAPL", time("2020-01-01"), time("2020-01-02"));
 
     plan_result::new()
         .with_test(
@@ -1731,7 +1717,9 @@ fn plan() {
     fn warmup_aware_dataset_loads_hidden_primary_prefix_before_visible_window() {
         let strategy = r#"
 fn strategy_config() {
-    strategy_config::new().with_minimum_warmup(2)
+    strategy_config::new()
+        .with_primary(timeframe("1d"))
+        .with_minimum_warmup(2)
 }
 
 fn on_tick(market, context) {
@@ -1740,7 +1728,7 @@ fn on_tick(market, context) {
 "#;
         let plan = r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-03"), time("2020-01-05"));
+    let dataset = dataset::load("AAPL", time("2020-01-03"), time("2020-01-05"));
 
     plan_result::new()
         .with_test(
@@ -1798,7 +1786,7 @@ fn plan() {
                 make_candle(day(3), 100.0),
                 make_candle(day(4), 101.0),
             ]),
-            RuntimeBacktestConfig::new("AAPL", Timeframe::days(1), 10000.0),
+            RuntimeBacktestConfig::new("AAPL", 10000.0),
         )
         .unwrap();
         assert_eq!(
@@ -1822,6 +1810,7 @@ const H1 = timeframe("1h");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(timeframe("1m"))
         .with_minimum_warmup(1)
         .with_secondary(secondary::optional(H1))
 }
@@ -1834,7 +1823,6 @@ fn on_tick(market, context) {
 fn plan() {
     let dataset = dataset::load(
         "AAPL",
-        timeframe("1m"),
         time("2020-01-01T00:01:00Z"),
         time("2020-01-01T00:03:00Z")
     );
@@ -1893,7 +1881,9 @@ fn plan() {
         let primary_missing = execute_plan(
             r#"
 fn strategy_config() {
-    strategy_config::new().with_minimum_warmup(2)
+    strategy_config::new()
+        .with_primary(timeframe("1d"))
+        .with_minimum_warmup(2)
 }
 
 fn on_tick(market, context) {
@@ -1902,7 +1892,7 @@ fn on_tick(market, context) {
 "#,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-03"), time("2020-01-04"));
+    let dataset = dataset::load("AAPL", time("2020-01-03"), time("2020-01-04"));
 
     plan_result::new()
         .with_test(
@@ -1933,6 +1923,7 @@ const H1 = timeframe("1h");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(timeframe("1m"))
         .with_minimum_warmup(1)
         .with_secondary(secondary::optional(H1))
 }
@@ -1943,7 +1934,7 @@ fn on_tick(market, context) {
 "#,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1m"), time("2020-01-01T00:01:00Z"), time("2020-01-01T00:02:00Z"));
+    let dataset = dataset::load("AAPL", time("2020-01-01T00:01:00Z"), time("2020-01-01T00:02:00Z"));
 
     plan_result::new()
         .with_test(
@@ -1954,13 +1945,17 @@ fn plan() {
 "#,
             |symbol, timeframe, request| {
                 Ok(match (timeframe, request) {
-                    (tf, DatasetCandleRequest::WarmupPrefix { .. }) if tf == Timeframe::minutes(1) => {
+                    (tf, DatasetCandleRequest::WarmupPrefix { .. })
+                        if tf == Timeframe::minutes(1) =>
+                    {
                         vec![candle_for(symbol, timeframe, day(1), 99.0)]
                     }
                     (tf, DatasetCandleRequest::Range { .. }) if tf == Timeframe::minutes(1) => {
                         vec![candle_for(symbol, timeframe, day(1) + 60_000, 100.0)]
                     }
-                    (tf, DatasetCandleRequest::WarmupPrefix { .. }) if tf == Timeframe::hours(1) => {
+                    (tf, DatasetCandleRequest::WarmupPrefix { .. })
+                        if tf == Timeframe::hours(1) =>
+                    {
                         Vec::new()
                     }
                     _ => Vec::new(),
@@ -1979,7 +1974,7 @@ fn plan() {
             HOLD_STRATEGY,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-03"));
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-03"));
 
     plan_result::new()
         .with_test(
@@ -2004,7 +1999,7 @@ fn plan() {
             HOLD_STRATEGY,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-05"));
     let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
     let synthetic = monte_carlo::candle_permutation(
         baseline,
@@ -2052,7 +2047,7 @@ fn plan() {
     fn monte_carlo_diagnostics_count_runtime_exit_events() {
         let plan = r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-05"));
     let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
     let synthetic = monte_carlo::candle_permutation(baseline, monte_carlo_config::new(1, 7));
 
@@ -2067,6 +2062,10 @@ fn plan() {
 
         let strategy_exit_report = execute_plan(
             r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1d"))
+}
+
 fn on_tick(market, context) {
     let seen = context.state.get("seen", 0);
     context.state.set("seen", seen + 1);
@@ -2102,6 +2101,10 @@ fn on_tick(market, context) {
 
         let risk_exit_report = execute_plan(
             r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1d"))
+}
+
 fn on_tick(market, context) {
     let seen = context.state.get("seen", 0);
     context.state.set("seen", seen + 1);
@@ -2149,7 +2152,9 @@ fn on_tick(market, context) {
 const H1 = timeframe("1h");
 
 fn strategy_config() {
-    strategy_config::new().with_secondary(secondary::required(H1).with_max_missing_candles(0))
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(H1).with_max_missing_candles(0))
 }
 
 fn on_tick(market, context) {
@@ -2158,7 +2163,7 @@ fn on_tick(market, context) {
 "#,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1m"), time("2020-01-01"), time("2020-01-02"));
+    let dataset = dataset::load("AAPL", time("2020-01-01"), time("2020-01-02"));
     let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
     let synthetic = monte_carlo::candle_permutation(baseline, monte_carlo_config::new(1, 9));
 
@@ -2260,7 +2265,7 @@ fn plan() {
             HOLD_STRATEGY,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-05"));
     let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
     let synthetic = monte_carlo::candle_permutation(baseline, monte_carlo_config::new(1, 42));
     let leaked = synthetic.iterations;
@@ -2288,7 +2293,7 @@ fn plan() {
             HOLD_STRATEGY,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-03"));
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-03"));
     let leaked = dataset.candles;
 
     plan_result::new()
@@ -2399,7 +2404,7 @@ fn plan() {
             HOLD_STRATEGY,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-03"));
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-03"));
 
     plan_result::new()
         .with_test(
@@ -2421,9 +2426,9 @@ fn plan() {
             HOLD_STRATEGY,
             r#"
 fn plan() {
-    let first = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
-    let broken = dataset::load("BROKEN", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
-    let should_not_run = dataset::load("MSFT", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let first = dataset::load("AAPL", time("2020-01-02"), time("2020-01-05"));
+    let broken = dataset::load("BROKEN", time("2020-01-02"), time("2020-01-05"));
+    let should_not_run = dataset::load("MSFT", time("2020-01-02"), time("2020-01-05"));
     let first_baseline = baseline::run(first, run_config::new().with_balance(10000.0));
     let broken_baseline = baseline::run(broken, run_config::new().with_balance(10000.0));
     let should_not_run_baseline = baseline::run(should_not_run, run_config::new().with_balance(10000.0));
