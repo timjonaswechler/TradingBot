@@ -4,11 +4,13 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate};
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
 use shared::{Candle, Timeframe};
-use trading_runtime::{resolve_warmup_plan, RhaiStrategy, RuntimeConfig, WarmupPlan};
+use trading_runtime::{
+    resolve_warmup_plan, ExitKind, RhaiStrategy, RuntimeConfig, RuntimeEvent, WarmupPlan,
+};
 
 use crate::{
     run_prepared_runtime_backtest, BacktestResult, HistoricalCandleSeries, HistoricalMarketData,
-    RuntimeBacktestConfig,
+    RuntimeBacktestConfig, RuntimeBacktestResult,
 };
 
 #[derive(Debug, Clone)]
@@ -24,6 +26,31 @@ pub struct BaselinePlanTest {
     pub interval: String,
     pub initial_balance: f64,
     pub result: BacktestResult,
+    pub synthetic: Option<SyntheticMonteCarloReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MonteCarloProcedure {
+    CandlePermutation,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyntheticMonteCarloReport {
+    pub procedure: MonteCarloProcedure,
+    pub iterations: Vec<MonteCarloIterationDiagnostics>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonteCarloIterationDiagnostics {
+    pub iteration: usize,
+    pub seed: u64,
+    pub final_equity: f64,
+    pub max_drawdown: f64,
+    pub trade_count: usize,
+    pub blocked_strategy_tick_count: usize,
+    pub strategy_exit_count: usize,
+    pub risk_exit_count: usize,
+    pub force_close_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -45,9 +72,10 @@ impl PlanResultSpec {
 struct PlanTestSpec {
     name: String,
     baseline: Option<BaselinePlanSpec>,
+    synthetic: Option<SyntheticPlanSpec>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct DatasetPlanSpec {
     symbol: String,
     primary_timeframe: Timeframe,
@@ -80,10 +108,28 @@ impl RunConfigPlanSpec {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct BaselinePlanSpec {
     dataset: DatasetPlanSpec,
     balance: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MonteCarloConfigPlanSpec {
+    iterations: usize,
+    base_seed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SyntheticProcedurePlanSpec {
+    CandlePermutation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SyntheticPlanSpec {
+    procedure: SyntheticProcedurePlanSpec,
+    baseline: BaselinePlanSpec,
+    config: MonteCarloConfigPlanSpec,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +142,7 @@ struct ValidatedPlanResultSpec {
 struct ValidatedPlanTestSpec {
     name: String,
     baseline: BaselinePlanSpec,
+    synthetic: Option<SyntheticPlanSpec>,
 }
 
 pub fn execute_plan<F>(
@@ -123,11 +170,13 @@ where
             &mut load_candles,
         )
         .map_err(|error| anyhow!("{test_identity} failed: {error}"))?;
+        let effective_config = prepared.effective_config.clone();
+        let warmup_plan = prepared.warmup_plan.clone();
         let runtime_result = run_prepared_runtime_backtest(
             prepared.strategy,
-            prepared.effective_config,
-            prepared.warmup_plan,
-            market_data,
+            effective_config.clone(),
+            warmup_plan.clone(),
+            market_data.clone(),
             baseline.balance,
         )
         .map_err(|error| anyhow!("{test_identity} failed: {error}"))?;
@@ -138,6 +187,21 @@ where
                 primary_timeframe,
             ));
         }
+
+        let synthetic = match test_spec.synthetic {
+            Some(synthetic_spec) => Some(
+                run_synthetic_monte_carlo(
+                    strategy_src,
+                    &effective_config,
+                    &warmup_plan,
+                    &market_data,
+                    baseline.balance,
+                    &synthetic_spec,
+                )
+                .map_err(|error| anyhow!("{test_identity} failed: {error}"))?,
+            ),
+            None => None,
+        };
         let result = runtime_result.result;
 
         tests.push(BaselinePlanTest {
@@ -146,6 +210,7 @@ where
             interval: primary_timeframe.to_string(),
             initial_balance: baseline.balance,
             result,
+            synthetic,
         });
     }
 
@@ -279,6 +344,236 @@ where
         .collect::<Result<Vec<_>>>()?;
 
     Ok(HistoricalMarketData::with_secondary(primary, secondary))
+}
+
+fn run_synthetic_monte_carlo(
+    strategy_src: &str,
+    effective_config: &RuntimeConfig,
+    warmup_plan: &WarmupPlan,
+    source_market_data: &HistoricalMarketData,
+    initial_balance: f64,
+    synthetic_spec: &SyntheticPlanSpec,
+) -> Result<SyntheticMonteCarloReport> {
+    match synthetic_spec.procedure {
+        SyntheticProcedurePlanSpec::CandlePermutation => {
+            let mut iterations = Vec::with_capacity(synthetic_spec.config.iterations);
+
+            for iteration_index in 0..synthetic_spec.config.iterations {
+                let seed = derive_monte_carlo_seed(
+                    synthetic_spec.config.base_seed,
+                    iteration_index,
+                    0,
+                    CANDLE_PERMUTATION_PROCEDURE_ID,
+                );
+                let synthetic_market_data = permute_market_data(source_market_data, seed)?;
+                let strategy = RhaiStrategy::load(strategy_src)?;
+                let runtime_result = run_prepared_runtime_backtest(
+                    strategy,
+                    effective_config.clone(),
+                    warmup_plan.clone(),
+                    synthetic_market_data,
+                    initial_balance,
+                )?;
+
+                if runtime_result.result.equity_curve.is_empty() {
+                    return Err(anyhow!(
+                        "monte_carlo::candle_permutation iteration {} produced no tradable candles",
+                        iteration_index + 1
+                    ));
+                }
+
+                iterations.push(iteration_diagnostics(
+                    iteration_index + 1,
+                    seed,
+                    &runtime_result,
+                ));
+            }
+
+            Ok(SyntheticMonteCarloReport {
+                procedure: MonteCarloProcedure::CandlePermutation,
+                iterations,
+            })
+        }
+    }
+}
+
+fn iteration_diagnostics(
+    iteration: usize,
+    seed: u64,
+    runtime_result: &RuntimeBacktestResult,
+) -> MonteCarloIterationDiagnostics {
+    let counters = RuntimeEventCounters::from_steps(&runtime_result.steps);
+    MonteCarloIterationDiagnostics {
+        iteration,
+        seed,
+        final_equity: runtime_result.result.metrics.final_equity,
+        max_drawdown: runtime_result.result.metrics.max_drawdown,
+        trade_count: runtime_result.result.metrics.trade_count,
+        blocked_strategy_tick_count: counters.blocked_strategy_tick_count,
+        strategy_exit_count: counters.strategy_exit_count,
+        risk_exit_count: counters.risk_exit_count,
+        force_close_count: counters.force_close_count,
+    }
+}
+
+#[derive(Debug, Default)]
+struct RuntimeEventCounters {
+    blocked_strategy_tick_count: usize,
+    strategy_exit_count: usize,
+    risk_exit_count: usize,
+    force_close_count: usize,
+}
+
+impl RuntimeEventCounters {
+    fn from_steps(steps: &[trading_runtime::RuntimeStep]) -> Self {
+        let mut counters = RuntimeEventCounters::default();
+
+        for event in steps.iter().flat_map(|step| step.events.iter()) {
+            match event {
+                RuntimeEvent::StrategyTickBlocked { .. } => {
+                    counters.blocked_strategy_tick_count += 1;
+                }
+                RuntimeEvent::PositionClosed { exit_kind, .. } => match exit_kind {
+                    ExitKind::StrategyExit => counters.strategy_exit_count += 1,
+                    ExitKind::RiskExit { .. } => counters.risk_exit_count += 1,
+                    ExitKind::ForceClose => counters.force_close_count += 1,
+                },
+                _ => {}
+            }
+        }
+
+        counters
+    }
+}
+
+const CANDLE_PERMUTATION_PROCEDURE_ID: u64 = 0x4341_4e44_4c45_5031; // "CANDLEP1"
+const SPLITMIX64_INCREMENT: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// Derive a reproducible Monte Carlo seed from a declared `base_seed`, zero-based
+/// `iteration_index`, zero-based `stage_index`, and stable `procedure_id`.
+///
+/// The helper folds each input through the SplitMix64 mixer, then each synthetic
+/// procedure uses the derived seed to initialize a SplitMix64 stream. Fisher-Yates
+/// shuffles consume that stream directly instead of relying on implementation-
+/// default RNG behavior.
+fn derive_monte_carlo_seed(
+    base_seed: u64,
+    iteration_index: usize,
+    stage_index: usize,
+    procedure_id: u64,
+) -> u64 {
+    let mut state = base_seed;
+    state = splitmix64_mixed(state ^ procedure_id);
+    state = splitmix64_mixed(state ^ iteration_index as u64);
+    splitmix64_mixed(state ^ stage_index as u64)
+}
+
+fn splitmix64_mixed(value: u64) -> u64 {
+    let mut state = value;
+    splitmix64_next(&mut state)
+}
+
+fn splitmix64_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(SPLITMIX64_INCREMENT);
+    let mut value = *state;
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+#[derive(Debug, Clone)]
+struct SplitMix64 {
+    state: u64,
+}
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        splitmix64_next(&mut self.state)
+    }
+
+    fn next_index(&mut self, upper_exclusive: usize) -> usize {
+        assert!(upper_exclusive > 0, "upper bound must be non-zero");
+        let upper = upper_exclusive as u64;
+        let zone = u64::MAX - (u64::MAX % upper);
+
+        loop {
+            let value = self.next_u64();
+            if value < zone {
+                return (value % upper) as usize;
+            }
+        }
+    }
+}
+
+fn permute_market_data(source: &HistoricalMarketData, seed: u64) -> Result<HistoricalMarketData> {
+    let mut rng = SplitMix64::new(seed);
+    let primary = permute_candles_by_timestamp_slots(&source.primary, &mut rng, "Primary")?;
+    let secondary = source
+        .secondary
+        .iter()
+        .map(|series| {
+            Ok(HistoricalCandleSeries {
+                timeframe: series.timeframe,
+                candles: permute_candles_by_timestamp_slots(
+                    &series.candles,
+                    &mut rng,
+                    "Secondary",
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(HistoricalMarketData::with_secondary(primary, secondary))
+}
+
+fn permute_candles_by_timestamp_slots(
+    source: &[Candle],
+    rng: &mut SplitMix64,
+    role: &str,
+) -> Result<Vec<Candle>> {
+    let mut slots = source.to_vec();
+    slots.sort_by_key(|candle| candle.timestamp);
+
+    for candle in &slots {
+        validate_ohlc_invariants(candle, role)?;
+    }
+
+    let mut payloads = slots.clone();
+    for index in (1..payloads.len()).rev() {
+        let swap_index = rng.next_index(index + 1);
+        payloads.swap(index, swap_index);
+    }
+
+    let permuted = slots
+        .into_iter()
+        .zip(payloads)
+        .map(|(slot, mut payload)| {
+            payload.timestamp = slot.timestamp;
+            payload.symbol = slot.symbol;
+            payload.timeframe = slot.timeframe;
+            payload
+        })
+        .collect();
+
+    Ok(permuted)
+}
+
+fn validate_ohlc_invariants(candle: &Candle, role: &str) -> Result<()> {
+    let highest_body_price = candle.open.max(candle.close);
+    let lowest_body_price = candle.open.min(candle.close);
+
+    if candle.high < highest_body_price || candle.low > lowest_body_price {
+        return Err(anyhow!(
+            "monte_carlo::candle_permutation {role} candle at {} violates OHLC invariants",
+            candle.timestamp
+        ));
+    }
+
+    Ok(())
 }
 
 fn load_warmup_prefix<F>(
@@ -484,6 +779,8 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_type_with_name::<PlanResultSpec>("PlanResult");
     rhai.register_type_with_name::<PlanTestSpec>("PlanTest");
     rhai.register_type_with_name::<BaselinePlanSpec>("BaselineRun");
+    rhai.register_type_with_name::<SyntheticPlanSpec>("SyntheticMonteCarlo");
+    rhai.register_type_with_name::<MonteCarloConfigPlanSpec>("MonteCarloConfig");
     rhai.register_type_with_name::<DatasetPlanSpec>("Dataset");
     rhai.register_type_with_name::<RunConfigPlanSpec>("RunConfig");
     rhai.register_type_with_name::<PlanTimestamp>("PlanTime");
@@ -495,14 +792,20 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_fn("__backtester_plan_test_new", |name: &str| PlanTestSpec {
         name: name.to_string(),
         baseline: None,
+        synthetic: None,
     });
     rhai.register_fn("__backtester_run_config_new", RunConfigPlanSpec::new);
+    rhai.register_fn(
+        "__backtester_monte_carlo_config_new",
+        monte_carlo_config_new,
+    );
     rhai.register_fn("with_title", |mut result: PlanResultSpec, title: &str| {
         result.title = Some(title.to_string());
         result
     });
     rhai.register_fn("with_test", with_test);
     rhai.register_fn("with_baseline", with_baseline);
+    rhai.register_fn("with_synthetic", with_synthetic);
     rhai.register_fn("with_balance", with_balance_float);
     rhai.register_fn("with_balance", with_balance_int);
 
@@ -513,6 +816,10 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     let mut baseline_module = Module::new();
     baseline_module.set_native_fn("run", baseline_run);
     rhai.register_static_module("baseline", Arc::new(baseline_module));
+
+    let mut monte_carlo_module = Module::new();
+    monte_carlo_module.set_native_fn("candle_permutation", candle_permutation_monte_carlo);
+    rhai.register_static_module("monte_carlo", Arc::new(monte_carlo_module));
 }
 
 fn plan_timeframe(raw: &str) -> std::result::Result<Timeframe, Box<EvalAltResult>> {
@@ -599,6 +906,59 @@ fn with_baseline(
     Ok(test)
 }
 
+fn with_synthetic(
+    mut test: PlanTestSpec,
+    synthetic: Dynamic,
+) -> std::result::Result<PlanTestSpec, Box<EvalAltResult>> {
+    let synthetic = synthetic.try_cast::<SyntheticPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "with_synthetic requires a SyntheticMonteCarlo host object from `monte_carlo::candle_permutation(...)`",
+        )
+    })?;
+    test.synthetic = Some(synthetic);
+    Ok(test)
+}
+
+fn monte_carlo_config_new(
+    iterations: INT,
+    base_seed: INT,
+) -> std::result::Result<MonteCarloConfigPlanSpec, Box<EvalAltResult>> {
+    if iterations <= 0 {
+        return Err("monte_carlo_config::new iterations must be greater than zero".into());
+    }
+
+    Ok(MonteCarloConfigPlanSpec {
+        iterations: usize::try_from(iterations).map_err(|_| {
+            Box::<EvalAltResult>::from(
+                "monte_carlo_config::new iterations value does not fit this platform",
+            )
+        })?,
+        base_seed: base_seed as u64,
+    })
+}
+
+fn candle_permutation_monte_carlo(
+    baseline: Dynamic,
+    config: Dynamic,
+) -> std::result::Result<SyntheticPlanSpec, Box<EvalAltResult>> {
+    let baseline = baseline.try_cast::<BaselinePlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::candle_permutation requires a BaselineRun host object from `baseline::run(...)`",
+        )
+    })?;
+    let config = config.try_cast::<MonteCarloConfigPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::candle_permutation requires a MonteCarloConfig host object from `monte_carlo_config::new(...)`",
+        )
+    })?;
+
+    Ok(SyntheticPlanSpec {
+        procedure: SyntheticProcedurePlanSpec::CandlePermutation,
+        baseline,
+        config,
+    })
+}
+
 fn baseline_run(
     dataset: Dynamic,
     run_config: Dynamic,
@@ -638,9 +998,19 @@ fn validate_plan_result(result: PlanResultSpec) -> Result<ValidatedPlanResultSpe
                 test.name
             )
         })?;
+        let synthetic = test.synthetic;
+        if let Some(synthetic) = synthetic.as_ref() {
+            if synthetic.baseline != baseline {
+                return Err(anyhow!(
+                    "plan test {test_number} ('{}') synthetic result must be derived from the same baseline attached with `with_baseline(...)`",
+                    test.name
+                ));
+            }
+        }
         tests.push(ValidatedPlanTestSpec {
             name: test.name,
             baseline,
+            synthetic,
         });
     }
 
@@ -654,10 +1024,14 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
     // Rhai 1.24 reserves `new` even in module paths such as
     // `plan_result::new()`. Keep the approved plan-facing API and lower only
     // these typed constructors to private host functions before compilation.
-    const REPLACEMENTS: [(&str, &str); 3] = [
+    const REPLACEMENTS: [(&str, &str); 4] = [
         ("plan_result::new(", "__backtester_plan_result_new("),
         ("plan_test::new(", "__backtester_plan_test_new("),
         ("run_config::new(", "__backtester_run_config_new("),
+        (
+            "monte_carlo_config::new(",
+            "__backtester_monte_carlo_config_new(",
+        ),
     ];
 
     let mut output = String::with_capacity(source.len());
@@ -1225,6 +1599,290 @@ fn plan() {
         assert!(msg.contains("dataset::load"));
         assert!(msg.contains("visible Primary window"));
         assert!(msg.contains("contains no candles"));
+    }
+
+    #[test]
+    fn candle_permutation_monte_carlo_plan_runs_runtime_backed_iterations() {
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::candle_permutation(
+        baseline,
+        monte_carlo_config::new(2, 42)
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("baseline vs candle permutation")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, _window| {
+                Ok(candles()
+                    .into_iter()
+                    .map(|mut candle| {
+                        candle.symbol = symbol.to_string();
+                        candle.timeframe = timeframe;
+                        candle
+                    })
+                    .collect())
+            },
+        )
+        .unwrap();
+
+        let synthetic = report.tests[0]
+            .synthetic
+            .as_ref()
+            .expect("test should include a synthetic Monte Carlo result");
+        assert_eq!(synthetic.procedure, MonteCarloProcedure::CandlePermutation);
+        assert_eq!(synthetic.iterations.len(), 2);
+        assert_ne!(synthetic.iterations[0].seed, synthetic.iterations[1].seed);
+        assert_eq!(synthetic.iterations[0].iteration, 1);
+        assert_eq!(synthetic.iterations[0].final_equity, 10000.0);
+        assert_eq!(synthetic.iterations[0].trade_count, 0);
+        assert_eq!(synthetic.iterations[0].blocked_strategy_tick_count, 0);
+        assert_eq!(synthetic.iterations[0].strategy_exit_count, 0);
+        assert_eq!(synthetic.iterations[0].risk_exit_count, 0);
+        assert_eq!(synthetic.iterations[0].force_close_count, 0);
+    }
+
+    #[test]
+    fn monte_carlo_diagnostics_count_runtime_exit_events() {
+        let plan = r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::candle_permutation(baseline, monte_carlo_config::new(1, 7));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("diagnostics")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#;
+
+        let strategy_exit_report = execute_plan(
+            r#"
+fn on_tick(market, context) {
+    let seen = context.state.get("seen", 0);
+    context.state.set("seen", seen + 1);
+
+    if seen == 0 {
+        decision::open_long(1.0)
+    } else {
+        decision::close_long()
+    }
+}
+"#,
+            plan,
+            |symbol, timeframe, _window| {
+                Ok(candles()
+                    .into_iter()
+                    .map(|mut candle| {
+                        candle.symbol = symbol.to_string();
+                        candle.timeframe = timeframe;
+                        candle
+                    })
+                    .collect())
+            },
+        )
+        .unwrap();
+        let strategy_exit_iteration = &strategy_exit_report.tests[0]
+            .synthetic
+            .as_ref()
+            .unwrap()
+            .iterations[0];
+        assert_eq!(strategy_exit_iteration.strategy_exit_count, 1);
+        assert_eq!(strategy_exit_iteration.risk_exit_count, 0);
+        assert_eq!(strategy_exit_iteration.force_close_count, 0);
+
+        let risk_exit_report = execute_plan(
+            r#"
+fn on_tick(market, context) {
+    let seen = context.state.get("seen", 0);
+    context.state.set("seen", seen + 1);
+
+    if seen == 0 {
+        decision::open_long(1.0).with_take_profit(100.5)
+    } else {
+        decision::hold()
+    }
+}
+"#,
+            plan,
+            |symbol, timeframe, _window| {
+                Ok(candles()
+                    .into_iter()
+                    .map(|mut candle| {
+                        candle.symbol = symbol.to_string();
+                        candle.timeframe = timeframe;
+                        candle.close = 100.0;
+                        candle.open = 100.0;
+                        candle.high = 101.0;
+                        candle.low = 99.0;
+                        candle
+                    })
+                    .collect())
+            },
+        )
+        .unwrap();
+        let risk_exit_iteration = &risk_exit_report.tests[0]
+            .synthetic
+            .as_ref()
+            .unwrap()
+            .iterations[0];
+        assert_eq!(risk_exit_iteration.strategy_exit_count, 0);
+        assert_eq!(risk_exit_iteration.risk_exit_count, 1);
+        assert_eq!(risk_exit_iteration.trade_count, 1);
+    }
+
+    #[test]
+    fn monte_carlo_diagnostics_count_blocked_strategy_ticks() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let report = execute_plan(
+            r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new().with_secondary(secondary::required(H1).with_max_missing_candles(0))
+}
+
+fn on_tick(market, context) {
+    decision::open_long(1.0)
+}
+"#,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1m"), time("2020-01-01"), time("2020-01-02"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::candle_permutation(baseline, monte_carlo_config::new(1, 9));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("blocked diagnostics")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |_symbol, timeframe, _window| match timeframe {
+                tf if tf == primary => Ok(vec![
+                    candle_for("AAPL", primary, day(1), 100.0),
+                    candle_for("AAPL", primary, day(1) + 60_000, 101.0),
+                ]),
+                tf if tf == secondary => Ok(Vec::new()),
+                _ => Ok(Vec::new()),
+            },
+        )
+        .unwrap();
+
+        let iteration = &report.tests[0].synthetic.as_ref().unwrap().iterations[0];
+        assert_eq!(iteration.blocked_strategy_tick_count, 2);
+        assert_eq!(iteration.trade_count, 0);
+    }
+
+    #[test]
+    fn candle_permutation_preserves_population_and_chronological_timestamp_slots() {
+        let primary = Timeframe::days(1);
+        let secondary = Timeframe::hours(1);
+        let source = HistoricalMarketData::with_secondary(
+            vec![
+                candle_for("AAPL", primary, day(2), 10.0),
+                candle_for("AAPL", primary, day(3), 20.0),
+                candle_for("AAPL", primary, day(4), 30.0),
+            ],
+            [HistoricalCandleSeries {
+                timeframe: secondary,
+                candles: vec![
+                    candle_for("AAPL", secondary, day(2), 100.0),
+                    candle_for("AAPL", secondary, day(4), 200.0),
+                ],
+            }],
+        );
+        let seed = derive_monte_carlo_seed(42, 0, 0, CANDLE_PERMUTATION_PROCEDURE_ID);
+        assert_eq!(
+            seed,
+            derive_monte_carlo_seed(42, 0, 0, CANDLE_PERMUTATION_PROCEDURE_ID)
+        );
+        assert_ne!(
+            seed,
+            derive_monte_carlo_seed(42, 1, 0, CANDLE_PERMUTATION_PROCEDURE_ID)
+        );
+
+        let permuted = permute_market_data(&source, seed).unwrap();
+
+        assert_eq!(
+            permuted
+                .primary
+                .iter()
+                .map(|candle| candle.timestamp)
+                .collect::<Vec<_>>(),
+            vec![day(2), day(3), day(4)]
+        );
+        let mut primary_closes = permuted
+            .primary
+            .iter()
+            .map(|candle| candle.close as i64)
+            .collect::<Vec<_>>();
+        primary_closes.sort();
+        assert_eq!(primary_closes, vec![10, 20, 30]);
+        assert!(permuted
+            .primary
+            .iter()
+            .all(|candle| candle.symbol == "AAPL" && candle.timeframe == primary));
+
+        let secondary = &permuted.secondary[0];
+        assert_eq!(
+            secondary
+                .candles
+                .iter()
+                .map(|candle| candle.timestamp)
+                .collect::<Vec<_>>(),
+            vec![day(2), day(4)]
+        );
+        let mut secondary_closes = secondary
+            .candles
+            .iter()
+            .map(|candle| candle.close as i64)
+            .collect::<Vec<_>>();
+        secondary_closes.sort();
+        assert_eq!(secondary_closes, vec![100, 200]);
+    }
+
+    #[test]
+    fn synthetic_monte_carlo_host_object_is_opaque_to_rhai() {
+        let err = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-02"), time("2020-01-05"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::candle_permutation(baseline, monte_carlo_config::new(1, 42));
+    let leaked = synthetic.iterations;
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("leak")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |_symbol, _timeframe, _window| Ok(candles()),
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("plan()"));
+        assert!(msg.contains("iterations"));
     }
 
     #[test]
