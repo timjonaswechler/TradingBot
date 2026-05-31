@@ -4,8 +4,12 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate};
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
 use shared::{Candle, Timeframe};
+use trading_runtime::{resolve_warmup_plan, RhaiStrategy, RuntimeConfig, WarmupPlan};
 
-use crate::{run_runtime_backtest_with_loader, BacktestResult, RuntimeBacktestConfig};
+use crate::{
+    run_prepared_runtime_backtest, BacktestResult, HistoricalCandleSeries, HistoricalMarketData,
+    RuntimeBacktestConfig,
+};
 
 #[derive(Debug, Clone)]
 pub struct PlanReport {
@@ -51,24 +55,18 @@ struct DatasetPlanSpec {
     end_ms: i64,
 }
 
-impl DatasetPlanSpec {
-    fn window(&self) -> DatasetWindow {
-        DatasetWindow {
-            start_ms: self.start_ms,
-            end_ms: self.end_ms,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct PlanTimestamp {
     timestamp_ms: i64,
 }
 
+/// Candle data request made by the Backtest Plan dataset loader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DatasetWindow {
-    pub start_ms: i64,
-    pub end_ms: i64,
+pub enum DatasetCandleRequest {
+    /// The last `count` candles before `before_ms`, returned in chronological order.
+    WarmupPrefix { before_ms: i64, count: usize },
+    /// Half-open candle timestamp range `[start_ms, end_ms)`, returned chronologically.
+    Range { start_ms: i64, end_ms: i64 },
 }
 
 #[derive(Debug, Clone)]
@@ -106,7 +104,7 @@ pub fn execute_plan<F>(
     mut load_candles: F,
 ) -> Result<PlanReport>
 where
-    F: FnMut(&str, Timeframe, DatasetWindow) -> Result<Vec<Candle>>,
+    F: FnMut(&str, Timeframe, DatasetCandleRequest) -> Result<Vec<Candle>>,
 {
     let plan = parse_plan(plan_src)?;
     let mut tests = Vec::with_capacity(plan.tests.len());
@@ -116,33 +114,21 @@ where
         let baseline = test_spec.baseline;
         let dataset = baseline.dataset;
         let primary_timeframe = dataset.primary_timeframe;
-        let window = dataset.window();
-        let runtime_result = run_runtime_backtest_with_loader(
-            strategy_src,
-            RuntimeBacktestConfig::new(dataset.symbol.clone(), primary_timeframe, baseline.balance),
-            |symbol, timeframe| {
-                let candles = load_candles(symbol, timeframe, window)?;
-                if candles
-                    .iter()
-                    .any(|candle| candle.timestamp < window.start_ms || candle.timestamp >= window.end_ms)
-                {
-                    return Err(anyhow!(
-                        "dataset::load for {symbol}/{timeframe} returned candles outside half-open window [{}, {})",
-                        window.start_ms,
-                        window.end_ms
-                    ));
-                }
-                if timeframe == primary_timeframe && candles.is_empty() {
-                    return Err(anyhow!(
-                        "dataset::load visible Primary window for {}/{} [{}, {}) contains no candles",
-                        dataset.symbol,
-                        primary_timeframe,
-                        window.start_ms,
-                        window.end_ms
-                    ));
-                }
-                Ok(candles)
-            },
+        let prepared = prepare_plan_runtime(strategy_src, &dataset, baseline.balance)
+            .map_err(|error| anyhow!("{test_identity} failed: {error}"))?;
+        let market_data = load_warmup_aware_market_data(
+            &dataset,
+            &prepared.effective_config,
+            &prepared.warmup_plan,
+            &mut load_candles,
+        )
+        .map_err(|error| anyhow!("{test_identity} failed: {error}"))?;
+        let runtime_result = run_prepared_runtime_backtest(
+            prepared.strategy,
+            prepared.effective_config,
+            prepared.warmup_plan,
+            market_data,
+            baseline.balance,
         )
         .map_err(|error| anyhow!("{test_identity} failed: {error}"))?;
         if runtime_result.result.equity_curve.is_empty() {
@@ -167,6 +153,222 @@ where
         title: plan.title,
         tests,
     })
+}
+
+struct PreparedPlanRuntime {
+    strategy: RhaiStrategy,
+    effective_config: RuntimeConfig,
+    warmup_plan: WarmupPlan,
+}
+
+fn prepare_plan_runtime(
+    strategy_src: &str,
+    dataset: &DatasetPlanSpec,
+    initial_balance: f64,
+) -> Result<PreparedPlanRuntime> {
+    let strategy = RhaiStrategy::load(strategy_src)?;
+    let config = RuntimeBacktestConfig::new(
+        dataset.symbol.clone(),
+        dataset.primary_timeframe,
+        initial_balance,
+    );
+    let effective_config = config
+        .runtime_config
+        .merge_strategy_config(strategy.strategy_config());
+    let warmup_plan = resolve_warmup_plan(
+        &effective_config,
+        strategy.strategy_config(),
+        strategy.ast(),
+        strategy.scope(),
+        config.runtime_minimum_warmup,
+    );
+
+    Ok(PreparedPlanRuntime {
+        strategy,
+        effective_config,
+        warmup_plan,
+    })
+}
+
+fn load_warmup_aware_market_data<F>(
+    dataset: &DatasetPlanSpec,
+    effective_config: &RuntimeConfig,
+    warmup_plan: &WarmupPlan,
+    load_candles: &mut F,
+) -> Result<HistoricalMarketData>
+where
+    F: FnMut(&str, Timeframe, DatasetCandleRequest) -> Result<Vec<Candle>>,
+{
+    let primary_timeframe = effective_config.primary_timeframe;
+    let primary_requirement = warmup_plan.requirement_for(primary_timeframe).unwrap_or(0);
+    let primary_prefix = load_warmup_prefix(
+        load_candles,
+        &dataset.symbol,
+        primary_timeframe,
+        dataset.start_ms,
+        primary_requirement,
+        "Primary",
+    )?;
+    let visible_primary = load_range(
+        load_candles,
+        &dataset.symbol,
+        primary_timeframe,
+        dataset.start_ms,
+        dataset.end_ms,
+        "visible Primary",
+    )?;
+
+    if visible_primary.is_empty() {
+        return Err(anyhow!(
+            "dataset::load visible Primary window for {}/{} [{}, {}) contains no candles",
+            dataset.symbol,
+            primary_timeframe,
+            dataset.start_ms,
+            dataset.end_ms
+        ));
+    }
+    if visible_primary[0].timestamp != dataset.start_ms {
+        return Err(anyhow!(
+            "dataset::load visible Primary window for {}/{} must begin at requested first tradable candle {} but first candle is {}",
+            dataset.symbol,
+            primary_timeframe,
+            dataset.start_ms,
+            visible_primary[0].timestamp
+        ));
+    }
+
+    let last_visible_primary_ts = visible_primary
+        .last()
+        .expect("non-empty visible Primary window should have a last candle")
+        .timestamp;
+    let secondary_context_end = last_visible_primary_ts.checked_add(1).ok_or_else(|| {
+        anyhow!(
+            "dataset::load visible Primary last timestamp {} cannot be converted to a half-open Secondary context range",
+            last_visible_primary_ts
+        )
+    })?;
+
+    let mut primary = primary_prefix;
+    primary.extend(visible_primary);
+
+    let secondary = effective_config
+        .secondary_timeframes
+        .iter()
+        .map(|secondary_config| {
+            let timeframe = secondary_config.timeframe;
+            let requirement = warmup_plan.requirement_for(timeframe).unwrap_or(0);
+            let mut candles = load_warmup_prefix(
+                load_candles,
+                &dataset.symbol,
+                timeframe,
+                dataset.start_ms,
+                requirement,
+                "Secondary",
+            )?;
+            let context = load_range(
+                load_candles,
+                &dataset.symbol,
+                timeframe,
+                dataset.start_ms,
+                secondary_context_end,
+                "Secondary context",
+            )?;
+            candles.extend(context);
+            Ok(HistoricalCandleSeries { timeframe, candles })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(HistoricalMarketData::with_secondary(primary, secondary))
+}
+
+fn load_warmup_prefix<F>(
+    load_candles: &mut F,
+    symbol: &str,
+    timeframe: Timeframe,
+    before_ms: i64,
+    count: usize,
+    role: &str,
+) -> Result<Vec<Candle>>
+where
+    F: FnMut(&str, Timeframe, DatasetCandleRequest) -> Result<Vec<Candle>>,
+{
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut candles = load_candles(
+        symbol,
+        timeframe,
+        DatasetCandleRequest::WarmupPrefix { before_ms, count },
+    )?;
+    sort_and_validate_identity(&mut candles, symbol, timeframe, role)?;
+
+    if candles.len() != count {
+        return Err(anyhow!(
+            "dataset::load {role} warmup for {symbol}/{timeframe} requires {count} candles before {before_ms} but loader returned {}",
+            candles.len()
+        ));
+    }
+    if candles.iter().any(|candle| candle.timestamp >= before_ms) {
+        return Err(anyhow!(
+            "dataset::load {role} warmup for {symbol}/{timeframe} returned candles at or after visible start {before_ms}"
+        ));
+    }
+
+    Ok(candles)
+}
+
+fn load_range<F>(
+    load_candles: &mut F,
+    symbol: &str,
+    timeframe: Timeframe,
+    start_ms: i64,
+    end_ms: i64,
+    role: &str,
+) -> Result<Vec<Candle>>
+where
+    F: FnMut(&str, Timeframe, DatasetCandleRequest) -> Result<Vec<Candle>>,
+{
+    let mut candles = load_candles(
+        symbol,
+        timeframe,
+        DatasetCandleRequest::Range { start_ms, end_ms },
+    )?;
+    sort_and_validate_identity(&mut candles, symbol, timeframe, role)?;
+
+    if candles
+        .iter()
+        .any(|candle| candle.timestamp < start_ms || candle.timestamp >= end_ms)
+    {
+        return Err(anyhow!(
+            "dataset::load {role} range for {symbol}/{timeframe} returned candles outside half-open window [{start_ms}, {end_ms})"
+        ));
+    }
+
+    Ok(candles)
+}
+
+fn sort_and_validate_identity(
+    candles: &mut Vec<Candle>,
+    symbol: &str,
+    timeframe: Timeframe,
+    role: &str,
+) -> Result<()> {
+    if let Some(candle) = candles.iter().find(|candle| candle.symbol != symbol) {
+        return Err(anyhow!(
+            "dataset::load {role} for {symbol}/{timeframe} returned candle for unexpected symbol '{}'",
+            candle.symbol
+        ));
+    }
+    if let Some(candle) = candles.iter().find(|candle| candle.timeframe != timeframe) {
+        return Err(anyhow!(
+            "dataset::load {role} for {symbol}/{timeframe} returned candle for unexpected timeframe '{}'",
+            candle.timeframe
+        ));
+    }
+
+    candles.sort_by_key(|candle| candle.timestamp);
+    Ok(())
 }
 
 pub fn render_markdown(report: &PlanReport, strategy_label: &str) -> String {
@@ -552,11 +754,19 @@ mod tests {
         JAN_1_2020 + (day_of_month - 1) * DAY_MS
     }
 
-    fn window(start_day: i64, end_day: i64) -> DatasetWindow {
-        DatasetWindow {
+    fn range(start_day: i64, end_day: i64) -> DatasetCandleRequest {
+        DatasetCandleRequest::Range {
             start_ms: day(start_day),
             end_ms: day(end_day),
         }
+    }
+
+    fn range_ms(start_ms: i64, end_ms: i64) -> DatasetCandleRequest {
+        DatasetCandleRequest::Range { start_ms, end_ms }
+    }
+
+    fn warmup_prefix(before_ms: i64, count: usize) -> DatasetCandleRequest {
+        DatasetCandleRequest::WarmupPrefix { before_ms, count }
     }
 
     fn make_candle(ts: i64, close: f64) -> Candle {
@@ -629,8 +839,8 @@ fn plan() {
         assert_eq!(
             requests,
             vec![
-                ("AAPL".to_string(), Timeframe::days(1), window(2, 5)),
-                ("MSFT".to_string(), Timeframe::days(1), window(2, 5)),
+                ("AAPL".to_string(), Timeframe::days(1), range(2, 5)),
+                ("MSFT".to_string(), Timeframe::days(1), range(2, 5)),
             ]
         );
         assert_eq!(report.tests.len(), 2);
@@ -682,7 +892,7 @@ fn plan() {
 
         assert_eq!(
             requests,
-            vec![("AAPL".to_string(), Timeframe::days(1), window(2, 4))]
+            vec![("AAPL".to_string(), Timeframe::days(1), range(2, 4))]
         );
         assert_eq!(report.tests[0].result.equity_curve.len(), 2);
     }
@@ -721,11 +931,11 @@ fn plan() {
                 requests.push((symbol.to_string(), timeframe, requested_window));
                 Ok(match timeframe {
                     tf if tf == primary => vec![
-                        candle_for(symbol, primary, day(1) + 60_000, 100.0),
-                        candle_for(symbol, primary, day(1) + 120_000, 101.0),
+                        candle_for(symbol, primary, day(1), 100.0),
+                        candle_for(symbol, primary, day(1) + 60_000, 101.0),
                     ],
                     tf if tf == secondary => {
-                        vec![candle_for(symbol, secondary, day(1) + 3_600_000, 200.0)]
+                        vec![candle_for(symbol, secondary, day(1), 200.0)]
                     }
                     _ => Vec::new(),
                 })
@@ -736,10 +946,260 @@ fn plan() {
         assert_eq!(
             requests,
             vec![
-                ("AAPL".to_string(), primary, window(1, 2)),
-                ("AAPL".to_string(), secondary, window(1, 2)),
+                ("AAPL".to_string(), primary, range(1, 2)),
+                (
+                    "AAPL".to_string(),
+                    secondary,
+                    range_ms(day(1), day(1) + 60_000 + 1),
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn warmup_aware_dataset_loads_hidden_primary_prefix_before_visible_window() {
+        let strategy = r#"
+fn strategy_config() {
+    strategy_config::new().with_minimum_warmup(2)
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+        let plan = r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-03"), time("2020-01-05"));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("warmup-aware")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#;
+        let mut requests = Vec::new();
+
+        let report = execute_plan(strategy, plan, |symbol, timeframe, request| {
+            requests.push((symbol.to_string(), timeframe, request));
+            Ok(match request {
+                DatasetCandleRequest::WarmupPrefix { .. } => vec![
+                    candle_for(symbol, timeframe, day(1), 98.0),
+                    candle_for(symbol, timeframe, day(2), 99.0),
+                ],
+                DatasetCandleRequest::Range { .. } => vec![
+                    candle_for(symbol, timeframe, day(3), 100.0),
+                    candle_for(symbol, timeframe, day(4), 101.0),
+                ],
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            requests,
+            vec![
+                (
+                    "AAPL".to_string(),
+                    Timeframe::days(1),
+                    warmup_prefix(day(3), 2),
+                ),
+                ("AAPL".to_string(), Timeframe::days(1), range(3, 5)),
+            ]
+        );
+        assert_eq!(
+            report
+                .tests
+                .first()
+                .unwrap()
+                .result
+                .equity_curve
+                .iter()
+                .map(|point| point.timestamp)
+                .collect::<Vec<_>>(),
+            vec![day(3), day(4)]
+        );
+
+        let ordinary = crate::run_runtime_backtest(
+            strategy,
+            HistoricalMarketData::single_timeframe(vec![
+                make_candle(day(1), 98.0),
+                make_candle(day(2), 99.0),
+                make_candle(day(3), 100.0),
+                make_candle(day(4), 101.0),
+            ]),
+            RuntimeBacktestConfig::new("AAPL", Timeframe::days(1), 10000.0),
+        )
+        .unwrap();
+        assert_eq!(
+            report.tests[0].result.equity_curve.len(),
+            ordinary.result.equity_curve.len()
+        );
+        assert_eq!(
+            report.tests[0].result.metrics.final_equity,
+            ordinary.result.metrics.final_equity
+        );
+    }
+
+    #[test]
+    fn warmup_aware_dataset_loads_secondary_prefix_and_context_to_last_visible_primary() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let start = day(1) + 60_000;
+        let last_primary = start + 60_000;
+        let strategy = r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_minimum_warmup(1)
+        .with_secondary(secondary::optional(H1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+        let plan = r#"
+fn plan() {
+    let dataset = dataset::load(
+        "AAPL",
+        timeframe("1m"),
+        time("2020-01-01T00:01:00Z"),
+        time("2020-01-01T00:03:00Z")
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("secondary warmup")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#;
+        let mut requests = Vec::new();
+
+        execute_plan(strategy, plan, |symbol, timeframe, request| {
+            requests.push((symbol.to_string(), timeframe, request));
+            Ok(match (timeframe, request) {
+                (tf, DatasetCandleRequest::WarmupPrefix { .. }) if tf == primary => {
+                    vec![candle_for(symbol, primary, day(1), 99.0)]
+                }
+                (tf, DatasetCandleRequest::Range { .. }) if tf == primary => vec![
+                    candle_for(symbol, primary, start, 100.0),
+                    candle_for(symbol, primary, last_primary, 101.0),
+                ],
+                (tf, DatasetCandleRequest::WarmupPrefix { .. }) if tf == secondary => {
+                    vec![candle_for(symbol, secondary, day(1), 200.0)]
+                }
+                (tf, DatasetCandleRequest::Range { .. }) if tf == secondary => {
+                    vec![candle_for(symbol, secondary, start, 201.0)]
+                }
+                _ => Vec::new(),
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            requests,
+            vec![
+                ("AAPL".to_string(), primary, warmup_prefix(start, 1)),
+                (
+                    "AAPL".to_string(),
+                    primary,
+                    range_ms(start, day(1) + 180_000)
+                ),
+                ("AAPL".to_string(), secondary, warmup_prefix(start, 1)),
+                (
+                    "AAPL".to_string(),
+                    secondary,
+                    range_ms(start, last_primary + 1),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn insufficient_primary_or_secondary_warmup_history_fails_before_execution() {
+        let primary_missing = execute_plan(
+            r#"
+fn strategy_config() {
+    strategy_config::new().with_minimum_warmup(2)
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1d"), time("2020-01-03"), time("2020-01-04"));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("missing primary warmup")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#,
+            |symbol, timeframe, request| {
+                Ok(match request {
+                    DatasetCandleRequest::WarmupPrefix { .. } => {
+                        vec![candle_for(symbol, timeframe, day(2), 99.0)]
+                    }
+                    DatasetCandleRequest::Range { .. } => {
+                        vec![candle_for(symbol, timeframe, day(3), 100.0)]
+                    }
+                })
+            },
+        )
+        .unwrap_err();
+        let msg = primary_missing.to_string();
+        assert!(msg.contains("Primary warmup"));
+        assert!(msg.contains("requires 2 candles before"));
+
+        let secondary_missing = execute_plan(
+            r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_minimum_warmup(1)
+        .with_secondary(secondary::optional(H1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", timeframe("1m"), time("2020-01-01T00:01:00Z"), time("2020-01-01T00:02:00Z"));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("missing secondary warmup")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#,
+            |symbol, timeframe, request| {
+                Ok(match (timeframe, request) {
+                    (tf, DatasetCandleRequest::WarmupPrefix { .. }) if tf == Timeframe::minutes(1) => {
+                        vec![candle_for(symbol, timeframe, day(1), 99.0)]
+                    }
+                    (tf, DatasetCandleRequest::Range { .. }) if tf == Timeframe::minutes(1) => {
+                        vec![candle_for(symbol, timeframe, day(1) + 60_000, 100.0)]
+                    }
+                    (tf, DatasetCandleRequest::WarmupPrefix { .. }) if tf == Timeframe::hours(1) => {
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
+                })
+            },
+        )
+        .unwrap_err();
+        let msg = secondary_missing.to_string();
+        assert!(msg.contains("Secondary warmup"));
+        assert!(msg.contains("requires 1 candles before"));
     }
 
     #[test]

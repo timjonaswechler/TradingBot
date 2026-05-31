@@ -15,10 +15,10 @@ use clap::Parser;
 use tracing::info;
 
 use backtester::{
-    plan::{execute_plan, render_markdown},
+    plan::{execute_plan, render_markdown, DatasetCandleRequest},
     run_runtime_backtest_with_loader, RuntimeBacktestConfig,
 };
-use db_layer::{get_candles, get_candles_in_range, SpacetimeClient};
+use db_layer::{get_candles, get_candles_before, get_candles_in_range, SpacetimeClient};
 use shared::Timeframe;
 
 #[derive(Parser, Debug)]
@@ -112,22 +112,35 @@ fn run_plan_mode(cli: &Cli, strategy_src: &str, plan_path: &str) -> Result<()> {
     );
     let client = SpacetimeClient::connect(&cli.db_url, &cli.db_module)?;
 
-    let report = execute_plan(strategy_src, &plan_src, |symbol, timeframe, window| {
+    let report = execute_plan(strategy_src, &plan_src, |symbol, timeframe, request| {
         let interval = timeframe.to_string();
-        let candles = get_candles_in_range(
-            &client.conn,
-            symbol,
-            &interval,
-            window.start_ms,
-            window.end_ms,
-            cli.max_candles,
-        );
+        let candles = match request {
+            DatasetCandleRequest::WarmupPrefix { before_ms, count } => {
+                let requested = u32::try_from(count).map_err(|_| {
+                    anyhow!("Warmup requirement {count} exceeds SpacetimeDB candle query limit")
+                })?;
+                get_candles_before(
+                    &client.conn,
+                    symbol,
+                    &interval,
+                    before_ms,
+                    requested.min(cli.max_candles),
+                )
+            }
+            DatasetCandleRequest::Range { start_ms, end_ms } => get_candles_in_range(
+                &client.conn,
+                symbol,
+                &interval,
+                start_ms,
+                end_ms,
+                cli.max_candles,
+            ),
+        };
         if !candles.is_empty() {
             info!(
                 symbol,
                 interval,
-                start_ms = window.start_ms,
-                end_ms = window.end_ms,
+                ?request,
                 count = candles.len(),
                 "Candles loaded for plan dataset"
             );
