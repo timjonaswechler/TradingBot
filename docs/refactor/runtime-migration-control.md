@@ -132,7 +132,7 @@ Use this inventory when reviewing agent plans or deciding whether code may be ch
 
 - `backtester/src/lib.rs` runtime-backed path — runner/reporting layer. May be changed to feed/consume `trading-runtime`, compute metrics, and expose reports.
 - `backtester/src/lib.rs` legacy `InMemoryExecutor` / engine-backed runner — transitional regression path. Do not extend with new semantics. Remove only after runtime-backed tests and #64 acceptance cover intended behavior.
-- `backtester/src/plan.rs` — plan/research orchestration. It may orchestrate backtests but must not create a second candle-by-candle trading semantics engine.
+- `backtester/src/plan.rs` — plan/research orchestration. It may orchestrate Runtime-backed backtests but must not create a second candle-by-candle trading semantics engine. Backtest Plan Rhai should use explicit constructors, typed host objects, and fluent methods for host APIs and returned plan results; the #16 raw-map plan shape is transitional smoke-test behavior and should not be extended. Plan scripting must not expose or parse strategy-facing Runtime decisions, portfolio transitions, or execution semantics.
 - `backtester/src/main.rs` — CLI/runner surface only.
 - `backtester/PRD-backtest-plan-engine.md` — historical context, not source of truth where it conflicts with runtime refactor decisions.
 
@@ -171,6 +171,9 @@ Agents working on this refactor must follow these rules:
 - If the path is transitional, change it only as adapter/migration glue and only within the active issue scope.
 - If an apparent gap is intentional, cite the issue that owns it. If no issue owns it, stop and ask for clarification.
 - Do not add duplicate Portfolio/Execution semantics in `backtester` or `trading-daemon`.
+- Keep Backtest Plan scripting as runner/research orchestration: datasets, run configuration, synthetic data preparation, Runtime-backed execution calls, validation, and reporting are allowed; strategy decisions, execution planning, portfolio transitions, and risk exits remain `trading-runtime` concerns.
+- Backtest Plan dataset loading should name the Runtime Asset, Primary Timeframe, and visible Primary window; Strategy Configuration / resolved RuntimeConfig may add Secondary Timeframes that the loader fetches automatically as context for the Runtime-backed run. Secondary context ranges are derived from the visible Primary candle series: fetch required Secondary warmup before the first visible Primary candle, then fetch Secondary candles up to the last visible Primary Candle Timestamp without fetching future Secondary candles after it.
+- Synthetic Market Data / Monte Carlo mutation belongs in `backtester` as research data preparation before Runtime replay. Mutations may reorder, perturb, or regenerate copied candle datasets, but they must preserve candle invariants and feed the ordinary Runtime-backed backtest path; they must not add Portfolio/Execution semantics to `backtester` or special synthetic behavior to `trading-runtime`. Monte Carlo iteration diagnostics may summarize Runtime output, including final equity, drawdown, trade count, blocked Strategy Tick count, and Runtime event counters, but the underlying semantics remain Runtime-owned. Reproducible Monte Carlo seeds should use a documented SplitMix64-based helper from `base_seed`, `iteration_index`, `stage_index`, and a stable `procedure_id`, not implementation-default RNG behavior.
 - Do not reintroduce legacy `engine` strategy API compatibility unless an issue explicitly reopens ADR 0004 / ADR 0005.
 - Do not mix External Account Snapshot behavior into Runtime Portfolio State unless #39 or a later accepted decision says so.
 - Do not implement dynamic Position Risk Updates through `HOLD` or close decisions; #40 owns that semantics.

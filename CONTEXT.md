@@ -28,6 +28,10 @@ _Avoid_: Trading Engine when only script execution is meant
 The component that coordinates a trading session across market data, strategy execution, portfolio state, and execution. A Trading Runtime may be used by live trading or backtesting.
 _Avoid_: Strategy Engine when portfolio/execution coordination is meant
 
+**Backtest Plan**:
+An operator-authored research workflow that assembles one or more Runtime-backed historical runs and comparisons into a structured report result. A Backtest Plan orchestrates datasets, run configuration, and research procedures, but it does not own Strategy Decisions or Portfolio Transitions.
+_Avoid_: Trading Engine, Strategy Script
+
 **Strategy Hook**:
 A named strategy function that the runtime may call at a defined point in the trading session. Missing optional hooks use runtime defaults or no-op behavior.
 _Avoid_: Callback, magic function
@@ -91,6 +95,10 @@ _Avoid_: Warmup Input, historical preload
 **Market Data Source**:
 The origin of candles that drive a run. Live trading uses a provider-backed source that fetches new candles over time; backtesting uses a historical source that replays stored candles.
 _Avoid_: Engine, Strategy
+
+**Synthetic Market Data**:
+Historical-derived candle data transformed for robustness testing before it is fed to a backtest. Synthetic Market Data may reorder, perturb, or regenerate candles, but the Trading Runtime treats it as ordinary market input.
+_Avoid_: Runtime Mutation, Strategy Mutation
 
 **Candle Timestamp**:
 The timestamp that identifies a completed candle at the close/end boundary of its interval. Trading Runtime freshness checks, Market State ordering, and Strategy Tick timing interpret Candle Timestamps as close timestamps; provider adapters that receive open timestamps must normalize them before runtime ingestion.
