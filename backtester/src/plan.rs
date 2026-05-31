@@ -1364,6 +1364,35 @@ mod tests {
         ]
     }
 
+    fn example_candles_for_request(
+        symbol: &str,
+        timeframe: Timeframe,
+        request: DatasetCandleRequest,
+    ) -> Vec<Candle> {
+        let step = timeframe.duration_ms();
+
+        match request {
+            DatasetCandleRequest::WarmupPrefix { before_ms, count } => (0..count)
+                .map(|index| {
+                    let offset = (count - index) as i64;
+                    candle_for(
+                        symbol,
+                        timeframe,
+                        before_ms - offset * step,
+                        90.0 + index as f64,
+                    )
+                })
+                .collect(),
+            DatasetCandleRequest::Range { start_ms, end_ms } => (0..4)
+                .map(|index| (index, start_ms + index as i64 * step))
+                .take_while(|(_, timestamp)| *timestamp < end_ms)
+                .map(|(index, timestamp)| {
+                    candle_for(symbol, timeframe, timestamp, 100.0 + index as f64)
+                })
+                .collect(),
+        }
+    }
+
     const HOLD_STRATEGY: &str = r#"
 fn on_tick(market, context) {
     decision::hold()
@@ -1439,6 +1468,62 @@ fn plan() {
                 }),
             }],
         }
+    }
+
+    #[test]
+    fn baseline_example_plan_runs_and_renders_documented_report_shape() {
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            include_str!("../../backtest_plan/plan.rhai"),
+            |symbol, timeframe, request| {
+                Ok(example_candles_for_request(symbol, timeframe, request))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.title.as_deref(), Some("AAPL baseline Backtest Plan"));
+        assert_eq!(report.tests.len(), 1);
+        let test = &report.tests[0];
+        assert_eq!(test.name, "Baseline: AAPL 1d 2021");
+        assert_eq!(test.symbol, "AAPL");
+        assert_eq!(test.interval, "1d");
+        assert!(test.synthetic.is_none());
+
+        let markdown = render_markdown(&report, "strategies/sma_cross.rhai");
+        assert!(markdown.contains("# AAPL baseline Backtest Plan"));
+        assert!(markdown.contains("- Strategy: `strategies/sma_cross.rhai`"));
+        assert!(markdown.contains("## 1. Baseline: AAPL 1d 2021"));
+        assert!(markdown.contains("- Symbol / interval: AAPL / 1d"));
+    }
+
+    #[test]
+    fn monte_carlo_example_plan_runs_and_renders_distribution_section() {
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            include_str!("../../backtest_plan/candle_permutation_monte_carlo.rhai"),
+            |symbol, timeframe, request| {
+                Ok(example_candles_for_request(symbol, timeframe, request))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.title.as_deref(), Some("AAPL candle-path robustness"));
+        assert_eq!(report.tests.len(), 1);
+        let test = &report.tests[0];
+        assert_eq!(test.name, "Synthetic Market Data: candle permutation");
+        let synthetic = test
+            .synthetic
+            .as_ref()
+            .expect("Monte Carlo example should attach synthetic results");
+        assert_eq!(synthetic.procedure, MonteCarloProcedure::CandlePermutation);
+        assert_eq!(synthetic.iterations.len(), 25);
+
+        let markdown = render_markdown(&report, "strategies/sma_cross.rhai");
+        assert!(markdown.contains("# AAPL candle-path robustness"));
+        assert!(markdown.contains("### Baseline vs synthetic Monte Carlo comparison"));
+        assert!(markdown.contains("- Procedure: Candle permutation"));
+        assert!(markdown.contains("| Metric | Baseline | Synthetic p5 | Synthetic p50 | Synthetic p95 | Baseline percentile |"));
+        assert!(markdown.contains("#### Reduced iteration diagnostics"));
     }
 
     #[test]
