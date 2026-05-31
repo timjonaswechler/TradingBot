@@ -1,13 +1,8 @@
 fn plan() {
-    #{
-        title: "Smoke test",
-        tests: [
-            #{
-                name: "AAPL baseline",
-                symbol: "AAPL",
-                interval: "1d",
-                balance: 10000.0,
-            }
-        ],
-    }
+    plan_result::new()
+        .with_title("Smoke test")
+        .with_test(
+            plan_test::new("AAPL baseline")
+                .with_baseline(baseline::run("AAPL", "1d", 10000.0))
+        )
 }
