@@ -545,11 +545,11 @@ fn new_rhai_engine() -> RhaiEngine {
 }
 
 fn normalize_reserved_constructor_names(source: &str) -> String {
-    // Rhai 1.24 reserves `new` even in module paths such as
-    // `strategy_config::new()`. Keep the strategy-facing API from ADR 0005 and
-    // lower only these approved typed constructors to private runtime function
-    // names before compilation. This is intentionally lexical enough to avoid
-    // rewriting string literals or comments.
+    // Rhai still reserves `new` in module paths such as `strategy_config::new()`
+    // as of the locked 1.25.x dependency. Keep the strategy-facing API from ADR
+    // 0005 and lower only these approved typed constructors to private runtime
+    // function names before compilation. This is intentionally lexical enough to
+    // avoid rewriting string literals or comments.
     const REPLACEMENTS: [(&str, &str); 3] = [
         ("strategy_config::new(", "__runtime_strategy_config_new("),
         ("anchored_config::new(", "__runtime_anchored_config_new("),
@@ -3204,18 +3204,71 @@ fn on_tick(market, context) {
         let source = r#"
 // strategy_config::new(
 const LABEL = "strategy_config::new(";
+const PIVOT_LABEL = "pivot_detector::new(";
 /* anchored_config::new( */
 fn strategy_config() { strategy_config::new() }
 fn anchored_config() { anchored_config::new() }
+fn detector() { pivot_detector::new("swing") }
 "#;
 
         let normalized = normalize_reserved_constructor_names(source);
 
         assert!(normalized.contains("// strategy_config::new("));
         assert!(normalized.contains("\"strategy_config::new(\""));
+        assert!(normalized.contains("\"pivot_detector::new(\""));
         assert!(normalized.contains("/* anchored_config::new( */"));
         assert!(normalized.contains("fn strategy_config() { __runtime_strategy_config_new() }"));
         assert!(normalized.contains("fn anchored_config() { __runtime_anchored_config_new() }"));
+        assert!(normalized.contains("fn detector() { __runtime_pivot_detector_new(\"swing\") }"));
+    }
+
+    #[test]
+    fn locked_rhai_still_reserves_public_module_new_without_normalization() {
+        let engine = new_rhai_engine();
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = engine
+            .compile(source)
+            .expect_err("locked Rhai should still require constructor normalization");
+        let message = error.to_string().to_lowercase();
+
+        assert!(message.contains("reserved"), "{message}");
+        assert!(message.contains("new"), "{message}");
+    }
+
+    #[test]
+    fn approved_constructor_syntax_loads_through_normalization() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn anchored_config() {
+    anchored_config::new()
+        .with_detector(pivot_detector::new("swing"))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let strategy = RhaiStrategy::load(source)
+            .expect("normalization should preserve approved public constructor syntax");
+
+        assert_eq!(
+            strategy.strategy_config().primary_timeframe(),
+            Some(Timeframe::minutes(1))
+        );
+        assert_eq!(strategy.anchored_config().unwrap().detectors().len(), 1);
     }
 
     #[test]

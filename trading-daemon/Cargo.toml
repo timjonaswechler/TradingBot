@@ -25,4 +25,4 @@ tokio-util       = { version = "0.7", features = ["rt"] }
 async-trait      = "0.1"
 toml             = "0.8"
 spacetimedb-sdk  = { workspace = true }
-rhai             = { version = "1", features = ["sync", "internals"] }
+rhai             = { workspace = true }

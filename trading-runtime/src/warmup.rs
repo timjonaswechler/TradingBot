@@ -302,6 +302,19 @@ fn on_tick(market, context) {
     }
 
     #[test]
+    fn detects_indicator_call_nested_inside_method_call_argument() {
+        let source = source_with_on_tick(
+            r#"
+context.state.set("last_rsi", indicators::rsi(market.candles(), 14));
+decision::hold()
+"#,
+        );
+        let strategy = load(&source);
+
+        assert_eq!(detect_auto_warmup(strategy.ast(), strategy.scope()), 15);
+    }
+
+    #[test]
     fn detects_v1_scalar_indicator_pack_names() {
         for (call, expected) in [
             ("indicators::sma(market.candles(), 7)", 8),
