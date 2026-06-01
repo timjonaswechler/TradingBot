@@ -86,6 +86,9 @@ Current plan-facing constructors/functions:
 - `baseline::run(dataset, run_config)`
 - `monte_carlo_config::new(iterations, base_seed)`
 - `monte_carlo::candle_permutation(baseline, config)`
+- `ohlc_noise_config::new(mutation_probability, max_atr_change)`
+- `ohlc_noise_config::new(...).with_atr_period(period)`
+- `monte_carlo::ohlc_noise(baseline, config, ohlc_noise_config)`
 - `plan_test::new(name).with_baseline(...).with_synthetic(...)`
 - `plan_result::new().with_title(...).with_test(...)`
 
@@ -139,7 +142,8 @@ Each test section includes the baseline Runtime-backed metrics:
 
 Synthetic Market Data Monte Carlo tests add a comparison section:
 
-- `Procedure` identifies the mutation procedure, currently `Candle permutation`.
+- `Procedure` identifies the mutation procedure, such as `Candle permutation`
+  or `ATR-scaled OHLC noise`.
 - `Iterations` is the number declared in `monte_carlo_config::new(...)`.
 - The metric table compares baseline final equity and max drawdown against
   synthetic p5, p50, and p95 values.
@@ -161,15 +165,20 @@ just backtest --strategy strategies/sma_cross.rhai --plan backtest_plan/candle_p
 
 Synthetic Market Data Monte Carlo mutates copied historical candle datasets
 before replay. The Trading Runtime then sees ordinary market input and reruns the
-full strategy against each synthetic candle path. The currently available
-procedure is #20 candle permutation: it reorders existing candle payloads without
-replacement into the original chronological timestamp slots while preserving OHLC
-invariants.
+full strategy against each synthetic candle path. Currently available procedures:
+
+- #20 candle permutation — reorders existing candle payloads without replacement
+  into the original chronological timestamp slots while preserving OHLC
+  invariants.
+- #90 ATR-scaled OHLC noise — mutates single-timeframe OHLC values by per-candle
+  probability and maximum ATR-scaled change, repairs OHLC ranges to contain the
+  mutated body, and leaves identity fields plus volume unchanged. This procedure
+  is intentionally single-timeframe only; multi-timeframe consistency is reserved
+  for #93 lowest-timeframe reaggregation.
 
 Future Synthetic Market Data mutation issues remain separate and are not
 available yet:
 
-- #90 — OHLC noise with repair
 - #91 — log-difference bar permutation
 - #93 — regenerate higher timeframes from a mutated lowest timeframe
 - #94 — composed Synthetic Market Data mutation pipelines

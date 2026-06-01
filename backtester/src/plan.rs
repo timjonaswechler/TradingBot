@@ -32,6 +32,7 @@ pub struct BaselinePlanTest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonteCarloProcedure {
     CandlePermutation,
+    OhlcNoise,
 }
 
 #[derive(Debug, Clone)]
@@ -120,8 +121,16 @@ struct MonteCarloConfigPlanSpec {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+struct OhlcNoiseConfigPlanSpec {
+    mutation_probability: f64,
+    max_atr_change: f64,
+    atr_period: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum SyntheticProcedurePlanSpec {
     CandlePermutation,
+    OhlcNoise(OhlcNoiseConfigPlanSpec),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -349,7 +358,7 @@ fn run_synthetic_monte_carlo(
     initial_balance: f64,
     synthetic_spec: &SyntheticPlanSpec,
 ) -> Result<SyntheticMonteCarloReport> {
-    match synthetic_spec.procedure {
+    match &synthetic_spec.procedure {
         SyntheticProcedurePlanSpec::CandlePermutation => {
             let mut iterations = Vec::with_capacity(synthetic_spec.config.iterations);
 
@@ -386,6 +395,50 @@ fn run_synthetic_monte_carlo(
 
             Ok(SyntheticMonteCarloReport {
                 procedure: MonteCarloProcedure::CandlePermutation,
+                iterations,
+            })
+        }
+        SyntheticProcedurePlanSpec::OhlcNoise(ohlc_noise_config) => {
+            ensure_single_timeframe_synthetic_procedure(
+                effective_config,
+                "monte_carlo::ohlc_noise",
+            )?;
+            let mut iterations = Vec::with_capacity(synthetic_spec.config.iterations);
+
+            for iteration_index in 0..synthetic_spec.config.iterations {
+                let seed = derive_monte_carlo_seed(
+                    synthetic_spec.config.base_seed,
+                    iteration_index,
+                    0,
+                    OHLC_NOISE_PROCEDURE_ID,
+                );
+                let synthetic_market_data =
+                    apply_ohlc_noise_to_market_data(source_market_data, ohlc_noise_config, seed)?;
+                let strategy = RhaiStrategy::load(strategy_src)?;
+                let runtime_result = run_prepared_runtime_backtest(
+                    strategy,
+                    effective_config.clone(),
+                    warmup_plan.clone(),
+                    synthetic_market_data,
+                    initial_balance,
+                )?;
+
+                if runtime_result.result.equity_curve.is_empty() {
+                    return Err(anyhow!(
+                        "monte_carlo::ohlc_noise iteration {} produced no tradable candles",
+                        iteration_index + 1
+                    ));
+                }
+
+                iterations.push(iteration_diagnostics(
+                    iteration_index + 1,
+                    seed,
+                    &runtime_result,
+                ));
+            }
+
+            Ok(SyntheticMonteCarloReport {
+                procedure: MonteCarloProcedure::OhlcNoise,
                 iterations,
             })
         }
@@ -442,6 +495,8 @@ impl RuntimeEventCounters {
 }
 
 const CANDLE_PERMUTATION_PROCEDURE_ID: u64 = 0x4341_4e44_4c45_5031; // "CANDLEP1"
+const OHLC_NOISE_PROCEDURE_ID: u64 = 0x4f48_4c43_4e4f_4931; // "OHLCNOI1"
+const DEFAULT_OHLC_NOISE_ATR_PERIOD: usize = 14;
 const SPLITMIX64_INCREMENT: u64 = 0x9e37_79b9_7f4a_7c15;
 
 /// Derive a reproducible Monte Carlo seed from a declared `base_seed`, zero-based
@@ -501,6 +556,15 @@ impl SplitMix64 {
                 return (value % upper) as usize;
             }
         }
+    }
+
+    fn next_unit_f64(&mut self) -> f64 {
+        let mantissa = self.next_u64() >> 11;
+        mantissa as f64 * (1.0 / ((1u64 << 53) as f64))
+    }
+
+    fn next_centered_f64(&mut self) -> f64 {
+        self.next_unit_f64() * 2.0 - 1.0
     }
 }
 
@@ -564,6 +628,178 @@ fn validate_ohlc_invariants(candle: &Candle, role: &str) -> Result<()> {
     if candle.high < highest_body_price || candle.low > lowest_body_price {
         return Err(anyhow!(
             "monte_carlo::candle_permutation {role} candle at {} violates OHLC invariants",
+            candle.timestamp
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_single_timeframe_synthetic_procedure(
+    effective_config: &RuntimeConfig,
+    procedure_name: &str,
+) -> Result<()> {
+    if effective_config.secondary_timeframes.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "{procedure_name} is single-timeframe only; RuntimeConfig contains Secondary Timeframes. Use the future #93 lowest-timeframe reaggregation consistency model instead of independently mutating multiple timeframes."
+        ))
+    }
+}
+
+fn apply_ohlc_noise_to_market_data(
+    source: &HistoricalMarketData,
+    config: &OhlcNoiseConfigPlanSpec,
+    seed: u64,
+) -> Result<HistoricalMarketData> {
+    if !source.secondary.is_empty() {
+        return Err(anyhow!(
+            "monte_carlo::ohlc_noise requires single-timeframe source market data; use the future #93 lowest-timeframe reaggregation consistency model for multi-timeframe runs"
+        ));
+    }
+
+    Ok(HistoricalMarketData::single_timeframe(
+        apply_ohlc_noise_to_candles(&source.primary, config, seed, "Primary")?,
+    ))
+}
+
+fn apply_ohlc_noise_to_candles(
+    source: &[Candle],
+    config: &OhlcNoiseConfigPlanSpec,
+    seed: u64,
+    role: &str,
+) -> Result<Vec<Candle>> {
+    let mut candles = source.to_vec();
+    candles.sort_by_key(|candle| candle.timestamp);
+
+    for candle in &candles {
+        validate_synthetic_candle_values(candle, "monte_carlo::ohlc_noise", role)?;
+    }
+
+    if config.is_effective_noop() {
+        return Ok(candles);
+    }
+
+    let atr_by_index = trailing_atr_by_candle(&candles, config.atr_period)?;
+    if atr_by_index.iter().all(Option::is_none) {
+        return Err(anyhow!(
+            "monte_carlo::ohlc_noise {role} series has no ATR-scalable candles for atr_period {}; add more history or lower the ATR period",
+            config.atr_period
+        ));
+    }
+
+    let mut rng = SplitMix64::new(seed);
+    let mut mutated = candles.clone();
+
+    for (index, candle) in mutated.iter_mut().enumerate() {
+        let Some(atr) = atr_by_index[index] else {
+            continue;
+        };
+
+        if rng.next_unit_f64() >= config.mutation_probability {
+            continue;
+        }
+
+        let max_delta = atr * config.max_atr_change;
+        candle.open += rng.next_centered_f64() * max_delta;
+        candle.high += rng.next_centered_f64() * max_delta;
+        candle.low += rng.next_centered_f64() * max_delta;
+        candle.close += rng.next_centered_f64() * max_delta;
+        repair_ohlc_range_to_body(candle);
+        validate_synthetic_candle_values(candle, "monte_carlo::ohlc_noise", role)?;
+    }
+
+    Ok(mutated)
+}
+
+impl OhlcNoiseConfigPlanSpec {
+    fn new(mutation_probability: f64, max_atr_change: f64) -> Self {
+        Self {
+            mutation_probability,
+            max_atr_change,
+            atr_period: DEFAULT_OHLC_NOISE_ATR_PERIOD,
+        }
+    }
+
+    fn is_effective_noop(&self) -> bool {
+        self.mutation_probability == 0.0 || self.max_atr_change == 0.0
+    }
+}
+
+fn trailing_atr_by_candle(candles: &[Candle], period: usize) -> Result<Vec<Option<f64>>> {
+    if period == 0 {
+        return Err(anyhow!("ATR period must be greater than zero"));
+    }
+
+    let mut atr_by_index = vec![None; candles.len()];
+    if candles.len() < period + 1 {
+        return Ok(atr_by_index);
+    }
+
+    let true_ranges = candles
+        .windows(2)
+        .map(|window| {
+            let previous = &window[0];
+            let current = &window[1];
+            (current.high - current.low)
+                .max((current.high - previous.close).abs())
+                .max((current.low - previous.close).abs())
+        })
+        .collect::<Vec<_>>();
+
+    let mut atr = true_ranges[..period].iter().sum::<f64>() / period as f64;
+    ensure_finite_non_negative_atr(atr, period)?;
+    atr_by_index[period] = Some(atr);
+
+    for (offset, true_range) in true_ranges[period..].iter().copied().enumerate() {
+        atr = (atr * (period as f64 - 1.0) + true_range) / period as f64;
+        ensure_finite_non_negative_atr(atr, period)?;
+        atr_by_index[period + 1 + offset] = Some(atr);
+    }
+
+    Ok(atr_by_index)
+}
+
+fn ensure_finite_non_negative_atr(atr: f64, period: usize) -> Result<()> {
+    if atr.is_finite() && atr >= 0.0 {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "monte_carlo::ohlc_noise computed invalid ATR value for atr_period {period}"
+        ))
+    }
+}
+
+fn repair_ohlc_range_to_body(candle: &mut Candle) {
+    candle.high = candle.high.max(candle.open).max(candle.close);
+    candle.low = candle.low.min(candle.open).min(candle.close);
+}
+
+fn validate_synthetic_candle_values(
+    candle: &Candle,
+    procedure_name: &str,
+    role: &str,
+) -> Result<()> {
+    for (field, value) in [
+        ("open", candle.open),
+        ("high", candle.high),
+        ("low", candle.low),
+        ("close", candle.close),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(anyhow!(
+                "{procedure_name} {role} candle at {} has non-finite or non-positive {field} value after mutation/repair",
+                candle.timestamp
+            ));
+        }
+    }
+
+    let highest_body_price = candle.open.max(candle.close);
+    let lowest_body_price = candle.open.min(candle.close);
+    if candle.high < highest_body_price || candle.low > lowest_body_price {
+        return Err(anyhow!(
+            "{procedure_name} {role} candle at {} violates OHLC invariants after mutation/repair",
             candle.timestamp
         ));
     }
@@ -771,6 +1007,7 @@ fn render_synthetic_monte_carlo(
 fn monte_carlo_procedure_label(procedure: &MonteCarloProcedure) -> &'static str {
     match procedure {
         MonteCarloProcedure::CandlePermutation => "Candle permutation",
+        MonteCarloProcedure::OhlcNoise => "ATR-scaled OHLC noise",
     }
 }
 
@@ -967,6 +1204,7 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_type_with_name::<BaselinePlanSpec>("BaselineRun");
     rhai.register_type_with_name::<SyntheticPlanSpec>("SyntheticMonteCarlo");
     rhai.register_type_with_name::<MonteCarloConfigPlanSpec>("MonteCarloConfig");
+    rhai.register_type_with_name::<OhlcNoiseConfigPlanSpec>("OhlcNoiseConfig");
     rhai.register_type_with_name::<DatasetPlanSpec>("Dataset");
     rhai.register_type_with_name::<RunConfigPlanSpec>("RunConfig");
     rhai.register_type_with_name::<PlanTimestamp>("PlanTime");
@@ -982,6 +1220,7 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
         "__backtester_monte_carlo_config_new",
         monte_carlo_config_new,
     );
+    rhai.register_fn("__backtester_ohlc_noise_config_new", ohlc_noise_config_new);
     rhai.register_fn("with_title", |mut result: PlanResultSpec, title: &str| {
         result.title = Some(title.to_string());
         result
@@ -991,6 +1230,7 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_fn("with_synthetic", with_synthetic);
     rhai.register_fn("with_balance", with_balance_float);
     rhai.register_fn("with_balance", with_balance_int);
+    rhai.register_fn("with_atr_period", with_atr_period);
 
     let mut dataset_module = Module::new();
     dataset_module.set_native_fn("load", dataset_load);
@@ -1002,6 +1242,7 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
 
     let mut monte_carlo_module = Module::new();
     monte_carlo_module.set_native_fn("candle_permutation", candle_permutation_monte_carlo);
+    monte_carlo_module.set_native_fn("ohlc_noise", ohlc_noise_monte_carlo);
     rhai.register_static_module("monte_carlo", Arc::new(monte_carlo_module));
 }
 
@@ -1089,7 +1330,7 @@ fn with_synthetic(
 ) -> std::result::Result<PlanTestSpec, Box<EvalAltResult>> {
     let synthetic = synthetic.try_cast::<SyntheticPlanSpec>().ok_or_else(|| {
         Box::<EvalAltResult>::from(
-            "with_synthetic requires a SyntheticMonteCarlo host object from `monte_carlo::candle_permutation(...)`",
+            "with_synthetic requires a SyntheticMonteCarlo host object from `monte_carlo::*`",
         )
     })?;
     test.synthetic = Some(synthetic);
@@ -1114,6 +1355,74 @@ fn monte_carlo_config_new(
     })
 }
 
+fn ohlc_noise_config_new(
+    mutation_probability: Dynamic,
+    max_atr_change: Dynamic,
+) -> std::result::Result<OhlcNoiseConfigPlanSpec, Box<EvalAltResult>> {
+    let mutation_probability = dynamic_number_to_f64(
+        mutation_probability,
+        "ohlc_noise_config::new mutation_probability",
+    )?;
+    let max_atr_change =
+        dynamic_number_to_f64(max_atr_change, "ohlc_noise_config::new max_atr_change")?;
+
+    validate_ohlc_noise_probability(mutation_probability)?;
+    validate_ohlc_noise_max_atr_change(max_atr_change)?;
+
+    Ok(OhlcNoiseConfigPlanSpec::new(
+        mutation_probability,
+        max_atr_change,
+    ))
+}
+
+fn dynamic_number_to_f64(
+    value: Dynamic,
+    name: &str,
+) -> std::result::Result<f64, Box<EvalAltResult>> {
+    if let Some(number) = value.clone().try_cast::<FLOAT>() {
+        return Ok(number);
+    }
+    if let Some(number) = value.try_cast::<INT>() {
+        return Ok(number as f64);
+    }
+
+    Err(format!("{name} must be a number").into())
+}
+
+fn validate_ohlc_noise_probability(
+    mutation_probability: f64,
+) -> std::result::Result<(), Box<EvalAltResult>> {
+    if mutation_probability.is_finite() && (0.0..=1.0).contains(&mutation_probability) {
+        Ok(())
+    } else {
+        Err("ohlc_noise_config::new mutation_probability must be finite and in [0.0, 1.0]".into())
+    }
+}
+
+fn validate_ohlc_noise_max_atr_change(
+    max_atr_change: f64,
+) -> std::result::Result<(), Box<EvalAltResult>> {
+    if max_atr_change.is_finite() && max_atr_change >= 0.0 {
+        Ok(())
+    } else {
+        Err("ohlc_noise_config::new max_atr_change must be finite and non-negative".into())
+    }
+}
+
+fn with_atr_period(
+    mut config: OhlcNoiseConfigPlanSpec,
+    atr_period: INT,
+) -> std::result::Result<OhlcNoiseConfigPlanSpec, Box<EvalAltResult>> {
+    let atr_period = usize::try_from(atr_period)
+        .map_err(|_| "ohlc_noise_config.with_atr_period period must be positive")?;
+    if atr_period == 0 {
+        return Err("ohlc_noise_config.with_atr_period period must be positive".into());
+    }
+
+    config.atr_period = atr_period;
+    Ok(config)
+}
+
 fn candle_permutation_monte_carlo(
     baseline: Dynamic,
     config: Dynamic,
@@ -1131,6 +1440,36 @@ fn candle_permutation_monte_carlo(
 
     Ok(SyntheticPlanSpec {
         procedure: SyntheticProcedurePlanSpec::CandlePermutation,
+        baseline,
+        config,
+    })
+}
+
+fn ohlc_noise_monte_carlo(
+    baseline: Dynamic,
+    config: Dynamic,
+    ohlc_noise_config: Dynamic,
+) -> std::result::Result<SyntheticPlanSpec, Box<EvalAltResult>> {
+    let baseline = baseline.try_cast::<BaselinePlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::ohlc_noise requires a BaselineRun host object from `baseline::run(...)`",
+        )
+    })?;
+    let config = config.try_cast::<MonteCarloConfigPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::ohlc_noise requires a MonteCarloConfig host object from `monte_carlo_config::new(...)`",
+        )
+    })?;
+    let ohlc_noise_config = ohlc_noise_config
+        .try_cast::<OhlcNoiseConfigPlanSpec>()
+        .ok_or_else(|| {
+            Box::<EvalAltResult>::from(
+                "monte_carlo::ohlc_noise requires an OhlcNoiseConfig host object from `ohlc_noise_config::new(...)`",
+            )
+        })?;
+
+    Ok(SyntheticPlanSpec {
+        procedure: SyntheticProcedurePlanSpec::OhlcNoise(ohlc_noise_config),
         baseline,
         config,
     })
@@ -1201,13 +1540,17 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
     // Rhai 1.24 reserves `new` even in module paths such as
     // `plan_result::new()`. Keep the approved plan-facing API and lower only
     // these typed constructors to private host functions before compilation.
-    const REPLACEMENTS: [(&str, &str); 4] = [
+    const REPLACEMENTS: [(&str, &str); 5] = [
         ("plan_result::new(", "__backtester_plan_result_new("),
         ("plan_test::new(", "__backtester_plan_test_new("),
         ("run_config::new(", "__backtester_run_config_new("),
         (
             "monte_carlo_config::new(",
             "__backtester_monte_carlo_config_new(",
+        ),
+        (
+            "ohlc_noise_config::new(",
+            "__backtester_ohlc_noise_config_new(",
         ),
     ];
 
@@ -2044,6 +2387,51 @@ fn plan() {
     }
 
     #[test]
+    fn ohlc_noise_monte_carlo_plan_runs_runtime_backed_iterations() {
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-06"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::ohlc_noise(
+        baseline,
+        monte_carlo_config::new(2, 42),
+        ohlc_noise_config::new(0.0, 0.25).with_atr_period(2)
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("baseline vs ohlc noise")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, _window| {
+                Ok(vec![
+                    candle_for(symbol, timeframe, day(2), 100.0),
+                    candle_for(symbol, timeframe, day(3), 101.0),
+                    candle_for(symbol, timeframe, day(4), 102.0),
+                    candle_for(symbol, timeframe, day(5), 103.0),
+                ])
+            },
+        )
+        .unwrap();
+
+        let synthetic = report.tests[0]
+            .synthetic
+            .as_ref()
+            .expect("test should include a synthetic Monte Carlo result");
+        assert_eq!(synthetic.procedure, MonteCarloProcedure::OhlcNoise);
+        assert_eq!(synthetic.iterations.len(), 2);
+        assert_ne!(synthetic.iterations[0].seed, synthetic.iterations[1].seed);
+        assert_eq!(synthetic.iterations[0].iteration, 1);
+        assert_eq!(synthetic.iterations[0].final_equity, 10000.0);
+        assert_eq!(synthetic.iterations[0].trade_count, 0);
+    }
+
+    #[test]
     fn monte_carlo_diagnostics_count_runtime_exit_events() {
         let plan = r#"
 fn plan() {
@@ -2257,6 +2645,308 @@ fn plan() {
             .collect::<Vec<_>>();
         secondary_closes.sort();
         assert_eq!(secondary_closes, vec![100, 200]);
+    }
+
+    #[test]
+    fn ohlc_noise_zero_noise_is_exact_noop_and_seed_deterministic() {
+        let source = HistoricalMarketData::single_timeframe(vec![
+            candle_for("AAPL", Timeframe::days(1), day(2), 100.0),
+            candle_for("AAPL", Timeframe::days(1), day(3), 101.0),
+            candle_for("AAPL", Timeframe::days(1), day(4), 102.0),
+            candle_for("AAPL", Timeframe::days(1), day(5), 103.0),
+        ]);
+        let seed = derive_monte_carlo_seed(42, 0, 0, OHLC_NOISE_PROCEDURE_ID);
+        assert_eq!(
+            seed,
+            derive_monte_carlo_seed(42, 0, 0, OHLC_NOISE_PROCEDURE_ID)
+        );
+        assert_ne!(
+            seed,
+            derive_monte_carlo_seed(42, 1, 0, OHLC_NOISE_PROCEDURE_ID)
+        );
+
+        let probability_zero = OhlcNoiseConfigPlanSpec {
+            mutation_probability: 0.0,
+            max_atr_change: 0.75,
+            atr_period: 2,
+        };
+        let max_change_zero = OhlcNoiseConfigPlanSpec {
+            mutation_probability: 1.0,
+            max_atr_change: 0.0,
+            atr_period: 2,
+        };
+
+        assert_eq!(
+            apply_ohlc_noise_to_market_data(&source, &probability_zero, seed)
+                .unwrap()
+                .primary,
+            source.primary
+        );
+        assert_eq!(
+            apply_ohlc_noise_to_market_data(&source, &max_change_zero, seed)
+                .unwrap()
+                .primary,
+            source.primary
+        );
+        assert_eq!(
+            apply_ohlc_noise_to_market_data(&source, &probability_zero, seed)
+                .unwrap()
+                .primary,
+            apply_ohlc_noise_to_market_data(&source, &probability_zero, seed)
+                .unwrap()
+                .primary
+        );
+    }
+
+    #[test]
+    fn ohlc_noise_mutates_scalable_candles_preserves_identity_and_repairs_invariants() {
+        let timeframe = Timeframe::days(1);
+        let source = vec![
+            candle_for("AAPL", timeframe, day(1), 100.0),
+            candle_for("AAPL", timeframe, day(2), 101.0),
+            candle_for("AAPL", timeframe, day(3), 102.0),
+            candle_for("AAPL", timeframe, day(4), 103.0),
+        ];
+        let config = OhlcNoiseConfigPlanSpec {
+            mutation_probability: 1.0,
+            max_atr_change: 0.5,
+            atr_period: 2,
+        };
+
+        let seed = derive_monte_carlo_seed(7, 0, 0, OHLC_NOISE_PROCEDURE_ID);
+        let mutated = apply_ohlc_noise_to_candles(&source, &config, seed, "Primary").unwrap();
+        let mutated_again = apply_ohlc_noise_to_candles(&source, &config, seed, "Primary").unwrap();
+
+        assert_eq!(mutated, mutated_again);
+        assert_eq!(mutated[0], source[0]);
+        assert_eq!(mutated[1], source[1]);
+        assert!(mutated[2..].iter().zip(&source[2..]).any(|(left, right)| {
+            left.open != right.open
+                || left.high != right.high
+                || left.low != right.low
+                || left.close != right.close
+        }));
+        for (mutated, original) in mutated.iter().zip(source.iter()) {
+            assert_eq!(mutated.timestamp, original.timestamp);
+            assert_eq!(mutated.symbol, original.symbol);
+            assert_eq!(mutated.timeframe, original.timeframe);
+            assert_eq!(mutated.volume, original.volume);
+            assert!(mutated.high >= mutated.open.max(mutated.close));
+            assert!(mutated.low <= mutated.open.min(mutated.close));
+            assert!(mutated.open >= mutated.low && mutated.open <= mutated.high);
+            assert!(mutated.close >= mutated.low && mutated.close <= mutated.high);
+        }
+    }
+
+    #[test]
+    fn ohlc_noise_atr_is_trailing_wilder_series_without_future_lookahead() {
+        let timeframe = Timeframe::days(1);
+        let candles = vec![
+            Candle {
+                timestamp: day(1),
+                symbol: "AAPL".to_string(),
+                open: 10.0,
+                high: 11.0,
+                low: 9.0,
+                close: 10.0,
+                volume: 1000.0,
+                timeframe,
+            },
+            Candle {
+                timestamp: day(2),
+                symbol: "AAPL".to_string(),
+                open: 12.0,
+                high: 14.0,
+                low: 12.0,
+                close: 13.0,
+                volume: 1000.0,
+                timeframe,
+            },
+            Candle {
+                timestamp: day(3),
+                symbol: "AAPL".to_string(),
+                open: 17.0,
+                high: 18.0,
+                low: 17.0,
+                close: 17.5,
+                volume: 1000.0,
+                timeframe,
+            },
+            Candle {
+                timestamp: day(4),
+                symbol: "AAPL".to_string(),
+                open: 50.0,
+                high: 100.0,
+                low: 1.0,
+                close: 50.0,
+                volume: 1000.0,
+                timeframe,
+            },
+        ];
+
+        let atr = trailing_atr_by_candle(&candles, 2).unwrap();
+
+        assert_eq!(atr[0], None);
+        assert_eq!(atr[1], None);
+        assert_eq!(atr[2], Some(4.5));
+        assert_eq!(atr[3], Some(51.75));
+    }
+
+    #[test]
+    fn ohlc_repair_expands_range_to_contain_mutated_body() {
+        let mut candle = candle_for("AAPL", Timeframe::days(1), day(1), 10.0);
+        candle.open = 12.0;
+        candle.high = 9.0;
+        candle.low = 11.0;
+        candle.close = 10.0;
+
+        repair_ohlc_range_to_body(&mut candle);
+
+        assert_eq!(candle.high, 12.0);
+        assert_eq!(candle.low, 10.0);
+        validate_synthetic_candle_values(&candle, "monte_carlo::ohlc_noise", "Primary").unwrap();
+    }
+
+    #[test]
+    fn ohlc_noise_config_validation_errors_are_clear() {
+        let invalid_probability =
+            ohlc_noise_config_new(Dynamic::from(1.1_f64), Dynamic::from(0.1_f64))
+                .unwrap_err()
+                .to_string();
+        assert!(invalid_probability.contains("mutation_probability"));
+        assert!(invalid_probability.contains("[0.0, 1.0]"));
+
+        let non_finite_probability =
+            ohlc_noise_config_new(Dynamic::from(f64::INFINITY), Dynamic::from(0.1_f64))
+                .unwrap_err()
+                .to_string();
+        assert!(non_finite_probability.contains("finite"));
+
+        let negative_change =
+            ohlc_noise_config_new(Dynamic::from(0.5_f64), Dynamic::from(-0.1_f64))
+                .unwrap_err()
+                .to_string();
+        assert!(negative_change.contains("max_atr_change"));
+        assert!(negative_change.contains("non-negative"));
+
+        let non_finite_change =
+            ohlc_noise_config_new(Dynamic::from(0.5_f64), Dynamic::from(f64::NAN))
+                .unwrap_err()
+                .to_string();
+        assert!(non_finite_change.contains("finite"));
+
+        let invalid_period = with_atr_period(OhlcNoiseConfigPlanSpec::new(0.5, 0.1), 0)
+            .unwrap_err()
+            .to_string();
+        assert!(invalid_period.contains("period"));
+        assert!(invalid_period.contains("positive"));
+    }
+
+    #[test]
+    fn ohlc_noise_requires_scalable_candles_for_effective_noise() {
+        let source = vec![
+            candle_for("AAPL", Timeframe::days(1), day(1), 100.0),
+            candle_for("AAPL", Timeframe::days(1), day(2), 101.0),
+        ];
+        let config = OhlcNoiseConfigPlanSpec {
+            mutation_probability: 1.0,
+            max_atr_change: 0.25,
+            atr_period: 2,
+        };
+
+        let err = apply_ohlc_noise_to_candles(&source, &config, 42, "Primary").unwrap_err();
+
+        assert!(err.to_string().contains("no ATR-scalable candles"));
+    }
+
+    #[test]
+    fn ohlc_noise_allows_zero_atr_scaling_without_resampling_or_clamping() {
+        let timeframe = Timeframe::days(1);
+        let source = (1..=3)
+            .map(|day_of_month| Candle {
+                timestamp: day(day_of_month),
+                symbol: "AAPL".to_string(),
+                open: 100.0,
+                high: 100.0,
+                low: 100.0,
+                close: 100.0,
+                volume: 1000.0,
+                timeframe,
+            })
+            .collect::<Vec<_>>();
+        let config = OhlcNoiseConfigPlanSpec {
+            mutation_probability: 1.0,
+            max_atr_change: 0.25,
+            atr_period: 1,
+        };
+
+        let mutated = apply_ohlc_noise_to_candles(&source, &config, 42, "Primary").unwrap();
+
+        assert_eq!(mutated, source);
+    }
+
+    #[test]
+    fn ohlc_noise_rejects_non_finite_or_non_positive_output_values() {
+        let mut candle = candle_for("AAPL", Timeframe::days(1), day(1), 10.0);
+        candle.open = 0.0;
+
+        let err = validate_synthetic_candle_values(&candle, "monte_carlo::ohlc_noise", "Primary")
+            .unwrap_err();
+
+        assert!(err.to_string().contains("non-finite or non-positive open"));
+    }
+
+    #[test]
+    fn ohlc_noise_rejects_multi_timeframe_configs_until_reaggregation_issue_93() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let err = execute_plan(
+            r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::optional(H1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-01"), time("2020-01-02"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::ohlc_noise(
+        baseline,
+        monte_carlo_config::new(1, 42),
+        ohlc_noise_config::new(0.5, 0.25).with_atr_period(2)
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("multi-timeframe noise")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |_symbol, timeframe, _window| match timeframe {
+                tf if tf == primary => Ok(vec![
+                    candle_for("AAPL", primary, day(1), 100.0),
+                    candle_for("AAPL", primary, day(1) + 60_000, 101.0),
+                ]),
+                tf if tf == secondary => Ok(vec![candle_for("AAPL", secondary, day(1), 200.0)]),
+                _ => Ok(Vec::new()),
+            },
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("monte_carlo::ohlc_noise"));
+        assert!(msg.contains("single-timeframe"));
+        assert!(msg.contains("#93"));
     }
 
     #[test]
