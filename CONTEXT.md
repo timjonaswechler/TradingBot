@@ -104,6 +104,10 @@ _Avoid_: Runtime Mutation, Strategy Mutation
 The timestamp that identifies a completed candle at the close/end boundary of its interval. Trading Runtime freshness checks, Market State ordering, and Strategy Tick timing interpret Candle Timestamps as close timestamps; provider adapters that receive open timestamps must normalize them before runtime ingestion.
 _Avoid_: Open timestamp, provider raw timestamp when runtime semantics are meant
 
+**Candle Volume**:
+The traded market quantity reported for one completed candle interval. Candle Volume is Market Data and may be transformed with a Synthetic Market Data candle payload, but it is not Strategy Decision quantity, Position size, or Portfolio State.
+_Avoid_: Position size, Strategy Decision quantity, trade count
+
 **Strategy Tick**:
 A Tradable Candle on which the strategy is actually evaluated. Risk Exits can close a position on a Tradable Candle without producing a Strategy Tick. A Tradable Candle can also fail to produce a Strategy Tick when required market context is unavailable.
 _Avoid_: Tradable Candle when the distinction from strategy evaluation matters, Tradable Tick

@@ -171,7 +171,6 @@ available yet:
 
 - #90 — OHLC noise with repair
 - #91 — log-difference bar permutation
-- #92 — grouped multi-timeframe candle permutation
 - #93 — regenerate higher timeframes from a mutated lowest timeframe
 - #94 — composed Synthetic Market Data mutation pipelines
 
