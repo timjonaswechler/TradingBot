@@ -59,5 +59,5 @@ pub use strategy::{
     MarketView, PredeterminedStrategyHandler, StrategyContext, StrategyError, StrategyHandler,
     StrategyState, StrategyStateValue, StrategyTickInput, StrategyTickResult,
 };
-pub use strategy_config::StrategyConfiguration;
+pub use strategy_config::{StrategyConfiguration, StrategyConfigurationError};
 pub use warmup::{detect_auto_warmup, resolve_effective_warmup, resolve_warmup_plan, WarmupPlan};

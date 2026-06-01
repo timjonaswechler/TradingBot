@@ -44,7 +44,7 @@ The current engine crate should not remain as a separate legacy strategy-engine 
 - Strategy Hooks are named optional functions called by the runtime at defined lifecycle points.
 - Warmup should be derived from strategy indicator usage where possible.
 - Effective warmup should be the maximum of detected strategy warmup, user/configured minimum warmup, and runtime minimum warmup. User configuration may increase warmup but must not lower the detected requirement.
-- Strategy config may add secondary timeframes and minimum warmup requirements, but run config owns symbol/provider/mode/primary timeframe.
+- Strategy Configuration owns the runtime timeframe contract: exactly one Primary Timeframe plus any Secondary-Timeframe requirements/defaults and minimum warmup. Run Configuration owns symbol/provider/mode/source, portfolio inputs, and runner policies.
 - GPU/compute-shader work belongs to later Batch Compute / research workflows, not the live tradable tick path.
 - Runtime output should be ordered, DB-free Runtime Events plus any necessary runtime snapshot data. DB IDs, reducer/cache timing, and backtest metrics stay outside the runtime output.
 - Runtime-local Portfolio State uses realized-cash semantics in the first version: opening a position does not subtract/reserve notional from cash balance; closing a position applies realized PnL to cash balance. More realistic buying-power, margin, and reservation behavior belongs to later account snapshot / portfolio-coordinator work.
@@ -92,14 +92,14 @@ The current engine crate should not remain as a separate legacy strategy-engine 
 
 ### Phase 5: Strategy config, hooks, and warmup
 
-25. Add a strategy config extraction step for optional strategy-declared requirements.
-26. Let strategy config declare Secondary Timeframes.
-27. Let strategy config declare a minimum warmup requirement.
+25. Add a required Strategy Configuration extraction step for typed strategy loading.
+26. Let Strategy Configuration declare exactly one Primary Timeframe plus optional Secondary-Timeframe requirements/defaults.
+27. Let Strategy Configuration declare a minimum warmup requirement.
 28. Preserve automatic warmup detection from indicator usage.
-29. Define effective warmup as the maximum of detected strategy warmup, user/configured minimum warmup, and runtime minimum warmup; user configuration may increase but not lower detected warmup.
-30. Add optional Strategy Hook detection with default/no-op behavior.
-31. Keep `on_tick` as the primary required strategy hook unless a later explicit decision changes this.
-32. Add tests for missing optional hooks, strategy-declared warmup, and auto-detected warmup.
+29. Define effective warmup as the maximum of detected strategy warmup, strategy-configured minimum warmup, and runtime minimum warmup; Strategy Configuration may increase warmup but must not lower detected requirements.
+30. Add optional non-timeframe Strategy Hook detection with default/no-op behavior.
+31. Keep `on_tick` as the primary required tick hook unless a later explicit decision changes this.
+32. Add tests for missing Strategy Configuration, missing/duplicate Primary Timeframe declarations, invalid Secondary declarations, optional hooks, strategy-declared warmup, and auto-detected warmup.
 
 ### Phase 6: Portfolio State and execution semantics
 

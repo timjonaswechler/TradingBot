@@ -30,7 +30,7 @@ use shared::{
 };
 use trading_runtime::{
     resolve_warmup_plan, ExitKind, MarketInput, PortfolioState, RhaiStrategy, RiskExitKind,
-    RuntimeConfig, RuntimeEvent, RuntimeStep, SecondaryTimeframeConfig, TradingRuntime, WarmupPlan,
+    RuntimeConfig, RuntimeEvent, RuntimeStep, TradingRuntime, WarmupPlan,
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -114,36 +114,15 @@ impl Default for BacktestConfig {
 /// Runtime-backed backtest configuration for one runtime asset.
 #[derive(Debug, Clone)]
 pub struct RuntimeBacktestConfig {
-    pub runtime_config: RuntimeConfig,
+    pub runtime_asset: String,
     pub initial_balance: f64,
     pub runtime_minimum_warmup: usize,
 }
 
 impl RuntimeBacktestConfig {
-    pub fn new(
-        runtime_asset: impl Into<String>,
-        primary_timeframe: Timeframe,
-        initial_balance: f64,
-    ) -> Self {
+    pub fn new(runtime_asset: impl Into<String>, initial_balance: f64) -> Self {
         Self {
-            runtime_config: RuntimeConfig::single_timeframe(runtime_asset, primary_timeframe),
-            initial_balance,
-            runtime_minimum_warmup: 0,
-        }
-    }
-
-    pub fn with_secondary_configs(
-        runtime_asset: impl Into<String>,
-        primary_timeframe: Timeframe,
-        secondary_timeframes: impl IntoIterator<Item = SecondaryTimeframeConfig>,
-        initial_balance: f64,
-    ) -> Self {
-        Self {
-            runtime_config: RuntimeConfig::with_secondary_configs(
-                runtime_asset,
-                primary_timeframe,
-                secondary_timeframes,
-            ),
+            runtime_asset: runtime_asset.into(),
             initial_balance,
             runtime_minimum_warmup: 0,
         }
@@ -497,18 +476,19 @@ fn compute_benchmark(initial_balance: f64, candles: &[Candle]) -> Benchmark {
 
 // ── Runtime-backed runner ─────────────────────────────────────────────────────
 
-/// Load typed Runtime strategy handling, merge strategy-declared timeframe
-/// requirements into the run configuration, and replay historical candles
-/// through one [`TradingRuntime`].
+/// Load typed Runtime strategy handling, derive the runtime timeframe contract
+/// from Strategy Configuration, and replay historical candles through one
+/// [`TradingRuntime`].
 pub fn run_runtime_backtest(
     strategy_src: &str,
     market_data: HistoricalMarketData,
     config: RuntimeBacktestConfig,
 ) -> Result<RuntimeBacktestResult> {
     let strategy = RhaiStrategy::load(strategy_src)?;
-    let effective_config = config
-        .runtime_config
-        .merge_strategy_config(strategy.strategy_config());
+    let effective_config = RuntimeConfig::from_strategy_config(
+        config.runtime_asset.clone(),
+        strategy.strategy_config(),
+    )?;
     let warmup_plan = resolve_warmup_plan(
         &effective_config,
         strategy.strategy_config(),
@@ -526,8 +506,8 @@ pub fn run_runtime_backtest(
     )
 }
 
-/// Variant for callers (such as the CLI) that load each configured timeframe
-/// after strategy configuration has been merged.
+/// Variant for callers (such as the CLI) that load each strategy-configured
+/// timeframe after Strategy Configuration has been resolved.
 pub fn run_runtime_backtest_with_loader<F>(
     strategy_src: &str,
     config: RuntimeBacktestConfig,
@@ -537,9 +517,10 @@ where
     F: FnMut(&str, Timeframe) -> Result<Vec<Candle>>,
 {
     let strategy = RhaiStrategy::load(strategy_src)?;
-    let effective_config = config
-        .runtime_config
-        .merge_strategy_config(strategy.strategy_config());
+    let effective_config = RuntimeConfig::from_strategy_config(
+        config.runtime_asset.clone(),
+        strategy.strategy_config(),
+    )?;
     let warmup_plan = resolve_warmup_plan(
         &effective_config,
         strategy.strategy_config(),
@@ -931,7 +912,7 @@ pub fn run_backtest(
 mod tests {
     use super::*;
     use shared::{Signal, Timeframe, TradeDecision};
-    use trading_runtime::{RuntimeEvent, SecondaryTimeframeConfig, StrategyDecisionIntent};
+    use trading_runtime::{RuntimeEvent, StrategyDecisionIntent};
 
     fn make_candle(ts: i64, close: f64) -> Candle {
         candle_at(ts, close, Timeframe::days(1))
@@ -996,6 +977,7 @@ const H1 = timeframe("1h");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(timeframe("1m"))
         .with_minimum_warmup(1)
         .with_secondary(secondary::required(H1).with_max_missing_candles(0))
 }
@@ -1021,7 +1003,7 @@ fn on_tick(market, context) {
                 ],
             }],
         );
-        let config = RuntimeBacktestConfig::new("TEST", primary, 10_000.0);
+        let config = RuntimeBacktestConfig::new("TEST", 10_000.0);
 
         let backtest = run_runtime_backtest(source, market_data, config).unwrap();
 
@@ -1085,6 +1067,7 @@ const H1 = timeframe("1h");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(timeframe("1m"))
         .with_minimum_warmup(1)
         .with_secondary(secondary::required(H1).with_max_missing_candles(0))
 }
@@ -1107,7 +1090,7 @@ fn on_tick(market, context) {
                 candles: vec![candle_at(3_600_000, 200.0, secondary)],
             }],
         );
-        let config = RuntimeBacktestConfig::new("TEST", primary, 10_000.0);
+        let config = RuntimeBacktestConfig::new("TEST", 10_000.0);
 
         let backtest = run_runtime_backtest(source, market_data, config).unwrap();
 
@@ -1157,21 +1140,22 @@ fn on_tick(market, context) {
     fn historical_backtest_preserves_required_secondary_blocking_and_optional_unavailable_events() {
         let primary = Timeframe::minutes(1);
         let secondary = Timeframe::hours(1);
-        let source = r#"
+        let required_source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(timeframe("1h")).with_max_missing_candles(0))
+}
+
 fn on_tick(market, context) {
     decision::open_long(1.0)
 }
 "#;
 
         let required = run_runtime_backtest(
-            source,
+            required_source,
             HistoricalMarketData::single_timeframe(vec![candle_at(60_000, 100.0, primary)]),
-            RuntimeBacktestConfig::with_secondary_configs(
-                "TEST",
-                primary,
-                [SecondaryTimeframeConfig::required(secondary, 0)],
-                10_000.0,
-            ),
+            RuntimeBacktestConfig::new("TEST", 10_000.0),
         )
         .unwrap();
         let required_step = required
@@ -1188,15 +1172,22 @@ fn on_tick(market, context) {
             RuntimeEvent::StrategyDecisionProduced { .. } | RuntimeEvent::PositionOpened { .. }
         )));
 
+        let optional_source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::optional(timeframe("1h")).with_max_missing_candles(0))
+}
+
+fn on_tick(market, context) {
+    decision::open_long(1.0)
+}
+"#;
+
         let optional = run_runtime_backtest(
-            source,
+            optional_source,
             HistoricalMarketData::single_timeframe(vec![candle_at(60_000, 100.0, primary)]),
-            RuntimeBacktestConfig::with_secondary_configs(
-                "TEST",
-                primary,
-                [SecondaryTimeframeConfig::optional(secondary, 0)],
-                10_000.0,
-            ),
+            RuntimeBacktestConfig::new("TEST", 10_000.0),
         )
         .unwrap();
         let optional_step = optional
@@ -1223,7 +1214,9 @@ fn on_tick(market, context) {
 const H1 = timeframe("1h");
 
 fn strategy_config() {
-    strategy_config::new().with_secondary(secondary::required(H1))
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(H1))
 }
 
 fn on_tick(market, context) {
@@ -1234,7 +1227,7 @@ fn on_tick(market, context) {
 
         let backtest = run_runtime_backtest_with_loader(
             source,
-            RuntimeBacktestConfig::new("TEST", primary, 10_000.0),
+            RuntimeBacktestConfig::new("TEST", 10_000.0),
             |symbol, timeframe| {
                 loaded.push((symbol.to_string(), timeframe));
                 Ok(match timeframe {

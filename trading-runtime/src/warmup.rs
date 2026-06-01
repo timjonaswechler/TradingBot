@@ -210,6 +210,10 @@ mod tests {
     fn source_with_on_tick(body: &str) -> String {
         format!(
             r#"
+fn strategy_config() {{
+    strategy_config::new().with_primary(timeframe("1m"))
+}}
+
 fn on_tick(market, context) {{
     {body}
 }}
@@ -248,6 +252,10 @@ decision::hold()
         let source = r#"
 const SLOW = 50;
 const FAST = 10;
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn on_tick(market, context) {
     let slow = indicators::sma(market.candles(), SLOW);
     let fast = indicators::sma(market.candles(), FAST);
@@ -263,6 +271,10 @@ fn on_tick(market, context) {
     fn detects_multiple_indicators_by_max_requirement() {
         let source = r#"
 const MACD_SLOW = 26;
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn on_tick(market, context) {
     let macd = indicators::macd(market.candles(), 12, MACD_SLOW, 9);
     let rsi = indicators::rsi(market.candles(), 14);
@@ -278,6 +290,12 @@ fn on_tick(market, context) {
     fn detects_secondary_market_candles_indicator_period() {
         let source = r#"
 const H1 = timeframe("1h");
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(H1))
+}
+
 fn on_tick(market, context) {
     let h1_slow = indicators::sma(market.candles(H1), 80);
     decision::hold()
@@ -299,6 +317,10 @@ fn on_tick(market, context) {
     #[test]
     fn old_candles_argument_shape_is_not_detected() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn on_tick(market, context) {
     let old_shape = indicators::sma(candles, 200);
     decision::hold()
@@ -313,7 +335,9 @@ fn on_tick(market, context) {
     fn strategy_config_minimum_warmup_wins_over_detected_and_runtime_minimum() {
         let source = r#"
 fn strategy_config() {
-    strategy_config::new().with_minimum_warmup(100)
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_minimum_warmup(100)
 }
 
 fn on_tick(market, context) {
@@ -359,7 +383,9 @@ decision::hold()
     fn strategy_config_cannot_lower_detected_warmup() {
         let source = r#"
 fn strategy_config() {
-    strategy_config::new().with_minimum_warmup(10)
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_minimum_warmup(10)
 }
 
 fn on_tick(market, context) {
@@ -384,6 +410,12 @@ fn on_tick(market, context) {
     fn v1_plan_assigns_effective_requirement_to_every_configured_timeframe() {
         let source = r#"
 const H1 = timeframe("1h");
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(H1))
+}
+
 fn on_tick(market, context) {
     let slow = indicators::sma(market.candles(H1), 80);
     decision::hold()

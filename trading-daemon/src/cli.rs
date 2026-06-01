@@ -16,8 +16,9 @@ pub struct Cli {
 pub enum Command {
     /// Start the live trading daemon.
     ///
-    /// Connects to SpacetimeDB, warms up engines for all configured
-    /// assets/intervals, then reacts to new candles via on_insert callbacks.
+    /// Connects to SpacetimeDB, warms up runtimes for all configured assets
+    /// using strategy-declared timeframes, then reacts to new candles via
+    /// on_insert callbacks.
     Run {
         /// Path to the TOML configuration file.
         #[arg(short, long, default_value = "trading-bot.toml")]
@@ -26,7 +27,7 @@ pub enum Command {
 
     /// Seed SpacetimeDB with historical candles from Yahoo Finance.
     ///
-    /// Loads all asset/interval combinations defined in the config file.
+    /// Loads all asset/strategy-declared timeframe combinations.
     /// Already-existing candles are skipped (idempotent).
     Seed {
         /// Path to the TOML configuration file.

@@ -60,6 +60,40 @@ pub fn get_candles(conn: &DbConnection, symbol: &str, timeframe: &str, limit: u3
     candles
 }
 
+/// Fetch up to `limit` candles for `symbol` / `timeframe` with half-open
+/// candle timestamps in `[start_ts, end_ts)` in chronological order.
+/// Reads from the local cache — no network call.
+pub fn get_candles_in_range(
+    conn: &DbConnection,
+    symbol: &str,
+    timeframe: &str,
+    start_ts: i64,
+    end_ts: i64,
+    limit: u32,
+) -> Vec<Candle> {
+    let mut candles: Vec<Candle> = conn
+        .db
+        .candles()
+        .iter()
+        .filter(|c| {
+            c.symbol == symbol
+                && c.timeframe == timeframe
+                && c.timestamp >= start_ts
+                && c.timestamp < end_ts
+        })
+        .map(|c| db_candle_to_shared(c.clone()))
+        .collect();
+
+    candles.sort_by_key(|c| c.timestamp);
+
+    let limit = limit as usize;
+    if candles.len() > limit {
+        candles = candles.into_iter().rev().take(limit).collect();
+        candles.reverse();
+    }
+    candles
+}
+
 /// Fetch up to `limit` candles **before** `before_ts` (exclusive) in chronological order.
 /// Used for engine warmup on daemon startup. Reads from the local cache.
 pub fn get_candles_before(

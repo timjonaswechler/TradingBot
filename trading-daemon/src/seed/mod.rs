@@ -1,15 +1,17 @@
-/// Seed orchestration: load historical candles for all configured
-/// asset/interval combinations from Yahoo Finance into SpacetimeDB.
+/// Seed orchestration: load historical candles for all configured assets and
+/// their strategy-declared timeframes from Yahoo Finance into SpacetimeDB.
 pub mod yahoo;
 
-use anyhow::Result;
+use anyhow::{anyhow, bail, Result};
 use db_layer::{
     count_candles, get_candle_timestamps, insert_candle, DbConnection, SpacetimeClient,
 };
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use crate::config::Config;
+use crate::config::{AssetConfig, Config};
+use shared::Timeframe;
+use trading_runtime::{RhaiStrategy, RuntimeConfig};
 
 /// Parse an ISO 8601 date string ("2020-01-01") to Unix milliseconds.
 fn date_to_ms(date_str: &str) -> anyhow::Result<i64> {
@@ -46,6 +48,37 @@ fn is_leap(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
+fn strategy_timeframes(asset: &AssetConfig) -> Result<Vec<Timeframe>> {
+    if asset.strategy.trim().is_empty() {
+        bail!(
+            "Asset '{}' must configure a strategy so seed can derive Primary/Secondary Timeframes",
+            asset.symbol
+        );
+    }
+
+    let strategy_source = std::fs::read_to_string(&asset.strategy)
+        .map_err(|error| anyhow!("Cannot read strategy '{}': {error}", asset.strategy))?;
+    let strategy = RhaiStrategy::load(&strategy_source).map_err(|error| {
+        anyhow!(
+            "Cannot load strategy '{}' for asset '{}': {error}",
+            asset.strategy,
+            asset.symbol
+        )
+    })?;
+    let runtime_config =
+        RuntimeConfig::from_strategy_config(asset.symbol.clone(), strategy.strategy_config())?;
+
+    let mut timeframes = Vec::with_capacity(1 + runtime_config.secondary_timeframes.len());
+    timeframes.push(runtime_config.primary_timeframe);
+    timeframes.extend(
+        runtime_config
+            .secondary_timeframes
+            .iter()
+            .map(|secondary| secondary.timeframe),
+    );
+    Ok(timeframes)
+}
+
 /// Run the full seed process for all assets in the config.
 pub async fn run(config: &Config, from_override: Option<String>) -> Result<()> {
     let from_str = from_override.as_deref().unwrap_or(&config.seed.from);
@@ -62,15 +95,16 @@ pub async fn run(config: &Config, from_override: Option<String>) -> Result<()> {
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    // Spawn parallel tasks for each asset × interval combination
+    // Spawn parallel tasks for each asset × strategy-declared timeframe combination.
     let mut handles = Vec::new();
 
     for asset in &config.assets {
-        for interval in &asset.intervals {
+        let required_timeframes = strategy_timeframes(asset)?;
+        for timeframe in required_timeframes {
             let conn_clone = conn.clone();
             let http_clone = http.clone();
             let symbol = asset.symbol.clone();
-            let interval_clone = interval.clone();
+            let interval_clone = timeframe.to_string();
             let from_ms_copy = from_ms;
 
             let handle = tokio::spawn(async move {
@@ -101,7 +135,7 @@ pub async fn run(config: &Config, from_override: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Seed one symbol/interval combination.
+/// Seed one symbol/timeframe combination through the provider interval API.
 async fn seed_one(
     conn: Arc<DbConnection>,
     http: &reqwest::Client,

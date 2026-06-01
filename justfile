@@ -74,7 +74,7 @@ run *args='--config trading-bot.toml':
     RUST_LOG=${RUST_LOG:-trading_daemon=info,db_layer=info} cargo run -p trading-daemon -- run {{args}}
 
 # Run a backtest against candles in SpacetimeDB
-# Example: just backtest --strategy strategies/sma_cross.rhai --symbol AAPL --interval 1d
+# Example: just backtest --strategy strategies/sma_cross.rhai --symbol AAPL
 backtest *args:
     RUST_LOG=${RUST_LOG:-backtester=info} cargo run -p backtester -- {{args}}
 

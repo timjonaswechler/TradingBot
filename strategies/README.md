@@ -14,20 +14,25 @@ need runner/runtime event details should also read
 
 1. Copy one of the maintained examples in this folder.
 2. Rename it to match your intent.
-3. Keep the required hook as `fn on_tick(market, context)`.
-4. Return typed decisions from `decision::*`.
-5. Declare optional warmup/Secondary requirements in `strategy_config()`.
-6. Declare optional anchored/structure compute in `anchored_config()`.
+3. Declare the strategy-owned Primary Timeframe in `strategy_config()`.
+4. Keep the required tick hook as `fn on_tick(market, context)`.
+5. Return typed decisions from `decision::*`.
+6. Declare optional warmup/Secondary requirements in `strategy_config()`.
+7. Declare optional anchored/structure compute in `anchored_config()`.
 
 The live daemon and backtester migration to the new runtime API is tracked
 separately. These examples are validated against `trading-runtime`'s typed Rhai
 loader and runtime tick path.
 
-## Required hook
+## Required hooks
 
-Every strategy must define:
+Every strategy must define `strategy_config()` and `on_tick(...)`:
 
 ```rhai
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1d"))
+}
+
 fn on_tick(market, context) {
     decision::hold()
 }
@@ -101,17 +106,19 @@ fn on_tick(market, context) {
 }
 ```
 
-## Strategy configuration and Secondary Timeframes
+## Strategy configuration and timeframes
 
-`strategy_config()` is optional. Use it for strategy-declared minimum warmup and
-Secondary-Timeframe requirements/defaults only. The run configuration remains
-authoritative for the Runtime Asset and Primary Timeframe.
+`strategy_config()` is required. Use it to declare exactly one Primary Timeframe,
+strategy-declared minimum warmup, and Secondary-Timeframe requirements/defaults.
+Run configuration remains authoritative for the Runtime Asset and runner inputs.
 
 ```rhai
+const PRIMARY = timeframe("1d");
 const H1 = timeframe("1h");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(PRIMARY)
         .with_minimum_warmup(200)
         .with_secondary(
             secondary::required(H1)

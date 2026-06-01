@@ -15,8 +15,7 @@ use shared::{Candle, Timeframe};
 use spacetimedb_sdk::Table;
 use trading_runtime::{
     resolve_warmup_plan, MarketInput, PortfolioState, RhaiStrategy, RuntimeConfig,
-    RuntimeInputError, RuntimePortfolioSnapshot, RuntimeStep, SecondaryTimeframeConfig,
-    TradingRuntime,
+    RuntimeInputError, RuntimePortfolioSnapshot, RuntimeStep, TradingRuntime,
 };
 
 use crate::{
@@ -34,9 +33,9 @@ struct LiveRuntimeAsset {
 
 impl LiveRuntimeAsset {
     fn from_strategy_source(asset: AssetConfig, strategy_source: &str) -> Result<Self> {
-        let run_config = runtime_config_from_asset(&asset)?;
         let strategy = RhaiStrategy::load(strategy_source)?;
-        let config = run_config.merge_strategy_config(strategy.strategy_config());
+        let config =
+            RuntimeConfig::from_strategy_config(asset.symbol.clone(), strategy.strategy_config())?;
         let warmup_plan = resolve_warmup_plan(
             &config,
             strategy.strategy_config(),
@@ -97,9 +96,9 @@ impl LiveRuntimeAsset {
     }
 }
 
-/// Run a live runtime instance for one configured asset. The first configured
-/// interval is the Primary Timeframe; later intervals are Secondary Timeframes
-/// that feed the same runtime as market context.
+/// Run a live runtime instance for one configured asset. The strategy file owns
+/// the Primary Timeframe and any Secondary Timeframes; daemon config binds that
+/// contract to the Runtime Asset and live runner policies.
 pub async fn run(
     client: Arc<SpacetimeClient>,
     asset: AssetConfig,
@@ -264,42 +263,6 @@ pub async fn run(
     Ok(())
 }
 
-fn runtime_config_from_asset(asset: &AssetConfig) -> Result<RuntimeConfig> {
-    let Some(primary_raw) = asset.intervals.first() else {
-        bail!(
-            "Asset '{}' must configure at least one interval",
-            asset.symbol
-        );
-    };
-
-    let primary_timeframe = parse_timeframe(primary_raw)?;
-    let mut seen = HashSet::from([primary_timeframe]);
-    let mut secondary_timeframes = Vec::new();
-
-    for raw in asset.intervals.iter().skip(1) {
-        let timeframe = parse_timeframe(raw)?;
-        if !seen.insert(timeframe) {
-            bail!(
-                "Asset '{}' configures duplicate timeframe '{}'",
-                asset.symbol,
-                timeframe
-            );
-        }
-        secondary_timeframes.push(SecondaryTimeframeConfig::optional(timeframe, 0));
-    }
-
-    Ok(RuntimeConfig::with_secondary_configs(
-        asset.symbol.clone(),
-        primary_timeframe,
-        secondary_timeframes,
-    ))
-}
-
-fn parse_timeframe(raw: &str) -> Result<Timeframe> {
-    raw.parse()
-        .map_err(|e| anyhow!("Invalid configured interval '{}': {e}", raw))
-}
-
 fn latest_primary_mark_candle(
     conn: &DbConnection,
     symbol: &str,
@@ -420,7 +383,6 @@ mod tests {
     fn asset() -> AssetConfig {
         AssetConfig {
             symbol: "BTC-USD".into(),
-            intervals: vec!["1m".into(), "1h".into()],
             strategy: "strategy.rhai".into(),
             balance: 10_000.0,
             liquidate_on_shutdown: true,
@@ -454,6 +416,12 @@ mod tests {
     #[test]
     fn live_runtime_asset_feeds_secondary_context_and_primary_ticks_into_one_runtime() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::optional(timeframe("1h")))
+}
+
 fn on_tick(market, context) {
     if market.candle(timeframe("1h")) == () {
         return decision::hold().with_reason("missing secondary");
@@ -493,6 +461,10 @@ fn on_tick(market, context) {
     #[test]
     fn protective_shutdown_when_flat_stops_without_force_close() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn on_tick(market, context) {
     decision::hold().with_reason("flat")
 }
@@ -517,6 +489,10 @@ fn on_tick(market, context) {
     #[test]
     fn protective_shutdown_with_open_position_requests_runtime_force_close() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn on_tick(market, context) {
     decision::open_long(2.0).with_reason("entry")
 }
@@ -557,6 +533,10 @@ fn on_tick(market, context) {
     #[test]
     fn protective_shutdown_with_open_position_and_no_mark_returns_clear_error() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn on_tick(market, context) {
     decision::open_long(1.0).with_reason("entry")
 }

@@ -9,7 +9,9 @@ const QUANTITY = 1.0;
 const TRAIL_PCT = 0.05;
 
 fn strategy_config() {
-    strategy_config::new().with_minimum_warmup(SLOW + 1)
+    strategy_config::new()
+        .with_primary(timeframe("1d"))
+        .with_minimum_warmup(SLOW + 1)
 }
 
 fn on_tick(market, context) {

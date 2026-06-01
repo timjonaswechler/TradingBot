@@ -25,6 +25,11 @@ pub struct TradingRuntime<S> {
 }
 
 impl<S: StrategyHandler> TradingRuntime<S> {
+    /// Convenience constructor for tests and simple fake-handler fixtures.
+    ///
+    /// Live/backtest callers should pass an explicit [`RuntimeConfig`] derived
+    /// from the strategy-owned timeframe contract via [`Self::with_config`] or
+    /// [`Self::with_warmup_plan`].
     pub fn new(portfolio: PortfolioState, warmup_requirement: usize, strategy_handler: S) -> Self {
         Self::with_config(
             RuntimeConfig::single_timeframe("BTC-USD", Timeframe::minutes(1)),

@@ -269,7 +269,7 @@ impl RhaiStrategy {
                 })?;
 
         validate_required_on_tick(&ast)?;
-        validate_optional_zero_arg_hook(&ast, STRATEGY_CONFIG_HOOK)?;
+        validate_required_zero_arg_hook(&ast, STRATEGY_CONFIG_HOOK)?;
         validate_optional_zero_arg_hook(&ast, ANCHORED_CONFIG_HOOK)?;
 
         let mut scope = Scope::new();
@@ -279,11 +279,7 @@ impl RhaiStrategy {
                 message: error.to_string(),
             })?;
 
-        let strategy_config = if has_zero_arg_hook(&ast, STRATEGY_CONFIG_HOOK) {
-            call_typed_strategy_config(&engine, &mut scope, &ast)?
-        } else {
-            StrategyConfiguration::default()
-        };
+        let strategy_config = call_typed_strategy_config(&engine, &mut scope, &ast)?;
 
         let anchored_config = if has_zero_arg_hook(&ast, ANCHORED_CONFIG_HOOK) {
             Some(call_typed_anchored_config(&engine, &mut scope, &ast)?)
@@ -384,6 +380,9 @@ pub enum RhaiStrategyLoadError {
         hook: &'static str,
         expected: &'static str,
     },
+    InvalidStrategyConfiguration {
+        message: String,
+    },
 }
 
 impl fmt::Display for RhaiStrategyLoadError {
@@ -406,6 +405,9 @@ impl fmt::Display for RhaiStrategyLoadError {
             }
             Self::InvalidHookReturn { hook, expected } => {
                 write!(formatter, "strategy hook `{hook}` must return {expected}")
+            }
+            Self::InvalidStrategyConfiguration { message } => {
+                write!(formatter, "strategy configuration error: {message}")
             }
         }
     }
@@ -452,6 +454,7 @@ fn new_rhai_engine() -> RhaiEngine {
 
     engine.register_fn("timeframe", parse_timeframe);
     engine.register_fn("==", |left: Timeframe, right: Timeframe| left == right);
+    engine.register_fn("with_primary", with_primary);
     engine.register_fn(
         "with_minimum_warmup",
         |config: StrategyConfiguration, minimum_warmup: INT| {
@@ -948,6 +951,13 @@ fn strategy_state_type_error(
     format!("strategy state key `{key}` contains {actual}, not requested {expected}").into()
 }
 
+fn with_primary(
+    config: StrategyConfiguration,
+    primary_timeframe: Timeframe,
+) -> StrategyConfiguration {
+    config.with_primary(primary_timeframe)
+}
+
 fn with_minimum_warmup(
     config: StrategyConfiguration,
     minimum_warmup: INT,
@@ -1148,6 +1158,34 @@ fn validate_required_on_tick(ast: &AST) -> Result<(), RhaiStrategyLoadError> {
     })
 }
 
+fn validate_required_zero_arg_hook(
+    ast: &AST,
+    hook: &'static str,
+) -> Result<(), RhaiStrategyLoadError> {
+    if has_zero_arg_hook(ast, hook) {
+        return Ok(());
+    }
+
+    if has_any_hook(ast, hook) {
+        return Err(RhaiStrategyLoadError::InvalidHookSignature {
+            hook,
+            expected: match hook {
+                STRATEGY_CONFIG_HOOK => "fn strategy_config()",
+                ANCHORED_CONFIG_HOOK => "fn anchored_config()",
+                _ => "fn hook()",
+            },
+        });
+    }
+
+    Err(RhaiStrategyLoadError::MissingRequiredHook {
+        expected: match hook {
+            STRATEGY_CONFIG_HOOK => "fn strategy_config()",
+            ANCHORED_CONFIG_HOOK => "fn anchored_config()",
+            _ => "fn hook()",
+        },
+    })
+}
+
 fn validate_optional_zero_arg_hook(
     ast: &AST,
     hook: &'static str,
@@ -1172,12 +1210,18 @@ fn call_typed_strategy_config(
     ast: &AST,
 ) -> Result<StrategyConfiguration, RhaiStrategyLoadError> {
     let result = call_load_time_hook(engine, scope, ast, STRATEGY_CONFIG_HOOK)?;
-    result
-        .try_cast::<StrategyConfiguration>()
-        .ok_or(RhaiStrategyLoadError::InvalidHookReturn {
+    let config = result.try_cast::<StrategyConfiguration>().ok_or(
+        RhaiStrategyLoadError::InvalidHookReturn {
             hook: STRATEGY_CONFIG_HOOK,
             expected: "a typed StrategyConfig from `strategy_config::new()`",
-        })
+        },
+    )?;
+    config.validate_timeframe_contract().map_err(|error| {
+        RhaiStrategyLoadError::InvalidStrategyConfiguration {
+            message: error.to_string(),
+        }
+    })?;
+    Ok(config)
 }
 
 fn call_typed_anchored_config(
@@ -1233,11 +1277,15 @@ mod tests {
     use super::*;
     use crate::{
         ExecutionAction, IgnoredDecisionReason, MarketInput, PortfolioState, RuntimeConfig,
-        RuntimeEvent, SecondaryReadiness, StrategyDecisionIntent, TradingRuntime,
+        RuntimeEvent, StrategyDecisionIntent, TradingRuntime,
     };
     use shared::{Candle, Timeframe};
 
     const MINIMAL: &str = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn on_tick(market, context) {
     decision::hold()
 }
@@ -1274,6 +1322,10 @@ fn on_tick(market, context) {
     fn source_returning(expression: &str) -> String {
         format!(
             r#"
+fn strategy_config() {{
+    strategy_config::new().with_primary(timeframe("1m"))
+}}
+
 fn on_tick(market, context) {{
     {expression}
 }}
@@ -1574,7 +1626,14 @@ if previous != () && previous.close == 99.0 {
     #[test]
     fn market_view_reads_available_secondary_candle_and_history_by_typed_timeframe() {
         let source = r#"
+const M1 = timeframe("1m");
 const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(M1)
+        .with_secondary(secondary::required(H1))
+}
 
 fn on_tick(market, context) {
     let h1 = market.candle(H1);
@@ -1894,20 +1953,20 @@ decision::hold()
     }
 
     #[test]
-    fn loads_minimal_strategy_with_only_on_tick() {
+    fn loads_minimal_strategy_with_required_strategy_config_primary() {
         let strategy = RhaiStrategy::load(MINIMAL).expect("strategy should load");
 
         assert_eq!(
             strategy.hooks(),
             RhaiStrategyHooks {
                 has_on_tick: true,
-                has_strategy_config: false,
+                has_strategy_config: true,
                 has_anchored_config: false,
             }
         );
         assert_eq!(
-            strategy.strategy_config(),
-            &StrategyConfiguration::default()
+            strategy.strategy_config().primary_timeframe(),
+            Some(Timeframe::minutes(1))
         );
         assert_eq!(strategy.anchored_config(), None);
     }
@@ -1915,10 +1974,11 @@ decision::hold()
     #[test]
     fn loads_strategy_with_top_level_constants_and_typed_strategy_config() {
         let source = r#"
-const H1 = timeframe("1h");
+const M30 = timeframe("30m");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(M30)
         .with_minimum_warmup(200)
 }
 
@@ -1930,17 +1990,23 @@ fn on_tick(market, context) {
         let strategy = RhaiStrategy::load(source).expect("strategy should load");
 
         assert!(strategy.hooks().has_strategy_config);
+        assert_eq!(
+            strategy.strategy_config().primary_timeframe(),
+            Some(Timeframe::minutes(30))
+        );
         assert_eq!(strategy.strategy_config().minimum_warmup(), 200);
     }
 
     #[test]
-    fn typed_strategy_config_extracts_required_and_optional_secondaries() {
+    fn typed_strategy_config_extracts_primary_and_secondaries() {
         let source = r#"
+const M1 = timeframe("1m");
 const H1 = timeframe("1h");
 const D1 = timeframe("1d");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(M1)
         .with_minimum_warmup(200)
         .with_secondary(
             secondary::required(H1)
@@ -1959,6 +2025,10 @@ fn on_tick(market, context) {
 
         let strategy = RhaiStrategy::load(source).expect("strategy should load");
 
+        assert_eq!(
+            strategy.strategy_config().primary_timeframe(),
+            Some(Timeframe::minutes(1))
+        );
         assert_eq!(strategy.strategy_config().minimum_warmup(), 200);
         assert_eq!(
             strategy.strategy_config().secondary_timeframes(),
@@ -1970,15 +2040,15 @@ fn on_tick(market, context) {
     }
 
     #[test]
-    fn runtime_config_merge_adds_strategy_only_secondaries() {
+    fn runtime_config_is_derived_from_runtime_asset_and_strategy_timeframe_contract() {
         let source = r#"
-const H1 = timeframe("1h");
+const M30 = timeframe("30m");
 const D1 = timeframe("1d");
 
 fn strategy_config() {
     strategy_config::new()
-        .with_secondary(secondary::required(H1).with_max_missing_candles(1))
-        .with_secondary(secondary::optional(D1).with_max_missing_candles(0))
+        .with_primary(M30)
+        .with_secondary(secondary::required(D1).with_max_missing_candles(1))
 }
 
 fn on_tick(market, context) {
@@ -1986,74 +2056,23 @@ fn on_tick(market, context) {
 }
 "#;
         let strategy = RhaiStrategy::load(source).expect("strategy should load");
-        let run_config = RuntimeConfig::single_timeframe("BTC-USD", Timeframe::minutes(1));
 
-        let resolved = run_config.merge_strategy_config(strategy.strategy_config());
-
-        assert_eq!(resolved.runtime_asset, "BTC-USD");
-        assert_eq!(resolved.primary_timeframe, Timeframe::minutes(1));
-        assert_eq!(
-            resolved.secondary_timeframes,
-            vec![
-                SecondaryTimeframeConfig::required(Timeframe::hours(1), 1),
-                SecondaryTimeframeConfig::optional(Timeframe::days(1), 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn runtime_config_merge_preserves_run_config_only_secondaries() {
-        let run_config = RuntimeConfig::with_secondary_configs(
-            "BTC-USD",
-            Timeframe::minutes(1),
-            [SecondaryTimeframeConfig::optional(Timeframe::hours(1), 2)],
-        );
-
-        let resolved = run_config.merge_strategy_config(&StrategyConfiguration::default());
-
-        assert_eq!(resolved, run_config);
-    }
-
-    #[test]
-    fn runtime_config_wins_secondary_conflicts() {
-        let source = r#"
-const H1 = timeframe("1h");
-
-fn strategy_config() {
-    strategy_config::new()
-        .with_secondary(secondary::required(H1).with_max_missing_candles(1))
-}
-
-fn on_tick(market, context) {
-    decision::hold()
-}
-"#;
-        let strategy = RhaiStrategy::load(source).expect("strategy should load");
-        let run_config = RuntimeConfig::with_secondary_configs(
-            "BTC-USD",
-            Timeframe::minutes(1),
-            [SecondaryTimeframeConfig::optional(Timeframe::hours(1), 0)],
-        );
-
-        let resolved = run_config.merge_strategy_config(strategy.strategy_config());
+        let resolved = RuntimeConfig::from_strategy_config("BTC-USD", strategy.strategy_config())
+            .expect("validated strategy config should resolve");
 
         assert_eq!(resolved.runtime_asset, "BTC-USD");
-        assert_eq!(resolved.primary_timeframe, Timeframe::minutes(1));
+        assert_eq!(resolved.primary_timeframe, Timeframe::minutes(30));
         assert_eq!(
             resolved.secondary_timeframes,
-            vec![SecondaryTimeframeConfig::optional(Timeframe::hours(1), 0)]
-        );
-        assert_eq!(
-            resolved.secondary_timeframes[0].readiness,
-            SecondaryReadiness::Optional
+            vec![SecondaryTimeframeConfig::required(Timeframe::days(1), 1)]
         );
     }
 
     #[test]
-    fn strategy_config_cannot_change_runtime_asset_or_primary_timeframe() {
+    fn strategy_config_rejects_legacy_run_config_methods() {
         for forbidden in [
-            r#"strategy_config::new().with_runtime_asset("ETH-USD")"#,
-            r#"strategy_config::new().with_primary_timeframe(timeframe("1h"))"#,
+            r#"strategy_config::new().with_primary(timeframe("1m")).with_runtime_asset("ETH-USD")"#,
+            r#"strategy_config::new().with_primary(timeframe("1m")).with_primary_timeframe(timeframe("1h"))"#,
         ] {
             let source = format!(
                 r#"
@@ -2081,6 +2100,7 @@ fn on_tick(market, context) {{
         let source = r#"
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(timeframe("1m"))
         .with_secondary(secondary::required(timeframe("15min")))
 }
 
@@ -2105,6 +2125,7 @@ const H1 = timeframe("1h");
 
 fn strategy_config() {
     strategy_config::new()
+        .with_primary(timeframe("1m"))
         .with_secondary(secondary::required(H1).with_max_missing_candles(-1))
 }
 
@@ -2120,6 +2141,97 @@ fn on_tick(market, context) {
             RhaiStrategyLoadError::HookEvaluation { .. }
         ));
         assert!(error.to_string().contains("max missing candles"));
+    }
+
+    #[test]
+    fn strategy_config_missing_primary_fails_load() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_minimum_warmup(10)
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RhaiStrategyLoadError::InvalidStrategyConfiguration { .. }
+        ));
+        assert!(error.to_string().contains("with_primary"));
+    }
+
+    #[test]
+    fn strategy_config_duplicate_primary_fails_load() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_primary(timeframe("5m"))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RhaiStrategyLoadError::InvalidStrategyConfiguration { .. }
+        ));
+        assert!(error.to_string().contains("exactly one Primary"));
+    }
+
+    #[test]
+    fn strategy_config_secondary_equal_to_primary_fails_load() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(timeframe("1m")))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RhaiStrategyLoadError::InvalidStrategyConfiguration { .. }
+        ));
+        assert!(error.to_string().contains("must not equal the Primary"));
+    }
+
+    #[test]
+    fn strategy_config_duplicate_secondaries_fail_load() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(timeframe("1h")))
+        .with_secondary(secondary::optional(timeframe("1h")))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RhaiStrategyLoadError::InvalidStrategyConfiguration { .. }
+        ));
+        assert!(error.to_string().contains("duplicate Secondary"));
     }
 
     #[test]
@@ -2338,19 +2450,39 @@ fn on_tick(market, context) {
     }
 
     #[test]
-    fn missing_optional_hooks_use_defaults() {
-        let strategy = RhaiStrategy::load(MINIMAL).expect("strategy should load");
+    fn load_fails_when_strategy_config_is_missing() {
+        let error = RhaiStrategy::load(
+            r#"
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#,
+        )
+        .unwrap_err();
 
         assert_eq!(
-            strategy.strategy_config(),
-            &StrategyConfiguration::default()
+            error,
+            RhaiStrategyLoadError::MissingRequiredHook {
+                expected: "fn strategy_config()",
+            }
         );
+        assert!(error.to_string().contains("fn strategy_config()"));
+    }
+
+    #[test]
+    fn missing_optional_anchored_config_uses_default() {
+        let strategy = RhaiStrategy::load(MINIMAL).expect("strategy should load");
+
         assert!(strategy.anchored_config().is_none());
     }
 
     #[test]
     fn present_anchored_config_is_called_and_validated() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn anchored_config() {
     anchored_config::new()
         .with_detector(
@@ -2401,6 +2533,10 @@ if lines == () && pivot == () {
     #[test]
     fn invalid_typed_anchored_config_fails_load() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn anchored_config() {
     anchored_config::new()
         .with_detector(pivot_detector::new("swing"))
@@ -2428,6 +2564,10 @@ fn on_tick(market, context) {
     #[test]
     fn invalid_pivot_detector_bars_fail_load() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn anchored_config() {
     anchored_config::new()
         .with_detector(pivot_detector::new("swing").with_left_bars(0))
@@ -2453,6 +2593,10 @@ fn on_tick(market, context) {
     #[test]
     fn anchored_pivot_outputs_update_from_warmup_market_state_and_are_visible_on_market_view() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn anchored_config() {
     anchored_config::new()
         .with_detector(
@@ -2503,6 +2647,10 @@ fn on_tick(market, context) {
     #[test]
     fn market_anchored_returns_trendline_output_from_runtime_market_state() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn anchored_config() {
     anchored_config::new()
         .with_detector(
@@ -2578,7 +2726,7 @@ decision::hold()
     }
 
     #[test]
-    fn optional_strategy_config_returning_unit_fails_load() {
+    fn strategy_config_returning_unit_fails_load() {
         let source = r#"
 fn strategy_config() {
     ()
@@ -2601,7 +2749,7 @@ fn on_tick(market, context) {
     }
 
     #[test]
-    fn optional_strategy_config_returning_map_fails_load_without_legacy_mapping() {
+    fn strategy_config_returning_map_fails_load_without_legacy_mapping() {
         let source = r#"
 fn strategy_config() {
     #{ minimum_warmup: 200 }
@@ -2626,6 +2774,10 @@ fn on_tick(market, context) {
     #[test]
     fn optional_anchored_config_returning_map_fails_load_without_legacy_mapping() {
         let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
 fn anchored_config() {
     #{}
 }
@@ -2669,6 +2821,10 @@ fn anchored_config() { anchored_config::new() }
     fn invalid_top_level_timeframe_fails_initialization() {
         let source = r#"
 const BAD = timeframe("15min");
+
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
 
 fn on_tick(market, context) {
     decision::hold()

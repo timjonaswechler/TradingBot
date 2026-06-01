@@ -17,6 +17,7 @@ engine     = { path = "../engine" }
 db-layer   = { path = "../db-layer" }
 trading-runtime = { path = "../trading-runtime" }
 anyhow     = { workspace = true }
+chrono     = { version = "0.4", default-features = false, features = ["std"] }
 clap       = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }

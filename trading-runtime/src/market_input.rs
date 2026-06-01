@@ -1,6 +1,6 @@
 //! Runtime market-input boundary types.
 
-use crate::strategy_config::StrategyConfiguration;
+use crate::strategy_config::{StrategyConfiguration, StrategyConfigurationError};
 use shared::{Candle, Timeframe};
 
 /// Whether a configured Secondary Timeframe is required for Strategy Ticks.
@@ -37,6 +37,11 @@ impl SecondaryTimeframeConfig {
 }
 
 /// Runtime-owned configuration for one runtime asset's market input boundary.
+///
+/// Live/backtest production callers should derive this from the Runtime Asset
+/// plus a validated [`StrategyConfiguration`] via [`RuntimeConfig::from_strategy_config`].
+/// Direct constructors remain low-level conveniences for runtime internals,
+/// tests, and fixtures that intentionally bypass Rhai strategy loading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub runtime_asset: String,
@@ -45,6 +50,30 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    /// Build a runtime configuration from the runner-owned Runtime Asset and
+    /// the strategy-owned timeframe contract.
+    pub fn from_strategy_config<A>(
+        runtime_asset: A,
+        strategy_config: &StrategyConfiguration,
+    ) -> Result<Self, StrategyConfigurationError>
+    where
+        A: Into<String>,
+    {
+        strategy_config.validate_timeframe_contract()?;
+        Ok(Self::with_secondary_configs(
+            runtime_asset,
+            strategy_config
+                .primary_timeframe()
+                .expect("validated Strategy Configuration should declare Primary Timeframe"),
+            strategy_config.secondary_timeframes().to_vec(),
+        ))
+    }
+
+    /// Low-level constructor for explicit runtime fixtures or internals.
+    ///
+    /// Prefer [`RuntimeConfig::from_strategy_config`] in live/backtest code so
+    /// Primary and Secondary Timeframes have a single strategy-owned source of
+    /// truth.
     pub fn with_secondary_configs<A, I>(
         runtime_asset: A,
         primary_timeframe: Timeframe,
@@ -61,6 +90,9 @@ impl RuntimeConfig {
         }
     }
 
+    /// Low-level single-timeframe convenience constructor for tests/fixtures.
+    ///
+    /// Prefer [`RuntimeConfig::from_strategy_config`] in live/backtest code.
     pub fn single_timeframe(
         runtime_asset: impl Into<String>,
         primary_timeframe: Timeframe,
@@ -102,35 +134,6 @@ impl RuntimeConfig {
 
     pub(crate) fn secondary_configs(&self) -> &[SecondaryTimeframeConfig] {
         &self.secondary_timeframes
-    }
-
-    /// Resolve strategy-declared configuration into this run configuration.
-    ///
-    /// Run Configuration remains authoritative: existing Secondary-Timeframe
-    /// entries keep their readiness/tolerance, and the runtime asset and Primary
-    /// Timeframe are never changed by Strategy Configuration. Strategy-declared
-    /// Secondary Timeframes that are absent from the run config are added.
-    pub fn merge_strategy_config(&self, strategy_config: &StrategyConfiguration) -> Self {
-        let mut resolved = self.clone();
-
-        for strategy_secondary in strategy_config.secondary_timeframes() {
-            if strategy_secondary.timeframe == resolved.primary_timeframe {
-                continue;
-            }
-
-            let run_config_has_timeframe = resolved
-                .secondary_timeframes
-                .iter()
-                .any(|run_secondary| run_secondary.timeframe == strategy_secondary.timeframe);
-
-            if !run_config_has_timeframe {
-                resolved
-                    .secondary_timeframes
-                    .push(strategy_secondary.clone());
-            }
-        }
-
-        resolved
     }
 }
 

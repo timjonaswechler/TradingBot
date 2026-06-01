@@ -188,6 +188,7 @@ name = "backtester"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "db-layer",
  "engine",

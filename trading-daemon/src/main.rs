@@ -81,11 +81,6 @@ async fn run_daemon(config_path: &str) -> Result<()> {
             tracing::warn!(symbol = asset.symbol, "No strategy configured — skipping");
             continue;
         }
-        if asset.intervals.is_empty() {
-            tracing::warn!(symbol = asset.symbol, "No intervals configured — skipping");
-            continue;
-        }
-
         let client_clone = client.clone();
         let cancel_clone = cancel.clone();
 

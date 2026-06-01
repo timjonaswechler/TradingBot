@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use shared::Candle;
 use trading_runtime::{
-    MarketInput, PortfolioState, RhaiStrategy, RuntimeEvent, StrategyDecisionIntent, TradingRuntime,
+    MarketInput, PortfolioState, RhaiStrategy, RuntimeConfig, RuntimeEvent, StrategyDecisionIntent,
+    TradingRuntime,
 };
 
 fn strategies_dir() -> PathBuf {
@@ -18,7 +19,7 @@ fn candle(close: f64, timestamp: i64) -> Candle {
         low: close - 1.0,
         close,
         volume: 1_000.0,
-        timeframe: "1m".parse().expect("valid timeframe"),
+        timeframe: "1d".parse().expect("valid timeframe"),
     }
 }
 
@@ -44,7 +45,15 @@ fn typed_strategy_examples_load() {
 fn typed_strategy_examples_run_one_runtime_tick() {
     for strategy in ["sma_cross.rhai", "min_loss.rhai", "trendline_break.rhai"] {
         let strategy_handler = load_example(strategy);
-        let mut runtime = TradingRuntime::new(PortfolioState::new(10_000.0), 0, strategy_handler);
+        let runtime_config =
+            RuntimeConfig::from_strategy_config("TEST", strategy_handler.strategy_config())
+                .expect("example strategy config should resolve");
+        let mut runtime = TradingRuntime::with_config(
+            runtime_config,
+            PortfolioState::new(10_000.0),
+            0,
+            strategy_handler,
+        );
 
         let step = runtime
             .on_market_input(MarketInput::CompletedCandle(candle(100.0, 1)))
