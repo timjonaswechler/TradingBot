@@ -36,6 +36,10 @@ pub enum MonteCarloProcedure {
     LogBarPermutation {
         volume_mode: LogBarPermutationVolumeMode,
     },
+    LowestTimeframeOhlcNoise {
+        source_timeframe: Timeframe,
+        regenerated_timeframes: Vec<Timeframe>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +150,7 @@ enum SyntheticProcedurePlanSpec {
     CandlePermutation,
     OhlcNoise(OhlcNoiseConfigPlanSpec),
     LogBarPermutation(LogBarPermutationConfigPlanSpec),
+    LowestTimeframeOhlcNoise(OhlcNoiseConfigPlanSpec),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -510,6 +515,54 @@ fn run_synthetic_monte_carlo(
                 iterations,
             })
         }
+        SyntheticProcedurePlanSpec::LowestTimeframeOhlcNoise(ohlc_noise_config) => {
+            let reaggregation = lowest_timeframe_reaggregation_plan(effective_config)?;
+            let mut iterations = Vec::with_capacity(synthetic_spec.config.iterations);
+
+            for iteration_index in 0..synthetic_spec.config.iterations {
+                let seed = derive_monte_carlo_seed(
+                    synthetic_spec.config.base_seed,
+                    iteration_index,
+                    0,
+                    OHLC_NOISE_PROCEDURE_ID,
+                );
+                let synthetic_market_data = apply_lowest_timeframe_ohlc_noise_to_market_data(
+                    source_market_data,
+                    effective_config,
+                    ohlc_noise_config,
+                    seed,
+                )?;
+                let strategy = RhaiStrategy::load(strategy_src)?;
+                let runtime_result = run_prepared_runtime_backtest(
+                    strategy,
+                    effective_config.clone(),
+                    warmup_plan.clone(),
+                    synthetic_market_data,
+                    initial_balance,
+                )?;
+
+                if runtime_result.result.equity_curve.is_empty() {
+                    return Err(anyhow!(
+                        "monte_carlo::lowest_timeframe_ohlc_noise iteration {} produced no tradable candles",
+                        iteration_index + 1
+                    ));
+                }
+
+                iterations.push(iteration_diagnostics(
+                    iteration_index + 1,
+                    seed,
+                    &runtime_result,
+                ));
+            }
+
+            Ok(SyntheticMonteCarloReport {
+                procedure: MonteCarloProcedure::LowestTimeframeOhlcNoise {
+                    source_timeframe: reaggregation.source_timeframe,
+                    regenerated_timeframes: reaggregation.regenerated_timeframes,
+                },
+                iterations,
+            })
+        }
     }
 }
 
@@ -712,9 +765,247 @@ fn ensure_single_timeframe_synthetic_procedure(
         Ok(())
     } else {
         Err(anyhow!(
-            "{procedure_name} is single-timeframe only; RuntimeConfig contains Secondary Timeframes. Use the future #93 lowest-timeframe reaggregation consistency model instead of independently mutating multiple timeframes."
+            "{procedure_name} is single-timeframe only; RuntimeConfig contains Secondary Timeframes. Use #93 `monte_carlo::lowest_timeframe_ohlc_noise` for OHLC-noise multi-timeframe runs; other multi-timeframe mutation procedures remain separate future scope."
         ))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LowestTimeframeReaggregationPlan {
+    source_timeframe: Timeframe,
+    regenerated_timeframes: Vec<Timeframe>,
+}
+
+fn lowest_timeframe_reaggregation_plan(
+    effective_config: &RuntimeConfig,
+) -> Result<LowestTimeframeReaggregationPlan> {
+    let configured_timeframes = configured_timeframes_for_reaggregation(effective_config);
+    if configured_timeframes.len() < 2 {
+        return Err(anyhow!(
+            "monte_carlo::lowest_timeframe_ohlc_noise requires at least two configured timeframes; use #90 monte_carlo::ohlc_noise for single-timeframe OHLC-noise runs"
+        ));
+    }
+
+    let smallest_duration = configured_timeframes
+        .iter()
+        .map(|timeframe| timeframe.duration_ms())
+        .min()
+        .expect("non-empty configured timeframe set should have a minimum duration");
+    let smallest_timeframes = configured_timeframes
+        .iter()
+        .copied()
+        .filter(|timeframe| timeframe.duration_ms() == smallest_duration)
+        .collect::<Vec<_>>();
+
+    if smallest_timeframes.len() != 1 {
+        return Err(anyhow!(
+            "monte_carlo::lowest_timeframe_ohlc_noise cannot choose a unique smallest configured timeframe; {} share duration {}ms",
+            format_timeframe_list(&smallest_timeframes),
+            smallest_duration
+        ));
+    }
+
+    let source_timeframe = smallest_timeframes[0];
+    let regenerated_timeframes = configured_timeframes
+        .into_iter()
+        .filter(|timeframe| *timeframe != source_timeframe)
+        .collect();
+
+    Ok(LowestTimeframeReaggregationPlan {
+        source_timeframe,
+        regenerated_timeframes,
+    })
+}
+
+fn configured_timeframes_for_reaggregation(effective_config: &RuntimeConfig) -> Vec<Timeframe> {
+    let mut timeframes = Vec::with_capacity(1 + effective_config.secondary_timeframes.len());
+    timeframes.push(effective_config.primary_timeframe);
+    timeframes.extend(
+        effective_config
+            .secondary_timeframes
+            .iter()
+            .map(|secondary| secondary.timeframe),
+    );
+    timeframes
+}
+
+fn format_timeframe_list(timeframes: &[Timeframe]) -> String {
+    let mut formatted = String::new();
+    for (index, timeframe) in timeframes.iter().enumerate() {
+        if index > 0 {
+            formatted.push_str(", ");
+        }
+        formatted.push_str(&timeframe.to_string());
+    }
+    formatted
+}
+
+fn apply_lowest_timeframe_ohlc_noise_to_market_data(
+    source: &HistoricalMarketData,
+    effective_config: &RuntimeConfig,
+    config: &OhlcNoiseConfigPlanSpec,
+    seed: u64,
+) -> Result<HistoricalMarketData> {
+    let reaggregation = lowest_timeframe_reaggregation_plan(effective_config)?;
+    let source_candles =
+        source_candles_for_timeframe(source, effective_config, reaggregation.source_timeframe)?;
+    if source_candles.is_empty() {
+        return Err(anyhow!(
+            "monte_carlo::lowest_timeframe_ohlc_noise smallest timeframe {} source series contains no candles; cannot support reaggregation",
+            reaggregation.source_timeframe
+        ));
+    }
+
+    let source_role = format!("source {}", reaggregation.source_timeframe);
+    let mutated_source = apply_ohlc_noise_to_candles(source_candles, config, seed, &source_role)?;
+    let mut primary = None;
+    let mut secondary = Vec::with_capacity(effective_config.secondary_timeframes.len());
+
+    for timeframe in configured_timeframes_for_reaggregation(effective_config) {
+        let candles = if timeframe == reaggregation.source_timeframe {
+            mutated_source.clone()
+        } else {
+            let target_slots = source_candles_for_timeframe(source, effective_config, timeframe)?;
+            reaggregate_timeframe_from_lowest(
+                &mutated_source,
+                target_slots,
+                &effective_config.runtime_asset,
+                reaggregation.source_timeframe,
+                timeframe,
+            )?
+        };
+
+        if timeframe == effective_config.primary_timeframe {
+            primary = Some(candles);
+        } else {
+            secondary.push(HistoricalCandleSeries { timeframe, candles });
+        }
+    }
+
+    Ok(HistoricalMarketData::with_secondary(
+        primary.expect("configured timeframe set should include the Primary Timeframe"),
+        secondary,
+    ))
+}
+
+fn source_candles_for_timeframe<'a>(
+    source: &'a HistoricalMarketData,
+    effective_config: &RuntimeConfig,
+    timeframe: Timeframe,
+) -> Result<&'a [Candle]> {
+    if timeframe == effective_config.primary_timeframe {
+        return Ok(&source.primary);
+    }
+
+    source
+        .secondary
+        .iter()
+        .find(|series| series.timeframe == timeframe)
+        .map(|series| series.candles.as_slice())
+        .ok_or_else(|| {
+            anyhow!(
+                "monte_carlo::lowest_timeframe_ohlc_noise source market data is missing configured timeframe {timeframe}"
+            )
+        })
+}
+
+fn reaggregate_timeframe_from_lowest(
+    source_candles: &[Candle],
+    target_slots: &[Candle],
+    runtime_asset: &str,
+    source_timeframe: Timeframe,
+    target_timeframe: Timeframe,
+) -> Result<Vec<Candle>> {
+    if target_timeframe.duration_ms() <= source_timeframe.duration_ms() {
+        return Err(anyhow!(
+            "monte_carlo::lowest_timeframe_ohlc_noise can only reaggregate from smaller to larger timeframes; got source {source_timeframe} and target {target_timeframe}"
+        ));
+    }
+
+    let mut source_sorted = source_candles.to_vec();
+    source_sorted.sort_by_key(|candle| candle.timestamp);
+    let source_role = format!("source {source_timeframe}");
+    for candle in &source_sorted {
+        if candle.timeframe != source_timeframe {
+            return Err(anyhow!(
+                "monte_carlo::lowest_timeframe_ohlc_noise source series for {source_timeframe} contains candle with timeframe {}",
+                candle.timeframe
+            ));
+        }
+        validate_synthetic_candle_values(
+            candle,
+            "monte_carlo::lowest_timeframe_ohlc_noise",
+            &source_role,
+        )?;
+    }
+
+    let mut slots = target_slots.to_vec();
+    slots.sort_by_key(|candle| candle.timestamp);
+    for slot in &slots {
+        if slot.timeframe != target_timeframe {
+            return Err(anyhow!(
+                "monte_carlo::lowest_timeframe_ohlc_noise target slot series for {target_timeframe} contains candle with timeframe {}",
+                slot.timeframe
+            ));
+        }
+    }
+
+    let mut regenerated = Vec::with_capacity(slots.len());
+    let target_duration = target_timeframe.duration_ms();
+    let target_role = format!("regenerated {target_timeframe}");
+
+    for slot in slots {
+        let start_exclusive = slot.timestamp.checked_sub(target_duration).ok_or_else(|| {
+            anyhow!(
+                "monte_carlo::lowest_timeframe_ohlc_noise target {target_timeframe} candle at {} cannot compute aggregation boundary",
+                slot.timestamp
+            )
+        })?;
+        let lower_candles = source_sorted
+            .iter()
+            .filter(|candle| {
+                candle.timestamp > start_exclusive && candle.timestamp <= slot.timestamp
+            })
+            .collect::<Vec<_>>();
+
+        if lower_candles.is_empty() {
+            return Err(anyhow!(
+                "monte_carlo::lowest_timeframe_ohlc_noise cannot reaggregate {target_timeframe} candle at {}: no {source_timeframe} candles in target slot (T - D, T]",
+                slot.timestamp
+            ));
+        }
+
+        let first = lower_candles
+            .first()
+            .expect("non-empty lower candle collection should have first candle");
+        let last = lower_candles
+            .last()
+            .expect("non-empty lower candle collection should have last candle");
+        let candle = Candle {
+            timestamp: slot.timestamp,
+            symbol: runtime_asset.to_string(),
+            open: first.open,
+            high: lower_candles
+                .iter()
+                .map(|candle| candle.high)
+                .fold(f64::NEG_INFINITY, f64::max),
+            low: lower_candles
+                .iter()
+                .map(|candle| candle.low)
+                .fold(f64::INFINITY, f64::min),
+            close: last.close,
+            volume: lower_candles.iter().map(|candle| candle.volume).sum(),
+            timeframe: target_timeframe,
+        };
+        validate_synthetic_candle_values(
+            &candle,
+            "monte_carlo::lowest_timeframe_ohlc_noise",
+            &target_role,
+        )?;
+        regenerated.push(candle);
+    }
+
+    Ok(regenerated)
 }
 
 fn apply_ohlc_noise_to_market_data(
@@ -724,7 +1015,7 @@ fn apply_ohlc_noise_to_market_data(
 ) -> Result<HistoricalMarketData> {
     if !source.secondary.is_empty() {
         return Err(anyhow!(
-            "monte_carlo::ohlc_noise requires single-timeframe source market data; use the future #93 lowest-timeframe reaggregation consistency model for multi-timeframe runs"
+            "monte_carlo::ohlc_noise requires single-timeframe source market data; use #93 monte_carlo::lowest_timeframe_ohlc_noise for multi-timeframe OHLC-noise runs"
         ));
     }
 
@@ -790,7 +1081,7 @@ fn apply_log_bar_permutation_to_market_data(
 ) -> Result<HistoricalMarketData> {
     if !source.secondary.is_empty() {
         return Err(anyhow!(
-            "monte_carlo::log_bar_permutation requires single-timeframe source market data; use the future #93 lowest-timeframe reaggregation consistency model for multi-timeframe runs"
+            "monte_carlo::log_bar_permutation requires single-timeframe source market data; lowest-timeframe log-bar permutation remains future scope and is not part of #93"
         ));
     }
 
@@ -1270,6 +1561,16 @@ fn render_synthetic_monte_carlo(
     if let Some(volume_mode) = monte_carlo_volume_mode_label(&synthetic.procedure) {
         let _ = writeln!(out, "- Volume mode: {volume_mode}");
     }
+    if let Some((source_timeframe, regenerated_timeframes)) =
+        monte_carlo_reaggregation_context(&synthetic.procedure)
+    {
+        let _ = writeln!(out, "- Source timeframe: {source_timeframe}");
+        let _ = writeln!(
+            out,
+            "- Regenerated timeframes: {}",
+            format_timeframe_list(regenerated_timeframes)
+        );
+    }
     let _ = writeln!(out, "- Iterations: {}", synthetic.iterations.len());
 
     if synthetic.iterations.is_empty() {
@@ -1332,6 +1633,9 @@ fn monte_carlo_procedure_label(procedure: &MonteCarloProcedure) -> &'static str 
         MonteCarloProcedure::CandlePermutation => "Candle permutation",
         MonteCarloProcedure::OhlcNoise => "ATR-scaled OHLC noise",
         MonteCarloProcedure::LogBarPermutation { .. } => "Log-difference bar permutation",
+        MonteCarloProcedure::LowestTimeframeOhlcNoise { .. } => {
+            "Lowest-timeframe OHLC noise with higher-timeframe reaggregation"
+        }
     }
 }
 
@@ -1341,6 +1645,18 @@ fn monte_carlo_volume_mode_label(procedure: &MonteCarloProcedure) -> Option<&'st
             LogBarPermutationVolumeMode::Shuffled => "shuffled volume",
             LogBarPermutationVolumeMode::Timestamp => "timestamp volume",
         }),
+        _ => None,
+    }
+}
+
+fn monte_carlo_reaggregation_context(
+    procedure: &MonteCarloProcedure,
+) -> Option<(Timeframe, &[Timeframe])> {
+    match procedure {
+        MonteCarloProcedure::LowestTimeframeOhlcNoise {
+            source_timeframe,
+            regenerated_timeframes,
+        } => Some((*source_timeframe, regenerated_timeframes.as_slice())),
         _ => None,
     }
 }
@@ -1584,6 +1900,10 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     let mut monte_carlo_module = Module::new();
     monte_carlo_module.set_native_fn("candle_permutation", candle_permutation_monte_carlo);
     monte_carlo_module.set_native_fn("ohlc_noise", ohlc_noise_monte_carlo);
+    monte_carlo_module.set_native_fn(
+        "lowest_timeframe_ohlc_noise",
+        lowest_timeframe_ohlc_noise_monte_carlo,
+    );
     monte_carlo_module.set_native_fn("log_bar_permutation", log_bar_permutation_monte_carlo);
     rhai.register_static_module("monte_carlo", Arc::new(monte_carlo_module));
 }
@@ -1830,6 +2150,36 @@ fn ohlc_noise_monte_carlo(
 
     Ok(SyntheticPlanSpec {
         procedure: SyntheticProcedurePlanSpec::OhlcNoise(ohlc_noise_config),
+        baseline,
+        config,
+    })
+}
+
+fn lowest_timeframe_ohlc_noise_monte_carlo(
+    baseline: Dynamic,
+    config: Dynamic,
+    ohlc_noise_config: Dynamic,
+) -> std::result::Result<SyntheticPlanSpec, Box<EvalAltResult>> {
+    let baseline = baseline.try_cast::<BaselinePlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::lowest_timeframe_ohlc_noise requires a BaselineRun host object from `baseline::run(...)`",
+        )
+    })?;
+    let config = config.try_cast::<MonteCarloConfigPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::lowest_timeframe_ohlc_noise requires a MonteCarloConfig host object from `monte_carlo_config::new(...)`",
+        )
+    })?;
+    let ohlc_noise_config = ohlc_noise_config
+        .try_cast::<OhlcNoiseConfigPlanSpec>()
+        .ok_or_else(|| {
+            Box::<EvalAltResult>::from(
+                "monte_carlo::lowest_timeframe_ohlc_noise requires an OhlcNoiseConfig host object from `ohlc_noise_config::new(...)`",
+            )
+        })?;
+
+    Ok(SyntheticPlanSpec {
+        procedure: SyntheticProcedurePlanSpec::LowestTimeframeOhlcNoise(ohlc_noise_config),
         baseline,
         config,
     })
@@ -3023,6 +3373,281 @@ fn plan() {
     }
 
     #[test]
+    fn lowest_timeframe_ohlc_noise_plan_runs_runtime_backed_iterations_with_primary_regenerated() {
+        let primary = Timeframe::hours(1);
+        let source = Timeframe::minutes(1);
+        let start = day(1);
+        let report = execute_plan(
+            r#"
+const M1 = timeframe("1m");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1h"))
+        .with_secondary(secondary::optional(M1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#,
+            r#"
+fn plan() {
+    let dataset = dataset::load(
+        "AAPL",
+        time("2020-01-01T00:00:00Z"),
+        time("2020-01-01T03:00:00Z")
+    );
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::lowest_timeframe_ohlc_noise(
+        baseline,
+        monte_carlo_config::new(2, 42),
+        ohlc_noise_config::new(0.0, 0.25).with_atr_period(2)
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("baseline vs lowest timeframe OHLC noise")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, request| {
+                Ok(match (timeframe, request) {
+                    (tf, DatasetCandleRequest::Range { .. }) if tf == primary => vec![
+                        candle_for(symbol, primary, start, 100.0),
+                        candle_for(symbol, primary, start + 3_600_000, 101.0),
+                        candle_for(symbol, primary, start + 7_200_000, 102.0),
+                    ],
+                    (tf, DatasetCandleRequest::Range { .. }) if tf == source => vec![
+                        candle_for(symbol, source, start, 200.0),
+                        candle_for(symbol, source, start + 60_000, 201.0),
+                        candle_for(symbol, source, start + 3_600_000, 202.0),
+                        candle_for(symbol, source, start + 7_200_000, 203.0),
+                    ],
+                    _ => Vec::new(),
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.tests[0].interval, "1h");
+        let synthetic = report.tests[0]
+            .synthetic
+            .as_ref()
+            .expect("test should include a synthetic Monte Carlo result");
+        assert_eq!(
+            synthetic.procedure,
+            MonteCarloProcedure::LowestTimeframeOhlcNoise {
+                source_timeframe: source,
+                regenerated_timeframes: vec![primary],
+            }
+        );
+        assert_eq!(synthetic.iterations.len(), 2);
+        assert_eq!(
+            synthetic.iterations[0].seed,
+            derive_monte_carlo_seed(42, 0, 0, OHLC_NOISE_PROCEDURE_ID)
+        );
+        assert_ne!(synthetic.iterations[0].seed, synthetic.iterations[1].seed);
+        assert_eq!(synthetic.iterations[0].final_equity, 10000.0);
+        assert_eq!(synthetic.iterations[0].trade_count, 0);
+
+        let markdown = render_markdown(&report, "strategies/test.rhai");
+        assert!(markdown.contains(
+            "- Procedure: Lowest-timeframe OHLC noise with higher-timeframe reaggregation"
+        ));
+        assert!(markdown.contains("- Source timeframe: 1m"));
+        assert!(markdown.contains("- Regenerated timeframes: 1h"));
+    }
+
+    #[test]
+    fn lowest_timeframe_reaggregation_uses_target_boundaries_and_allows_partial_blocks() {
+        fn ohlcv(
+            timestamp: i64,
+            timeframe: Timeframe,
+            open: f64,
+            high: f64,
+            low: f64,
+            close: f64,
+            volume: f64,
+        ) -> Candle {
+            Candle {
+                timestamp,
+                symbol: "AAPL".to_string(),
+                open,
+                high,
+                low,
+                close,
+                volume,
+                timeframe,
+            }
+        }
+
+        let lower = Timeframe::minutes(1);
+        let higher = Timeframe::hours(1);
+        let target_ts = day(1) + 3_600_000;
+        let lower_candles = vec![
+            ohlcv(target_ts - 3_600_000, lower, 1.0, 100.0, 1.0, 1.0, 10.0),
+            ohlcv(target_ts - 60_000, lower, 20.0, 25.0, 15.0, 21.0, 2.0),
+            ohlcv(target_ts, lower, 30.0, 35.0, 29.0, 34.0, 3.0),
+        ];
+        let target_slots = vec![candle_for("OLD", higher, target_ts, 999.0)];
+
+        let regenerated =
+            reaggregate_timeframe_from_lowest(&lower_candles, &target_slots, "AAPL", lower, higher)
+                .unwrap();
+
+        assert_eq!(regenerated.len(), 1);
+        let candle = &regenerated[0];
+        assert_eq!(candle.timestamp, target_ts);
+        assert_eq!(candle.symbol, "AAPL");
+        assert_eq!(candle.timeframe, higher);
+        assert_eq!(candle.open, 20.0);
+        assert_eq!(candle.high, 35.0);
+        assert_eq!(candle.low, 15.0);
+        assert_eq!(candle.close, 34.0);
+        assert_eq!(candle.volume, 5.0);
+        assert!(candle.high >= candle.open.max(candle.close));
+        assert!(candle.low <= candle.open.min(candle.close));
+    }
+
+    #[test]
+    fn lowest_timeframe_reaggregation_fails_when_target_slot_has_no_lower_candles() {
+        let lower = Timeframe::minutes(1);
+        let higher = Timeframe::hours(1);
+        let target_ts = day(1) + 3_600_000;
+        let lower_candles = vec![candle_for("AAPL", lower, target_ts - 3_600_000, 100.0)];
+        let target_slots = vec![candle_for("AAPL", higher, target_ts, 200.0)];
+
+        let err =
+            reaggregate_timeframe_from_lowest(&lower_candles, &target_slots, "AAPL", lower, higher)
+                .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("monte_carlo::lowest_timeframe_ohlc_noise"));
+        assert!(msg.contains("no 1m candles"));
+        assert!(msg.contains("(T - D, T]"));
+    }
+
+    #[test]
+    fn lowest_timeframe_reaggregation_rejects_single_and_ambiguous_smallest_configs() {
+        let single_err = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-05"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::lowest_timeframe_ohlc_noise(
+        baseline,
+        monte_carlo_config::new(1, 42),
+        ohlc_noise_config::new(0.0, 0.25).with_atr_period(2)
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("single timeframe")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, _request| {
+                Ok(candles()
+                    .into_iter()
+                    .map(|mut candle| {
+                        candle.symbol = symbol.to_string();
+                        candle.timeframe = timeframe;
+                        candle
+                    })
+                    .collect())
+            },
+        )
+        .unwrap_err();
+        assert!(single_err
+            .to_string()
+            .contains("at least two configured timeframes"));
+        assert!(single_err.to_string().contains("#90"));
+        assert!(single_err.to_string().contains("monte_carlo::ohlc_noise"));
+
+        let ambiguous = RuntimeConfig::with_secondary_configs(
+            "AAPL",
+            Timeframe::minutes(60),
+            [trading_runtime::SecondaryTimeframeConfig::optional(
+                Timeframe::hours(1),
+                0,
+            )],
+        );
+        let ambiguous_err = lowest_timeframe_reaggregation_plan(&ambiguous).unwrap_err();
+        assert!(ambiguous_err
+            .to_string()
+            .contains("unique smallest configured timeframe"));
+        assert!(ambiguous_err.to_string().contains("60m"));
+        assert!(ambiguous_err.to_string().contains("1h"));
+    }
+
+    #[test]
+    fn lowest_timeframe_ohlc_noise_regenerates_secondary_deterministically() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let target_ts = day(1) + 3_600_000;
+        let source = HistoricalMarketData::with_secondary(
+            vec![
+                candle_for("AAPL", primary, day(1), 100.0),
+                candle_for("AAPL", primary, day(1) + 60_000, 101.0),
+                candle_for("AAPL", primary, day(1) + 120_000, 102.0),
+                candle_for("AAPL", primary, target_ts, 103.0),
+            ],
+            [HistoricalCandleSeries {
+                timeframe: secondary,
+                candles: vec![candle_for("OLD", secondary, target_ts, 999.0)],
+            }],
+        );
+        let config = RuntimeConfig::with_secondary_configs(
+            "AAPL",
+            primary,
+            [trading_runtime::SecondaryTimeframeConfig::optional(
+                secondary, 0,
+            )],
+        );
+        let noise = OhlcNoiseConfigPlanSpec {
+            mutation_probability: 1.0,
+            max_atr_change: 0.25,
+            atr_period: 1,
+        };
+        let seed = derive_monte_carlo_seed(77, 0, 0, OHLC_NOISE_PROCEDURE_ID);
+
+        let synthetic =
+            apply_lowest_timeframe_ohlc_noise_to_market_data(&source, &config, &noise, seed)
+                .unwrap();
+        let synthetic_again =
+            apply_lowest_timeframe_ohlc_noise_to_market_data(&source, &config, &noise, seed)
+                .unwrap();
+        let expected_secondary = reaggregate_timeframe_from_lowest(
+            &synthetic.primary,
+            &source.secondary[0].candles,
+            "AAPL",
+            primary,
+            secondary,
+        )
+        .unwrap();
+
+        assert_eq!(synthetic.primary, synthetic_again.primary);
+        assert_eq!(
+            synthetic.secondary[0].candles,
+            synthetic_again.secondary[0].candles
+        );
+        assert_eq!(synthetic.secondary[0].timeframe, secondary);
+        assert_eq!(synthetic.secondary[0].candles, expected_secondary);
+        assert!(synthetic.primary.iter().all(|candle| {
+            candle.symbol == "AAPL"
+                && candle.timeframe == primary
+                && candle.high >= candle.open.max(candle.close)
+                && candle.low <= candle.open.min(candle.close)
+        }));
+    }
+
+    #[test]
     fn log_bar_permutation_reconstructs_from_anchor_and_shuffles_whole_tuples() {
         let source = log_bar_source_candles();
         let config = LogBarPermutationConfigPlanSpec::new();
@@ -3650,7 +4275,7 @@ fn plan() {
     }
 
     #[test]
-    fn ohlc_noise_rejects_multi_timeframe_configs_until_reaggregation_issue_93() {
+    fn ohlc_noise_rejects_multi_timeframe_configs_in_favor_of_lowest_timeframe_procedure() {
         let primary = Timeframe::minutes(1);
         let secondary = Timeframe::hours(1);
         let err = execute_plan(
@@ -3703,7 +4328,7 @@ fn plan() {
     }
 
     #[test]
-    fn log_bar_permutation_rejects_multi_timeframe_configs_until_reaggregation_issue_93() {
+    fn log_bar_permutation_rejects_multi_timeframe_configs_without_log_bar_reaggregation() {
         let primary = Timeframe::minutes(1);
         let secondary = Timeframe::hours(1);
         let err = execute_plan(

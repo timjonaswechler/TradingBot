@@ -89,6 +89,7 @@ Current plan-facing constructors/functions:
 - `ohlc_noise_config::new(mutation_probability, max_atr_change)`
 - `ohlc_noise_config::new(...).with_atr_period(period)`
 - `monte_carlo::ohlc_noise(baseline, config, ohlc_noise_config)`
+- `monte_carlo::lowest_timeframe_ohlc_noise(baseline, config, ohlc_noise_config)`
 - `log_bar_permutation_config::new()`
 - `log_bar_permutation_config::new().with_shuffled_volume()`
 - `log_bar_permutation_config::new().with_timestamp_volume()`
@@ -147,9 +148,12 @@ Each test section includes the baseline Runtime-backed metrics:
 Synthetic Market Data Monte Carlo tests add a comparison section:
 
 - `Procedure` identifies the mutation procedure, such as `Candle permutation`,
-  `ATR-scaled OHLC noise`, or `Log-difference bar permutation`.
+  `ATR-scaled OHLC noise`, `Log-difference bar permutation`, or
+  `Lowest-timeframe OHLC noise with higher-timeframe reaggregation`.
 - Log-difference bar permutation reports also show `Volume mode` as either
   `shuffled volume` or `timestamp volume`.
+- Lowest-timeframe reaggregation reports also show the source timeframe and the
+  regenerated larger timeframes.
 - `Iterations` is the number declared in `monte_carlo_config::new(...)`.
 - The metric table compares baseline final equity and max drawdown against
   synthetic p5, p50, and p95 values.
@@ -179,19 +183,21 @@ full strategy against each synthetic candle path. Currently available procedures
 - #90 ATR-scaled OHLC noise — mutates single-timeframe OHLC values by per-candle
   probability and maximum ATR-scaled change, repairs OHLC ranges to contain the
   mutated body, and leaves identity fields plus volume unchanged. This procedure
-  is intentionally single-timeframe only; multi-timeframe consistency is reserved
-  for #93 lowest-timeframe reaggregation.
+  is intentionally single-timeframe only; use #93 for multi-timeframe OHLC-noise
+  consistency.
 - #91 log-difference bar permutation — keeps the first candle as a deterministic
   anchor, shuffles whole log-difference bar tuples, reconstructs a synthetic
   single-timeframe OHLC path, repairs OHLC ranges, and can either shuffle volume
-  with each tuple or keep volume attached to each timestamp slot. This procedure
-  is intentionally single-timeframe only; multi-timeframe consistency is reserved
-  for #93 lowest-timeframe reaggregation.
+  with each tuple or keep volume attached to each timestamp slot. Multi-timeframe
+  log-bar permutation remains future scope.
+- #93 lowest-timeframe OHLC noise with higher-timeframe reaggregation — mutates
+  the smallest configured timeframe with the #90 OHLC-noise rules, then
+  regenerates every larger configured timeframe from that source path by
+  deterministic OHLCV aggregation before Runtime-backed replay.
 
 Future Synthetic Market Data mutation issues remain separate and are not
 available yet:
 
-- #93 — regenerate higher timeframes from a mutated lowest timeframe
 - #94 — composed Synthetic Market Data mutation pipelines
 
 Trade-order resampling (#95) is a different future analysis. It operates on a
