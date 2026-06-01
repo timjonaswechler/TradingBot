@@ -144,6 +144,22 @@ _Avoid_: Candle argument when multiple timeframes are meant
 The strategy-facing view of Market State and market-derived structure outputs. A Market View exposes the current Primary Timeframe candle by default, can expose latest known completed Secondary-Timeframe candles when requested, and may expose anchored/structure-aware outputs derived from market history. Market View candle histories keep the existing strategy-facing convention that index 1 is the newest visible candle and higher indexes move backward in that timeframe. If an optional Secondary Timeframe is unavailable, the corresponding Market View access returns no value; if a required Secondary Timeframe is unavailable, the Strategy Tick is blocked before strategy evaluation.
 _Avoid_: Context when market data is meant
 
+**Market Structure Point**:
+A market-derived point that describes chart structure, such as a confirmed pivot high, pivot low, swing high, or swing low. Market Structure Points are observations about Market State; they are not Strategy Decisions, Portfolio State, or Strategy State.
+_Avoid_: Position, Strategy State, Portfolio State
+
+**Structure Anchor**:
+A Market Structure Point selected for building or evaluating a higher-level structure object. A Structure Anchor is the selected input point, not the whole structure model and not necessarily a manually drawn chart object.
+_Avoid_: Market Structure when only the selected point is meant
+
+**Structure Object**:
+A market-derived construct built from one or more Structure Anchors or Market Structure Points, such as a trendline, Fibonacci retracement, or support/resistance level. A Structure Object can be active, invalidated, replaced, or historical, but it is distinct from Strategy State and Portfolio State.
+_Avoid_: Indicator when the object has anchor/structure lifecycle semantics
+
+**Structure Annotation**:
+An explanatory record that a Market Structure Point, Structure Anchor, or Structure Object was detected, selected, created, touched, invalidated, or replaced. Structure Annotations support later charting, debugging, and backtest explanation; they are not by themselves trading decisions or portfolio transitions.
+_Avoid_: Runtime Event when only chart/explanation markup is meant, Strategy Decision
+
 **Strategy Context**:
 The strategy-facing view of runtime session information that is not Market State. Strategy Context may expose Portfolio State, Strategy State access, and session metadata, but it is built by the Trading Runtime rather than by a runner.
 _Avoid_: Market View, Runner Context
