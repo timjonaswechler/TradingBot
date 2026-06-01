@@ -29,7 +29,7 @@ pub struct BaselinePlanTest {
     pub synthetic: Option<SyntheticMonteCarloReport>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MonteCarloProcedure {
     CandlePermutation,
     OhlcNoise,
@@ -39,6 +39,26 @@ pub enum MonteCarloProcedure {
     LowestTimeframeOhlcNoise {
         source_timeframe: Timeframe,
         regenerated_timeframes: Vec<Timeframe>,
+    },
+    MutationPipeline {
+        stages: Vec<MutationPipelineStageReport>,
+    },
+    LowestTimeframePipeline {
+        source_timeframe: Timeframe,
+        regenerated_timeframes: Vec<Timeframe>,
+        stages: Vec<MutationPipelineStageReport>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MutationPipelineStageReport {
+    OhlcNoise {
+        mutation_probability: f64,
+        max_atr_change: f64,
+        atr_period: usize,
+    },
+    LogBarPermutation {
+        volume_mode: LogBarPermutationVolumeMode,
     },
 }
 
@@ -54,10 +74,17 @@ pub struct SyntheticMonteCarloReport {
     pub iterations: Vec<MonteCarloIterationDiagnostics>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonteCarloStageSeedDiagnostics {
+    pub stage_number: usize,
+    pub seed: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct MonteCarloIterationDiagnostics {
     pub iteration: usize,
     pub seed: u64,
+    pub stage_seeds: Vec<MonteCarloStageSeedDiagnostics>,
     pub final_equity: f64,
     pub max_drawdown: f64,
     pub trade_count: usize,
@@ -146,11 +173,24 @@ struct LogBarPermutationConfigPlanSpec {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+struct MutationPipelinePlanSpec {
+    stages: Vec<MutationPipelineStagePlanSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum MutationPipelineStagePlanSpec {
+    OhlcNoise(OhlcNoiseConfigPlanSpec),
+    LogBarPermutation(LogBarPermutationConfigPlanSpec),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum SyntheticProcedurePlanSpec {
     CandlePermutation,
     OhlcNoise(OhlcNoiseConfigPlanSpec),
     LogBarPermutation(LogBarPermutationConfigPlanSpec),
     LowestTimeframeOhlcNoise(OhlcNoiseConfigPlanSpec),
+    MutationPipeline(MutationPipelinePlanSpec),
+    LowestTimeframePipeline(MutationPipelinePlanSpec),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -422,6 +462,7 @@ fn run_synthetic_monte_carlo(
             ensure_single_timeframe_synthetic_procedure(
                 effective_config,
                 "monte_carlo::ohlc_noise",
+                "Use #93 `monte_carlo::lowest_timeframe_ohlc_noise` for OHLC-noise multi-timeframe runs; other multi-timeframe mutation procedures remain separate future scope.",
             )?;
             let mut iterations = Vec::with_capacity(synthetic_spec.config.iterations);
 
@@ -466,6 +507,7 @@ fn run_synthetic_monte_carlo(
             ensure_single_timeframe_synthetic_procedure(
                 effective_config,
                 "monte_carlo::log_bar_permutation",
+                "Use #93 `monte_carlo::lowest_timeframe_ohlc_noise` for OHLC-noise multi-timeframe runs; other multi-timeframe mutation procedures remain separate future scope.",
             )?;
             let primary_warmup_requirement = warmup_plan
                 .requirement_for(effective_config.primary_timeframe)
@@ -563,6 +605,126 @@ fn run_synthetic_monte_carlo(
                 iterations,
             })
         }
+        SyntheticProcedurePlanSpec::MutationPipeline(pipeline) => {
+            ensure_single_timeframe_synthetic_procedure(
+                effective_config,
+                "monte_carlo::mutation_pipeline",
+                "Use `monte_carlo::lowest_timeframe_pipeline` for multi-timeframe mutation pipelines.",
+            )?;
+            let primary_warmup_requirement = warmup_plan
+                .requirement_for(effective_config.primary_timeframe)
+                .unwrap_or(0);
+            let stages = pipeline_stage_reports(pipeline);
+            let mut iterations = Vec::with_capacity(synthetic_spec.config.iterations);
+
+            for iteration_index in 0..synthetic_spec.config.iterations {
+                let seed = derive_monte_carlo_seed(
+                    synthetic_spec.config.base_seed,
+                    iteration_index,
+                    0,
+                    MUTATION_PIPELINE_PROCEDURE_ID,
+                );
+                let stage_seeds = pipeline_stage_seed_diagnostics(
+                    synthetic_spec.config.base_seed,
+                    iteration_index,
+                    pipeline,
+                );
+                let synthetic_market_data = apply_mutation_pipeline_to_market_data(
+                    source_market_data,
+                    pipeline,
+                    &stage_seeds,
+                    primary_warmup_requirement,
+                    "monte_carlo::mutation_pipeline",
+                )?;
+                let strategy = RhaiStrategy::load(strategy_src)?;
+                let runtime_result = run_prepared_runtime_backtest(
+                    strategy,
+                    effective_config.clone(),
+                    warmup_plan.clone(),
+                    synthetic_market_data,
+                    initial_balance,
+                )?;
+
+                if runtime_result.result.equity_curve.is_empty() {
+                    return Err(anyhow!(
+                        "monte_carlo::mutation_pipeline iteration {} produced no tradable candles",
+                        iteration_index + 1
+                    ));
+                }
+
+                iterations.push(iteration_diagnostics_with_stage_seeds(
+                    iteration_index + 1,
+                    seed,
+                    stage_seeds,
+                    &runtime_result,
+                ));
+            }
+
+            Ok(SyntheticMonteCarloReport {
+                procedure: MonteCarloProcedure::MutationPipeline { stages },
+                iterations,
+            })
+        }
+        SyntheticProcedurePlanSpec::LowestTimeframePipeline(pipeline) => {
+            let reaggregation = lowest_timeframe_pipeline_reaggregation_plan(effective_config)?;
+            let source_warmup_requirement = warmup_plan
+                .requirement_for(reaggregation.source_timeframe)
+                .unwrap_or(0);
+            let stages = pipeline_stage_reports(pipeline);
+            let mut iterations = Vec::with_capacity(synthetic_spec.config.iterations);
+
+            for iteration_index in 0..synthetic_spec.config.iterations {
+                let seed = derive_monte_carlo_seed(
+                    synthetic_spec.config.base_seed,
+                    iteration_index,
+                    0,
+                    LOWEST_TIMEFRAME_PIPELINE_PROCEDURE_ID,
+                );
+                let stage_seeds = pipeline_stage_seed_diagnostics(
+                    synthetic_spec.config.base_seed,
+                    iteration_index,
+                    pipeline,
+                );
+                let synthetic_market_data = apply_lowest_timeframe_pipeline_to_market_data(
+                    source_market_data,
+                    effective_config,
+                    pipeline,
+                    &stage_seeds,
+                    source_warmup_requirement,
+                )?;
+                let strategy = RhaiStrategy::load(strategy_src)?;
+                let runtime_result = run_prepared_runtime_backtest(
+                    strategy,
+                    effective_config.clone(),
+                    warmup_plan.clone(),
+                    synthetic_market_data,
+                    initial_balance,
+                )?;
+
+                if runtime_result.result.equity_curve.is_empty() {
+                    return Err(anyhow!(
+                        "monte_carlo::lowest_timeframe_pipeline iteration {} produced no tradable candles",
+                        iteration_index + 1
+                    ));
+                }
+
+                iterations.push(iteration_diagnostics_with_stage_seeds(
+                    iteration_index + 1,
+                    seed,
+                    stage_seeds,
+                    &runtime_result,
+                ));
+            }
+
+            Ok(SyntheticMonteCarloReport {
+                procedure: MonteCarloProcedure::LowestTimeframePipeline {
+                    source_timeframe: reaggregation.source_timeframe,
+                    regenerated_timeframes: reaggregation.regenerated_timeframes,
+                    stages,
+                },
+                iterations,
+            })
+        }
     }
 }
 
@@ -571,10 +733,20 @@ fn iteration_diagnostics(
     seed: u64,
     runtime_result: &RuntimeBacktestResult,
 ) -> MonteCarloIterationDiagnostics {
+    iteration_diagnostics_with_stage_seeds(iteration, seed, Vec::new(), runtime_result)
+}
+
+fn iteration_diagnostics_with_stage_seeds(
+    iteration: usize,
+    seed: u64,
+    stage_seeds: Vec<MonteCarloStageSeedDiagnostics>,
+    runtime_result: &RuntimeBacktestResult,
+) -> MonteCarloIterationDiagnostics {
     let counters = RuntimeEventCounters::from_steps(&runtime_result.steps);
     MonteCarloIterationDiagnostics {
         iteration,
         seed,
+        stage_seeds,
         final_equity: runtime_result.result.metrics.final_equity,
         max_drawdown: runtime_result.result.metrics.max_drawdown,
         trade_count: runtime_result.result.metrics.trade_count,
@@ -618,6 +790,8 @@ impl RuntimeEventCounters {
 const CANDLE_PERMUTATION_PROCEDURE_ID: u64 = 0x4341_4e44_4c45_5031; // "CANDLEP1"
 const OHLC_NOISE_PROCEDURE_ID: u64 = 0x4f48_4c43_4e4f_4931; // "OHLCNOI1"
 const LOG_BAR_PERMUTATION_PROCEDURE_ID: u64 = 0x4c4f_4742_4152_5031; // "LOGBARP1"
+const MUTATION_PIPELINE_PROCEDURE_ID: u64 = 0x5049_5045_4c49_4e31; // "PIPELIN1"
+const LOWEST_TIMEFRAME_PIPELINE_PROCEDURE_ID: u64 = 0x4c54_4650_4950_4531; // "LTFPIPE1"
 const DEFAULT_OHLC_NOISE_ATR_PERIOD: usize = 14;
 const SPLITMIX64_INCREMENT: u64 = 0x9e37_79b9_7f4a_7c15;
 
@@ -687,6 +861,57 @@ impl SplitMix64 {
 
     fn next_centered_f64(&mut self) -> f64 {
         self.next_unit_f64() * 2.0 - 1.0
+    }
+}
+
+fn pipeline_stage_reports(pipeline: &MutationPipelinePlanSpec) -> Vec<MutationPipelineStageReport> {
+    pipeline
+        .stages
+        .iter()
+        .map(|stage| match stage {
+            MutationPipelineStagePlanSpec::OhlcNoise(config) => {
+                MutationPipelineStageReport::OhlcNoise {
+                    mutation_probability: config.mutation_probability,
+                    max_atr_change: config.max_atr_change,
+                    atr_period: config.atr_period,
+                }
+            }
+            MutationPipelineStagePlanSpec::LogBarPermutation(config) => {
+                MutationPipelineStageReport::LogBarPermutation {
+                    volume_mode: config.volume_mode,
+                }
+            }
+        })
+        .collect()
+}
+
+fn pipeline_stage_seed_diagnostics(
+    base_seed: u64,
+    iteration_index: usize,
+    pipeline: &MutationPipelinePlanSpec,
+) -> Vec<MonteCarloStageSeedDiagnostics> {
+    pipeline
+        .stages
+        .iter()
+        .enumerate()
+        .map(|(stage_index, stage)| MonteCarloStageSeedDiagnostics {
+            stage_number: stage_index + 1,
+            seed: derive_monte_carlo_seed(
+                base_seed,
+                iteration_index,
+                stage_index,
+                stage.procedure_id(),
+            ),
+        })
+        .collect()
+}
+
+impl MutationPipelineStagePlanSpec {
+    fn procedure_id(&self) -> u64 {
+        match self {
+            MutationPipelineStagePlanSpec::OhlcNoise(_) => OHLC_NOISE_PROCEDURE_ID,
+            MutationPipelineStagePlanSpec::LogBarPermutation(_) => LOG_BAR_PERMUTATION_PROCEDURE_ID,
+        }
     }
 }
 
@@ -760,12 +985,13 @@ fn validate_ohlc_invariants(candle: &Candle, role: &str) -> Result<()> {
 fn ensure_single_timeframe_synthetic_procedure(
     effective_config: &RuntimeConfig,
     procedure_name: &str,
+    multi_timeframe_guidance: &str,
 ) -> Result<()> {
     if effective_config.secondary_timeframes.is_empty() {
         Ok(())
     } else {
         Err(anyhow!(
-            "{procedure_name} is single-timeframe only; RuntimeConfig contains Secondary Timeframes. Use #93 `monte_carlo::lowest_timeframe_ohlc_noise` for OHLC-noise multi-timeframe runs; other multi-timeframe mutation procedures remain separate future scope."
+            "{procedure_name} is single-timeframe only; RuntimeConfig contains Secondary Timeframes. {multi_timeframe_guidance}"
         ))
     }
 }
@@ -779,10 +1005,32 @@ struct LowestTimeframeReaggregationPlan {
 fn lowest_timeframe_reaggregation_plan(
     effective_config: &RuntimeConfig,
 ) -> Result<LowestTimeframeReaggregationPlan> {
+    lowest_timeframe_reaggregation_plan_for(
+        effective_config,
+        "monte_carlo::lowest_timeframe_ohlc_noise",
+        "#90 monte_carlo::ohlc_noise",
+    )
+}
+
+fn lowest_timeframe_pipeline_reaggregation_plan(
+    effective_config: &RuntimeConfig,
+) -> Result<LowestTimeframeReaggregationPlan> {
+    lowest_timeframe_reaggregation_plan_for(
+        effective_config,
+        "monte_carlo::lowest_timeframe_pipeline",
+        "monte_carlo::mutation_pipeline",
+    )
+}
+
+fn lowest_timeframe_reaggregation_plan_for(
+    effective_config: &RuntimeConfig,
+    procedure_name: &str,
+    single_timeframe_alternative: &str,
+) -> Result<LowestTimeframeReaggregationPlan> {
     let configured_timeframes = configured_timeframes_for_reaggregation(effective_config);
     if configured_timeframes.len() < 2 {
         return Err(anyhow!(
-            "monte_carlo::lowest_timeframe_ohlc_noise requires at least two configured timeframes; use #90 monte_carlo::ohlc_noise for single-timeframe OHLC-noise runs"
+            "{procedure_name} requires at least two configured timeframes; use {single_timeframe_alternative} for single-timeframe runs"
         ));
     }
 
@@ -799,7 +1047,7 @@ fn lowest_timeframe_reaggregation_plan(
 
     if smallest_timeframes.len() != 1 {
         return Err(anyhow!(
-            "monte_carlo::lowest_timeframe_ohlc_noise cannot choose a unique smallest configured timeframe; {} share duration {}ms",
+            "{procedure_name} cannot choose a unique smallest configured timeframe; {} share duration {}ms",
             format_timeframe_list(&smallest_timeframes),
             smallest_duration
         ));
@@ -893,6 +1141,20 @@ fn source_candles_for_timeframe<'a>(
     effective_config: &RuntimeConfig,
     timeframe: Timeframe,
 ) -> Result<&'a [Candle]> {
+    source_candles_for_timeframe_for_procedure(
+        source,
+        effective_config,
+        timeframe,
+        "monte_carlo::lowest_timeframe_ohlc_noise",
+    )
+}
+
+fn source_candles_for_timeframe_for_procedure<'a>(
+    source: &'a HistoricalMarketData,
+    effective_config: &RuntimeConfig,
+    timeframe: Timeframe,
+    procedure_name: &str,
+) -> Result<&'a [Candle]> {
     if timeframe == effective_config.primary_timeframe {
         return Ok(&source.primary);
     }
@@ -904,7 +1166,7 @@ fn source_candles_for_timeframe<'a>(
         .map(|series| series.candles.as_slice())
         .ok_or_else(|| {
             anyhow!(
-                "monte_carlo::lowest_timeframe_ohlc_noise source market data is missing configured timeframe {timeframe}"
+                "{procedure_name} source market data is missing configured timeframe {timeframe}"
             )
         })
 }
@@ -916,9 +1178,27 @@ fn reaggregate_timeframe_from_lowest(
     source_timeframe: Timeframe,
     target_timeframe: Timeframe,
 ) -> Result<Vec<Candle>> {
+    reaggregate_timeframe_from_lowest_for_procedure(
+        source_candles,
+        target_slots,
+        runtime_asset,
+        source_timeframe,
+        target_timeframe,
+        "monte_carlo::lowest_timeframe_ohlc_noise",
+    )
+}
+
+fn reaggregate_timeframe_from_lowest_for_procedure(
+    source_candles: &[Candle],
+    target_slots: &[Candle],
+    runtime_asset: &str,
+    source_timeframe: Timeframe,
+    target_timeframe: Timeframe,
+    procedure_name: &str,
+) -> Result<Vec<Candle>> {
     if target_timeframe.duration_ms() <= source_timeframe.duration_ms() {
         return Err(anyhow!(
-            "monte_carlo::lowest_timeframe_ohlc_noise can only reaggregate from smaller to larger timeframes; got source {source_timeframe} and target {target_timeframe}"
+            "{procedure_name} can only reaggregate from smaller to larger timeframes; got source {source_timeframe} and target {target_timeframe}"
         ));
     }
 
@@ -928,15 +1208,11 @@ fn reaggregate_timeframe_from_lowest(
     for candle in &source_sorted {
         if candle.timeframe != source_timeframe {
             return Err(anyhow!(
-                "monte_carlo::lowest_timeframe_ohlc_noise source series for {source_timeframe} contains candle with timeframe {}",
+                "{procedure_name} source series for {source_timeframe} contains candle with timeframe {}",
                 candle.timeframe
             ));
         }
-        validate_synthetic_candle_values(
-            candle,
-            "monte_carlo::lowest_timeframe_ohlc_noise",
-            &source_role,
-        )?;
+        validate_synthetic_candle_values(candle, procedure_name, &source_role)?;
     }
 
     let mut slots = target_slots.to_vec();
@@ -944,7 +1220,7 @@ fn reaggregate_timeframe_from_lowest(
     for slot in &slots {
         if slot.timeframe != target_timeframe {
             return Err(anyhow!(
-                "monte_carlo::lowest_timeframe_ohlc_noise target slot series for {target_timeframe} contains candle with timeframe {}",
+                "{procedure_name} target slot series for {target_timeframe} contains candle with timeframe {}",
                 slot.timeframe
             ));
         }
@@ -957,7 +1233,7 @@ fn reaggregate_timeframe_from_lowest(
     for slot in slots {
         let start_exclusive = slot.timestamp.checked_sub(target_duration).ok_or_else(|| {
             anyhow!(
-                "monte_carlo::lowest_timeframe_ohlc_noise target {target_timeframe} candle at {} cannot compute aggregation boundary",
+                "{procedure_name} target {target_timeframe} candle at {} cannot compute aggregation boundary",
                 slot.timestamp
             )
         })?;
@@ -970,7 +1246,7 @@ fn reaggregate_timeframe_from_lowest(
 
         if lower_candles.is_empty() {
             return Err(anyhow!(
-                "monte_carlo::lowest_timeframe_ohlc_noise cannot reaggregate {target_timeframe} candle at {}: no {source_timeframe} candles in target slot (T - D, T]",
+                "{procedure_name} cannot reaggregate {target_timeframe} candle at {}: no {source_timeframe} candles in target slot (T - D, T]",
                 slot.timestamp
             ));
         }
@@ -997,15 +1273,162 @@ fn reaggregate_timeframe_from_lowest(
             volume: lower_candles.iter().map(|candle| candle.volume).sum(),
             timeframe: target_timeframe,
         };
-        validate_synthetic_candle_values(
-            &candle,
-            "monte_carlo::lowest_timeframe_ohlc_noise",
-            &target_role,
-        )?;
+        validate_synthetic_candle_values(&candle, procedure_name, &target_role)?;
         regenerated.push(candle);
     }
 
     Ok(regenerated)
+}
+
+fn apply_mutation_pipeline_to_market_data(
+    source: &HistoricalMarketData,
+    pipeline: &MutationPipelinePlanSpec,
+    stage_seeds: &[MonteCarloStageSeedDiagnostics],
+    warmup_requirement: usize,
+    procedure_name: &str,
+) -> Result<HistoricalMarketData> {
+    if !source.secondary.is_empty() {
+        return Err(anyhow!(
+            "{procedure_name} requires single-timeframe source market data; use `monte_carlo::lowest_timeframe_pipeline` for multi-timeframe mutation pipelines"
+        ));
+    }
+
+    Ok(HistoricalMarketData::single_timeframe(
+        apply_mutation_pipeline_to_candles(
+            &source.primary,
+            pipeline,
+            stage_seeds,
+            warmup_requirement,
+            procedure_name,
+            "Primary",
+        )?,
+    ))
+}
+
+fn apply_lowest_timeframe_pipeline_to_market_data(
+    source: &HistoricalMarketData,
+    effective_config: &RuntimeConfig,
+    pipeline: &MutationPipelinePlanSpec,
+    stage_seeds: &[MonteCarloStageSeedDiagnostics],
+    source_warmup_requirement: usize,
+) -> Result<HistoricalMarketData> {
+    let procedure_name = "monte_carlo::lowest_timeframe_pipeline";
+    let reaggregation = lowest_timeframe_pipeline_reaggregation_plan(effective_config)?;
+    let source_candles = source_candles_for_timeframe_for_procedure(
+        source,
+        effective_config,
+        reaggregation.source_timeframe,
+        procedure_name,
+    )?;
+    if source_candles.is_empty() {
+        return Err(anyhow!(
+            "{procedure_name} smallest timeframe {} source series contains no candles; cannot support reaggregation",
+            reaggregation.source_timeframe
+        ));
+    }
+
+    let source_role = format!("source {}", reaggregation.source_timeframe);
+    let mutated_source = apply_mutation_pipeline_to_candles(
+        source_candles,
+        pipeline,
+        stage_seeds,
+        source_warmup_requirement,
+        procedure_name,
+        &source_role,
+    )?;
+    let mut primary = None;
+    let mut secondary = Vec::with_capacity(effective_config.secondary_timeframes.len());
+
+    for timeframe in configured_timeframes_for_reaggregation(effective_config) {
+        let candles = if timeframe == reaggregation.source_timeframe {
+            mutated_source.clone()
+        } else {
+            let target_slots = source_candles_for_timeframe_for_procedure(
+                source,
+                effective_config,
+                timeframe,
+                procedure_name,
+            )?;
+            reaggregate_timeframe_from_lowest_for_procedure(
+                &mutated_source,
+                target_slots,
+                &effective_config.runtime_asset,
+                reaggregation.source_timeframe,
+                timeframe,
+                procedure_name,
+            )?
+        };
+
+        if timeframe == effective_config.primary_timeframe {
+            primary = Some(candles);
+        } else {
+            secondary.push(HistoricalCandleSeries { timeframe, candles });
+        }
+    }
+
+    Ok(HistoricalMarketData::with_secondary(
+        primary.expect("configured timeframe set should include the Primary Timeframe"),
+        secondary,
+    ))
+}
+
+fn apply_mutation_pipeline_to_candles(
+    source: &[Candle],
+    pipeline: &MutationPipelinePlanSpec,
+    stage_seeds: &[MonteCarloStageSeedDiagnostics],
+    warmup_requirement: usize,
+    procedure_name: &str,
+    role: &str,
+) -> Result<Vec<Candle>> {
+    if pipeline.stages.is_empty() {
+        return Err(anyhow!(
+            "{procedure_name} requires a non-empty mutation pipeline"
+        ));
+    }
+    if stage_seeds.len() != pipeline.stages.len() {
+        return Err(anyhow!(
+            "{procedure_name} expected {} stage seeds but received {}",
+            pipeline.stages.len(),
+            stage_seeds.len()
+        ));
+    }
+
+    let mut current = source.to_vec();
+    current.sort_by_key(|candle| candle.timestamp);
+
+    for (stage_index, stage) in pipeline.stages.iter().enumerate() {
+        let seed = stage_seeds[stage_index].seed;
+        current = match stage {
+            MutationPipelineStagePlanSpec::OhlcNoise(config) => {
+                apply_ohlc_noise_to_candles(&current, config, seed, role)?
+            }
+            MutationPipelineStagePlanSpec::LogBarPermutation(config) => {
+                apply_log_bar_permutation_to_candles(
+                    &current,
+                    config,
+                    seed,
+                    warmup_requirement,
+                    role,
+                )?
+            }
+        };
+        validate_pipeline_stage_output(&current, procedure_name, role, stage_index + 1)?;
+    }
+
+    Ok(current)
+}
+
+fn validate_pipeline_stage_output(
+    candles: &[Candle],
+    procedure_name: &str,
+    role: &str,
+    stage_number: usize,
+) -> Result<()> {
+    let stage_role = format!("{role} stage {stage_number}");
+    for candle in candles {
+        validate_synthetic_candle_values(candle, procedure_name, &stage_role)?;
+    }
+    Ok(())
 }
 
 fn apply_ohlc_noise_to_market_data(
@@ -1338,6 +1761,12 @@ impl LogBarPermutationConfigPlanSpec {
     }
 }
 
+impl MutationPipelinePlanSpec {
+    fn new() -> Self {
+        Self { stages: Vec::new() }
+    }
+}
+
 fn trailing_atr_by_candle(candles: &[Candle], period: usize) -> Result<Vec<Option<f64>>> {
     if period == 0 {
         return Err(anyhow!("ATR period must be greater than zero"));
@@ -1571,6 +2000,17 @@ fn render_synthetic_monte_carlo(
             format_timeframe_list(regenerated_timeframes)
         );
     }
+    if let Some(stages) = monte_carlo_pipeline_stages(&synthetic.procedure) {
+        let _ = writeln!(out, "- Stages:");
+        for (index, stage) in stages.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "  {}. {}",
+                index + 1,
+                mutation_pipeline_stage_label(stage)
+            );
+        }
+    }
     let _ = writeln!(out, "- Iterations: {}", synthetic.iterations.len());
 
     if synthetic.iterations.is_empty() {
@@ -1606,25 +2046,53 @@ fn render_synthetic_monte_carlo(
     let _ = writeln!(out);
     let _ = writeln!(out, "#### Reduced iteration diagnostics");
     let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "| Iteration | Seed | Final equity | Max drawdown | Trades | Blocked Strategy Ticks | Strategy Exits | Risk Exits | Force Closes |"
-    );
-    let _ = writeln!(out, "|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
-    for iteration in &synthetic.iterations {
+    let include_stage_seeds = synthetic
+        .iterations
+        .iter()
+        .any(|iteration| !iteration.stage_seeds.is_empty());
+    if include_stage_seeds {
         let _ = writeln!(
             out,
-            "| {} | {} | {:.2} | {:.2} | {} | {} | {} | {} | {} |",
-            iteration.iteration,
-            iteration.seed,
-            iteration.final_equity,
-            iteration.max_drawdown,
-            iteration.trade_count,
-            iteration.blocked_strategy_tick_count,
-            iteration.strategy_exit_count,
-            iteration.risk_exit_count,
-            iteration.force_close_count,
+            "| Iteration | Seed | Stage seeds | Final equity | Max drawdown | Trades | Blocked Strategy Ticks | Strategy Exits | Risk Exits | Force Closes |"
         );
+        let _ = writeln!(out, "|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|");
+        for iteration in &synthetic.iterations {
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {:.2} | {:.2} | {} | {} | {} | {} | {} |",
+                iteration.iteration,
+                iteration.seed,
+                format_stage_seeds(&iteration.stage_seeds),
+                iteration.final_equity,
+                iteration.max_drawdown,
+                iteration.trade_count,
+                iteration.blocked_strategy_tick_count,
+                iteration.strategy_exit_count,
+                iteration.risk_exit_count,
+                iteration.force_close_count,
+            );
+        }
+    } else {
+        let _ = writeln!(
+            out,
+            "| Iteration | Seed | Final equity | Max drawdown | Trades | Blocked Strategy Ticks | Strategy Exits | Risk Exits | Force Closes |"
+        );
+        let _ = writeln!(out, "|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        for iteration in &synthetic.iterations {
+            let _ = writeln!(
+                out,
+                "| {} | {} | {:.2} | {:.2} | {} | {} | {} | {} | {} |",
+                iteration.iteration,
+                iteration.seed,
+                iteration.final_equity,
+                iteration.max_drawdown,
+                iteration.trade_count,
+                iteration.blocked_strategy_tick_count,
+                iteration.strategy_exit_count,
+                iteration.risk_exit_count,
+                iteration.force_close_count,
+            );
+        }
     }
 }
 
@@ -1636,15 +2104,20 @@ fn monte_carlo_procedure_label(procedure: &MonteCarloProcedure) -> &'static str 
         MonteCarloProcedure::LowestTimeframeOhlcNoise { .. } => {
             "Lowest-timeframe OHLC noise with higher-timeframe reaggregation"
         }
+        MonteCarloProcedure::MutationPipeline { .. } => {
+            "Synthetic Market Data mutation pipeline"
+        }
+        MonteCarloProcedure::LowestTimeframePipeline { .. } => {
+            "Lowest-timeframe Synthetic Market Data mutation pipeline with higher-timeframe reaggregation"
+        }
     }
 }
 
 fn monte_carlo_volume_mode_label(procedure: &MonteCarloProcedure) -> Option<&'static str> {
     match procedure {
-        MonteCarloProcedure::LogBarPermutation { volume_mode } => Some(match volume_mode {
-            LogBarPermutationVolumeMode::Shuffled => "shuffled volume",
-            LogBarPermutationVolumeMode::Timestamp => "timestamp volume",
-        }),
+        MonteCarloProcedure::LogBarPermutation { volume_mode } => {
+            Some(log_bar_volume_mode_label(*volume_mode))
+        }
         _ => None,
     }
 }
@@ -1656,9 +2129,63 @@ fn monte_carlo_reaggregation_context(
         MonteCarloProcedure::LowestTimeframeOhlcNoise {
             source_timeframe,
             regenerated_timeframes,
+        }
+        | MonteCarloProcedure::LowestTimeframePipeline {
+            source_timeframe,
+            regenerated_timeframes,
+            ..
         } => Some((*source_timeframe, regenerated_timeframes.as_slice())),
         _ => None,
     }
+}
+
+fn monte_carlo_pipeline_stages(
+    procedure: &MonteCarloProcedure,
+) -> Option<&[MutationPipelineStageReport]> {
+    match procedure {
+        MonteCarloProcedure::MutationPipeline { stages }
+        | MonteCarloProcedure::LowestTimeframePipeline { stages, .. } => Some(stages.as_slice()),
+        _ => None,
+    }
+}
+
+fn mutation_pipeline_stage_label(stage: &MutationPipelineStageReport) -> String {
+    match stage {
+        MutationPipelineStageReport::OhlcNoise {
+            mutation_probability,
+            max_atr_change,
+            atr_period,
+        } => format!(
+            "OHLC noise (mutation_probability: {:.4}, max_atr_change: {:.4}, atr_period: {})",
+            mutation_probability, max_atr_change, atr_period
+        ),
+        MutationPipelineStageReport::LogBarPermutation { volume_mode } => format!(
+            "Log-difference bar permutation (volume mode: {})",
+            log_bar_volume_mode_label(*volume_mode)
+        ),
+    }
+}
+
+fn log_bar_volume_mode_label(volume_mode: LogBarPermutationVolumeMode) -> &'static str {
+    match volume_mode {
+        LogBarPermutationVolumeMode::Shuffled => "shuffled volume",
+        LogBarPermutationVolumeMode::Timestamp => "timestamp volume",
+    }
+}
+
+fn format_stage_seeds(stage_seeds: &[MonteCarloStageSeedDiagnostics]) -> String {
+    let mut formatted = String::new();
+    for (index, stage_seed) in stage_seeds.iter().enumerate() {
+        if index > 0 {
+            formatted.push_str("; ");
+        }
+        let _ = write!(
+            formatted,
+            "{}: {}",
+            stage_seed.stage_number, stage_seed.seed
+        );
+    }
+    formatted
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1856,6 +2383,7 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_type_with_name::<MonteCarloConfigPlanSpec>("MonteCarloConfig");
     rhai.register_type_with_name::<OhlcNoiseConfigPlanSpec>("OhlcNoiseConfig");
     rhai.register_type_with_name::<LogBarPermutationConfigPlanSpec>("LogBarPermutationConfig");
+    rhai.register_type_with_name::<MutationPipelinePlanSpec>("MutationPipeline");
     rhai.register_type_with_name::<DatasetPlanSpec>("Dataset");
     rhai.register_type_with_name::<RunConfigPlanSpec>("RunConfig");
     rhai.register_type_with_name::<PlanTimestamp>("PlanTime");
@@ -1876,6 +2404,10 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
         "__backtester_log_bar_permutation_config_new",
         log_bar_permutation_config_new,
     );
+    rhai.register_fn(
+        "__backtester_mutation_pipeline_new",
+        MutationPipelinePlanSpec::new,
+    );
     rhai.register_fn("with_title", |mut result: PlanResultSpec, title: &str| {
         result.title = Some(title.to_string());
         result
@@ -1888,6 +2420,8 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_fn("with_atr_period", with_atr_period);
     rhai.register_fn("with_shuffled_volume", with_shuffled_volume);
     rhai.register_fn("with_timestamp_volume", with_timestamp_volume);
+    rhai.register_fn("then_ohlc_noise", then_ohlc_noise);
+    rhai.register_fn("then_log_bar_permutation", then_log_bar_permutation);
 
     let mut dataset_module = Module::new();
     dataset_module.set_native_fn("load", dataset_load);
@@ -1905,6 +2439,11 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
         lowest_timeframe_ohlc_noise_monte_carlo,
     );
     monte_carlo_module.set_native_fn("log_bar_permutation", log_bar_permutation_monte_carlo);
+    monte_carlo_module.set_native_fn("mutation_pipeline", mutation_pipeline_monte_carlo);
+    monte_carlo_module.set_native_fn(
+        "lowest_timeframe_pipeline",
+        lowest_timeframe_pipeline_monte_carlo,
+    );
     rhai.register_static_module("monte_carlo", Arc::new(monte_carlo_module));
 }
 
@@ -2103,6 +2642,42 @@ fn with_timestamp_volume(
     config
 }
 
+fn then_ohlc_noise(
+    mut pipeline: MutationPipelinePlanSpec,
+    ohlc_noise_config: Dynamic,
+) -> std::result::Result<MutationPipelinePlanSpec, Box<EvalAltResult>> {
+    let ohlc_noise_config = ohlc_noise_config
+        .try_cast::<OhlcNoiseConfigPlanSpec>()
+        .ok_or_else(|| {
+            Box::<EvalAltResult>::from(
+                "mutation_pipeline.then_ohlc_noise requires an OhlcNoiseConfig host object from `ohlc_noise_config::new(...)`",
+            )
+        })?;
+    pipeline
+        .stages
+        .push(MutationPipelineStagePlanSpec::OhlcNoise(ohlc_noise_config));
+    Ok(pipeline)
+}
+
+fn then_log_bar_permutation(
+    mut pipeline: MutationPipelinePlanSpec,
+    log_bar_config: Dynamic,
+) -> std::result::Result<MutationPipelinePlanSpec, Box<EvalAltResult>> {
+    let log_bar_config = log_bar_config
+        .try_cast::<LogBarPermutationConfigPlanSpec>()
+        .ok_or_else(|| {
+            Box::<EvalAltResult>::from(
+                "mutation_pipeline.then_log_bar_permutation requires a LogBarPermutationConfig host object from `log_bar_permutation_config::new()`",
+            )
+        })?;
+    pipeline
+        .stages
+        .push(MutationPipelineStagePlanSpec::LogBarPermutation(
+            log_bar_config,
+        ));
+    Ok(pipeline)
+}
+
 fn candle_permutation_monte_carlo(
     baseline: Dynamic,
     config: Dynamic,
@@ -2215,6 +2790,75 @@ fn log_bar_permutation_monte_carlo(
     })
 }
 
+fn mutation_pipeline_monte_carlo(
+    baseline: Dynamic,
+    config: Dynamic,
+    pipeline: Dynamic,
+) -> std::result::Result<SyntheticPlanSpec, Box<EvalAltResult>> {
+    let baseline = baseline.try_cast::<BaselinePlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::mutation_pipeline requires a BaselineRun host object from `baseline::run(...)`",
+        )
+    })?;
+    let config = config.try_cast::<MonteCarloConfigPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::mutation_pipeline requires a MonteCarloConfig host object from `monte_carlo_config::new(...)`",
+        )
+    })?;
+    let pipeline = pipeline.try_cast::<MutationPipelinePlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::mutation_pipeline requires a MutationPipeline host object from `mutation_pipeline::new()`",
+        )
+    })?;
+    ensure_non_empty_pipeline(&pipeline, "monte_carlo::mutation_pipeline")?;
+
+    Ok(SyntheticPlanSpec {
+        procedure: SyntheticProcedurePlanSpec::MutationPipeline(pipeline),
+        baseline,
+        config,
+    })
+}
+
+fn lowest_timeframe_pipeline_monte_carlo(
+    baseline: Dynamic,
+    config: Dynamic,
+    pipeline: Dynamic,
+) -> std::result::Result<SyntheticPlanSpec, Box<EvalAltResult>> {
+    let baseline = baseline.try_cast::<BaselinePlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::lowest_timeframe_pipeline requires a BaselineRun host object from `baseline::run(...)`",
+        )
+    })?;
+    let config = config.try_cast::<MonteCarloConfigPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::lowest_timeframe_pipeline requires a MonteCarloConfig host object from `monte_carlo_config::new(...)`",
+        )
+    })?;
+    let pipeline = pipeline.try_cast::<MutationPipelinePlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::lowest_timeframe_pipeline requires a MutationPipeline host object from `mutation_pipeline::new()`",
+        )
+    })?;
+    ensure_non_empty_pipeline(&pipeline, "monte_carlo::lowest_timeframe_pipeline")?;
+
+    Ok(SyntheticPlanSpec {
+        procedure: SyntheticProcedurePlanSpec::LowestTimeframePipeline(pipeline),
+        baseline,
+        config,
+    })
+}
+
+fn ensure_non_empty_pipeline(
+    pipeline: &MutationPipelinePlanSpec,
+    procedure_name: &str,
+) -> std::result::Result<(), Box<EvalAltResult>> {
+    if pipeline.stages.is_empty() {
+        Err(format!("{procedure_name} requires a non-empty mutation pipeline").into())
+    } else {
+        Ok(())
+    }
+}
+
 fn baseline_run(
     dataset: Dynamic,
     run_config: Dynamic,
@@ -2280,7 +2924,7 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
     // Rhai 1.24 reserves `new` even in module paths such as
     // `plan_result::new()`. Keep the approved plan-facing API and lower only
     // these typed constructors to private host functions before compilation.
-    const REPLACEMENTS: [(&str, &str); 6] = [
+    const REPLACEMENTS: [(&str, &str); 7] = [
         ("plan_result::new(", "__backtester_plan_result_new("),
         ("plan_test::new(", "__backtester_plan_test_new("),
         ("run_config::new(", "__backtester_run_config_new("),
@@ -2295,6 +2939,10 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
         (
             "log_bar_permutation_config::new(",
             "__backtester_log_bar_permutation_config_new(",
+        ),
+        (
+            "mutation_pipeline::new(",
+            "__backtester_mutation_pipeline_new(",
         ),
     ];
 
@@ -2712,6 +3360,7 @@ fn plan() {
             MonteCarloIterationDiagnostics {
                 iteration: 1,
                 seed: 111,
+                stage_seeds: Vec::new(),
                 final_equity: 9_000.0,
                 max_drawdown: 10.0,
                 trade_count: 1,
@@ -2723,6 +3372,7 @@ fn plan() {
             MonteCarloIterationDiagnostics {
                 iteration: 2,
                 seed: 222,
+                stage_seeds: Vec::new(),
                 final_equity: 10_000.0,
                 max_drawdown: 20.0,
                 trade_count: 2,
@@ -2734,6 +3384,7 @@ fn plan() {
             MonteCarloIterationDiagnostics {
                 iteration: 3,
                 seed: 333,
+                stage_seeds: Vec::new(),
                 final_equity: 11_000.0,
                 max_drawdown: 30.0,
                 trade_count: 3,
@@ -3373,6 +4024,428 @@ fn plan() {
     }
 
     #[test]
+    fn mutation_pipeline_plan_runs_single_timeframe_stages_in_order_and_reports_stage_seeds() {
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-06"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let pipeline = mutation_pipeline::new()
+        .then_ohlc_noise(ohlc_noise_config::new(0.0, 0.25).with_atr_period(1))
+        .then_log_bar_permutation(log_bar_permutation_config::new().with_timestamp_volume());
+    let synthetic = monte_carlo::mutation_pipeline(
+        baseline,
+        monte_carlo_config::new(2, 42),
+        pipeline
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("baseline vs mutation pipeline")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, _window| {
+                Ok(vec![
+                    candle_for(symbol, timeframe, day(2), 100.0),
+                    candle_for(symbol, timeframe, day(3), 101.0),
+                    candle_for(symbol, timeframe, day(4), 102.0),
+                    candle_for(symbol, timeframe, day(5), 103.0),
+                ])
+            },
+        )
+        .unwrap();
+
+        let synthetic = report.tests[0]
+            .synthetic
+            .as_ref()
+            .expect("test should include a synthetic Monte Carlo result");
+        let expected_stages = vec![
+            MutationPipelineStageReport::OhlcNoise {
+                mutation_probability: 0.0,
+                max_atr_change: 0.25,
+                atr_period: 1,
+            },
+            MutationPipelineStageReport::LogBarPermutation {
+                volume_mode: LogBarPermutationVolumeMode::Timestamp,
+            },
+        ];
+        assert_eq!(
+            synthetic.procedure,
+            MonteCarloProcedure::MutationPipeline {
+                stages: expected_stages,
+            }
+        );
+        assert_eq!(synthetic.iterations.len(), 2);
+        assert_eq!(
+            synthetic.iterations[0].seed,
+            derive_monte_carlo_seed(42, 0, 0, MUTATION_PIPELINE_PROCEDURE_ID)
+        );
+        assert_eq!(
+            synthetic.iterations[0].stage_seeds,
+            vec![
+                MonteCarloStageSeedDiagnostics {
+                    stage_number: 1,
+                    seed: derive_monte_carlo_seed(42, 0, 0, OHLC_NOISE_PROCEDURE_ID),
+                },
+                MonteCarloStageSeedDiagnostics {
+                    stage_number: 2,
+                    seed: derive_monte_carlo_seed(42, 0, 1, LOG_BAR_PERMUTATION_PROCEDURE_ID),
+                },
+            ]
+        );
+        assert_ne!(
+            synthetic.iterations[0].stage_seeds,
+            synthetic.iterations[1].stage_seeds
+        );
+        assert_eq!(synthetic.iterations[0].final_equity, 10000.0);
+        assert_eq!(synthetic.iterations[0].trade_count, 0);
+
+        let markdown = render_markdown(&report, "strategies/test.rhai");
+        assert!(markdown.contains("- Procedure: Synthetic Market Data mutation pipeline"));
+        assert!(markdown.contains(
+            "1. OHLC noise (mutation_probability: 0.0000, max_atr_change: 0.2500, atr_period: 1)"
+        ));
+        assert!(
+            markdown.contains("2. Log-difference bar permutation (volume mode: timestamp volume)")
+        );
+        assert!(markdown.contains("| Iteration | Seed | Stage seeds | Final equity |"));
+        assert!(markdown.contains("1: "));
+        assert!(markdown.contains("2: "));
+    }
+
+    #[test]
+    fn mutation_pipeline_supports_both_stage_orders_deterministically_and_preserves_invariants() {
+        fn assert_valid_synthetic(candles: &[Candle]) {
+            for candle in candles {
+                assert!(candle.open.is_finite() && candle.open > 0.0);
+                assert!(candle.high.is_finite() && candle.high > 0.0);
+                assert!(candle.low.is_finite() && candle.low > 0.0);
+                assert!(candle.close.is_finite() && candle.close > 0.0);
+                assert!(candle.high >= candle.open.max(candle.close));
+                assert!(candle.low <= candle.open.min(candle.close));
+            }
+        }
+
+        let source = log_bar_source_candles();
+        let ohlc = OhlcNoiseConfigPlanSpec {
+            mutation_probability: 1.0,
+            max_atr_change: 0.05,
+            atr_period: 1,
+        };
+        let log_bar = LogBarPermutationConfigPlanSpec::new();
+        let noise_then_log = MutationPipelinePlanSpec {
+            stages: vec![
+                MutationPipelineStagePlanSpec::OhlcNoise(ohlc.clone()),
+                MutationPipelineStagePlanSpec::LogBarPermutation(log_bar.clone()),
+            ],
+        };
+        let log_then_noise = MutationPipelinePlanSpec {
+            stages: vec![
+                MutationPipelineStagePlanSpec::LogBarPermutation(log_bar),
+                MutationPipelineStagePlanSpec::OhlcNoise(ohlc),
+            ],
+        };
+
+        for pipeline in [&noise_then_log, &log_then_noise] {
+            let stage_seeds = pipeline_stage_seed_diagnostics(99, 0, pipeline);
+            let synthetic = apply_mutation_pipeline_to_candles(
+                &source,
+                pipeline,
+                &stage_seeds,
+                0,
+                "monte_carlo::mutation_pipeline",
+                "Primary",
+            )
+            .unwrap();
+            let synthetic_again = apply_mutation_pipeline_to_candles(
+                &source,
+                pipeline,
+                &stage_seeds,
+                0,
+                "monte_carlo::mutation_pipeline",
+                "Primary",
+            )
+            .unwrap();
+
+            assert_eq!(synthetic, synthetic_again);
+            assert_eq!(synthetic.len(), source.len());
+            assert!(synthetic
+                .iter()
+                .zip(source.iter())
+                .all(|(synthetic, source)| {
+                    synthetic.timestamp == source.timestamp
+                        && synthetic.symbol == source.symbol
+                        && synthetic.timeframe == source.timeframe
+                }));
+            assert_valid_synthetic(&synthetic);
+        }
+    }
+
+    #[test]
+    fn mutation_pipeline_validation_errors_are_clear() {
+        let empty = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-05"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::mutation_pipeline(
+        baseline,
+        monte_carlo_config::new(1, 42),
+        mutation_pipeline::new()
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("empty pipeline")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |_symbol, _timeframe, _window| Ok(candles()),
+        )
+        .unwrap_err();
+        assert!(empty.to_string().contains("non-empty mutation pipeline"));
+
+        let invalid_stage_config = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-05"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let pipeline = mutation_pipeline::new()
+        .then_ohlc_noise(ohlc_noise_config::new(1.5, 0.25));
+    let synthetic = monte_carlo::mutation_pipeline(
+        baseline,
+        monte_carlo_config::new(1, 42),
+        pipeline
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("invalid config")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |_symbol, _timeframe, _window| Ok(candles()),
+        )
+        .unwrap_err();
+        assert!(invalid_stage_config
+            .to_string()
+            .contains("mutation_probability"));
+        assert!(invalid_stage_config.to_string().contains("[0.0, 1.0]"));
+
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let multi_timeframe = execute_plan(
+            r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::optional(H1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-01"), time("2020-01-02"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let pipeline = mutation_pipeline::new()
+        .then_ohlc_noise(ohlc_noise_config::new(0.0, 0.25).with_atr_period(1));
+    let synthetic = monte_carlo::mutation_pipeline(
+        baseline,
+        monte_carlo_config::new(1, 42),
+        pipeline
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("multi-timeframe single pipeline")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |_symbol, timeframe, _window| match timeframe {
+                tf if tf == primary => Ok(vec![
+                    candle_for("AAPL", primary, day(1), 100.0),
+                    candle_for("AAPL", primary, day(1) + 60_000, 101.0),
+                ]),
+                tf if tf == secondary => Ok(vec![candle_for("AAPL", secondary, day(1), 200.0)]),
+                _ => Ok(Vec::new()),
+            },
+        )
+        .unwrap_err();
+        let msg = multi_timeframe.to_string();
+        assert!(msg.contains("monte_carlo::mutation_pipeline"));
+        assert!(msg.contains("single-timeframe"));
+        assert!(msg.contains("monte_carlo::lowest_timeframe_pipeline"));
+
+        let single_timeframe_lowest = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-06"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let pipeline = mutation_pipeline::new()
+        .then_ohlc_noise(ohlc_noise_config::new(0.0, 0.25).with_atr_period(1));
+    let synthetic = monte_carlo::lowest_timeframe_pipeline(
+        baseline,
+        monte_carlo_config::new(1, 42),
+        pipeline
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("single timeframe lowest pipeline")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, _window| {
+                Ok(vec![
+                    candle_for(symbol, timeframe, day(2), 100.0),
+                    candle_for(symbol, timeframe, day(3), 101.0),
+                    candle_for(symbol, timeframe, day(4), 102.0),
+                    candle_for(symbol, timeframe, day(5), 103.0),
+                ])
+            },
+        )
+        .unwrap_err();
+        let msg = single_timeframe_lowest.to_string();
+        assert!(msg.contains("monte_carlo::lowest_timeframe_pipeline"));
+        assert!(msg.contains("at least two configured timeframes"));
+        assert!(msg.contains("monte_carlo::mutation_pipeline"));
+    }
+
+    #[test]
+    fn lowest_timeframe_pipeline_applies_stages_to_smallest_timeframe_and_reaggregates() {
+        let primary = Timeframe::hours(1);
+        let source = Timeframe::minutes(1);
+        let start = day(1);
+        let report = execute_plan(
+            r#"
+const M1 = timeframe("1m");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1h"))
+        .with_secondary(secondary::optional(M1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#,
+            r#"
+fn plan() {
+    let dataset = dataset::load(
+        "AAPL",
+        time("2020-01-01T00:00:00Z"),
+        time("2020-01-01T03:00:00Z")
+    );
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let pipeline = mutation_pipeline::new()
+        .then_log_bar_permutation(log_bar_permutation_config::new())
+        .then_ohlc_noise(ohlc_noise_config::new(0.0, 0.25).with_atr_period(1));
+    let synthetic = monte_carlo::lowest_timeframe_pipeline(
+        baseline,
+        monte_carlo_config::new(2, 42),
+        pipeline
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("baseline vs lowest timeframe pipeline")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, request| {
+                Ok(match (timeframe, request) {
+                    (tf, DatasetCandleRequest::Range { .. }) if tf == primary => vec![
+                        candle_for(symbol, primary, start, 100.0),
+                        candle_for(symbol, primary, start + 3_600_000, 101.0),
+                        candle_for(symbol, primary, start + 7_200_000, 102.0),
+                    ],
+                    (tf, DatasetCandleRequest::Range { .. }) if tf == source => vec![
+                        candle_for(symbol, source, start, 200.0),
+                        candle_for(symbol, source, start + 60_000, 201.0),
+                        candle_for(symbol, source, start + 3_600_000, 202.0),
+                        candle_for(symbol, source, start + 7_200_000, 203.0),
+                    ],
+                    _ => Vec::new(),
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.tests[0].interval, "1h");
+        let synthetic = report.tests[0]
+            .synthetic
+            .as_ref()
+            .expect("test should include a synthetic Monte Carlo result");
+        assert_eq!(
+            synthetic.procedure,
+            MonteCarloProcedure::LowestTimeframePipeline {
+                source_timeframe: source,
+                regenerated_timeframes: vec![primary],
+                stages: vec![
+                    MutationPipelineStageReport::LogBarPermutation {
+                        volume_mode: LogBarPermutationVolumeMode::Shuffled,
+                    },
+                    MutationPipelineStageReport::OhlcNoise {
+                        mutation_probability: 0.0,
+                        max_atr_change: 0.25,
+                        atr_period: 1,
+                    },
+                ],
+            }
+        );
+        assert_eq!(synthetic.iterations.len(), 2);
+        assert_eq!(
+            synthetic.iterations[0].stage_seeds,
+            vec![
+                MonteCarloStageSeedDiagnostics {
+                    stage_number: 1,
+                    seed: derive_monte_carlo_seed(42, 0, 0, LOG_BAR_PERMUTATION_PROCEDURE_ID),
+                },
+                MonteCarloStageSeedDiagnostics {
+                    stage_number: 2,
+                    seed: derive_monte_carlo_seed(42, 0, 1, OHLC_NOISE_PROCEDURE_ID),
+                },
+            ]
+        );
+        assert_eq!(synthetic.iterations[0].final_equity, 10000.0);
+        assert_eq!(synthetic.iterations[0].trade_count, 0);
+
+        let markdown = render_markdown(&report, "strategies/test.rhai");
+        assert!(markdown.contains("- Procedure: Lowest-timeframe Synthetic Market Data mutation pipeline with higher-timeframe reaggregation"));
+        assert!(markdown.contains("- Source timeframe: 1m"));
+        assert!(markdown.contains("- Regenerated timeframes: 1h"));
+        assert!(
+            markdown.contains("1. Log-difference bar permutation (volume mode: shuffled volume)")
+        );
+        assert!(markdown.contains(
+            "2. OHLC noise (mutation_probability: 0.0000, max_atr_change: 0.2500, atr_period: 1)"
+        ));
+    }
+
+    #[test]
     fn lowest_timeframe_ohlc_noise_plan_runs_runtime_backed_iterations_with_primary_regenerated() {
         let primary = Timeframe::hours(1);
         let source = Timeframe::minutes(1);
@@ -3584,6 +4657,83 @@ fn plan() {
             .contains("unique smallest configured timeframe"));
         assert!(ambiguous_err.to_string().contains("60m"));
         assert!(ambiguous_err.to_string().contains("1h"));
+    }
+
+    #[test]
+    fn lowest_timeframe_pipeline_regenerates_larger_timeframes_from_pipeline_output() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let target_ts = day(1) + 3_600_000;
+        let source = HistoricalMarketData::with_secondary(
+            vec![
+                candle_for("AAPL", primary, day(1), 100.0),
+                candle_for("AAPL", primary, day(1) + 60_000, 101.0),
+                candle_for("AAPL", primary, day(1) + 120_000, 102.0),
+                candle_for("AAPL", primary, target_ts, 103.0),
+            ],
+            [HistoricalCandleSeries {
+                timeframe: secondary,
+                candles: vec![candle_for("OLD", secondary, target_ts, 999.0)],
+            }],
+        );
+        let config = RuntimeConfig::with_secondary_configs(
+            "AAPL",
+            primary,
+            [trading_runtime::SecondaryTimeframeConfig::optional(
+                secondary, 0,
+            )],
+        );
+        let pipeline = MutationPipelinePlanSpec {
+            stages: vec![
+                MutationPipelineStagePlanSpec::LogBarPermutation(
+                    LogBarPermutationConfigPlanSpec::new(),
+                ),
+                MutationPipelineStagePlanSpec::OhlcNoise(OhlcNoiseConfigPlanSpec {
+                    mutation_probability: 0.0,
+                    max_atr_change: 0.25,
+                    atr_period: 1,
+                }),
+            ],
+        };
+        let stage_seeds = pipeline_stage_seed_diagnostics(77, 0, &pipeline);
+
+        let synthetic = apply_lowest_timeframe_pipeline_to_market_data(
+            &source,
+            &config,
+            &pipeline,
+            &stage_seeds,
+            0,
+        )
+        .unwrap();
+        let synthetic_again = apply_lowest_timeframe_pipeline_to_market_data(
+            &source,
+            &config,
+            &pipeline,
+            &stage_seeds,
+            0,
+        )
+        .unwrap();
+        let expected_secondary = reaggregate_timeframe_from_lowest(
+            &synthetic.primary,
+            &source.secondary[0].candles,
+            "AAPL",
+            primary,
+            secondary,
+        )
+        .unwrap();
+
+        assert_eq!(synthetic.primary, synthetic_again.primary);
+        assert_eq!(
+            synthetic.secondary[0].candles,
+            synthetic_again.secondary[0].candles
+        );
+        assert_eq!(synthetic.secondary[0].candles, expected_secondary);
+        assert!(synthetic.primary.iter().all(|candle| {
+            candle.symbol == "AAPL"
+                && candle.timeframe == primary
+                && candle.high >= candle.open.max(candle.close)
+                && candle.low <= candle.open.min(candle.close)
+        }));
     }
 
     #[test]

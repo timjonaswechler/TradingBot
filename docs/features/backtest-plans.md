@@ -94,8 +94,26 @@ Current plan-facing constructors/functions:
 - `log_bar_permutation_config::new().with_shuffled_volume()`
 - `log_bar_permutation_config::new().with_timestamp_volume()`
 - `monte_carlo::log_bar_permutation(baseline, config, log_bar_permutation_config)`
+- `mutation_pipeline::new()`
+- `mutation_pipeline::new().then_ohlc_noise(ohlc_noise_config)`
+- `mutation_pipeline::new().then_log_bar_permutation(log_bar_permutation_config)`
+- `monte_carlo::mutation_pipeline(baseline, config, mutation_pipeline)`
+- `monte_carlo::lowest_timeframe_pipeline(baseline, config, mutation_pipeline)`
 - `plan_test::new(name).with_baseline(...).with_synthetic(...)`
 - `plan_result::new().with_title(...).with_test(...)`
+
+Pipeline stages are typed and ordered by fluent calls, not by string procedure
+names:
+
+```rhai
+let pipeline = mutation_pipeline::new()
+    .then_ohlc_noise(
+        ohlc_noise_config::new(0.25, 0.5).with_atr_period(14)
+    )
+    .then_log_bar_permutation(
+        log_bar_permutation_config::new().with_shuffled_volume()
+    );
+```
 
 ## Dataset loader contract
 
@@ -148,10 +166,14 @@ Each test section includes the baseline Runtime-backed metrics:
 Synthetic Market Data Monte Carlo tests add a comparison section:
 
 - `Procedure` identifies the mutation procedure, such as `Candle permutation`,
-  `ATR-scaled OHLC noise`, `Log-difference bar permutation`, or
-  `Lowest-timeframe OHLC noise with higher-timeframe reaggregation`.
+  `ATR-scaled OHLC noise`, `Log-difference bar permutation`,
+  `Lowest-timeframe OHLC noise with higher-timeframe reaggregation`,
+  `Synthetic Market Data mutation pipeline`, or
+  `Lowest-timeframe Synthetic Market Data mutation pipeline with higher-timeframe reaggregation`.
 - Log-difference bar permutation reports also show `Volume mode` as either
   `shuffled volume` or `timestamp volume`.
+- Pipeline reports show the declared stage order and stage configs relevant to
+  interpretation.
 - Lowest-timeframe reaggregation reports also show the source timeframe and the
   regenerated larger timeframes.
 - `Iterations` is the number declared in `monte_carlo_config::new(...)`.
@@ -163,7 +185,8 @@ Synthetic Market Data Monte Carlo tests add a comparison section:
   means the baseline drawdown was larger/more painful than most synthetic paths.
 - Reduced iteration diagnostics list each iteration seed, final equity, max
   drawdown, trade count, blocked Strategy Tick count, Strategy Exit count, Risk
-  Exit count, and Force Close count.
+  Exit count, and Force Close count. Pipeline diagnostics also list each
+  stage's deterministic SplitMix64-derived seed by stage number.
 
 Reports are printed to stdout, so they can be read in the terminal or redirected:
 
@@ -194,11 +217,12 @@ full strategy against each synthetic candle path. Currently available procedures
   the smallest configured timeframe with the #90 OHLC-noise rules, then
   regenerates every larger configured timeframe from that source path by
   deterministic OHLCV aggregation before Runtime-backed replay.
-
-Future Synthetic Market Data mutation issues remain separate and are not
-available yet:
-
-- #94 — composed Synthetic Market Data mutation pipelines
+- #94 mutation pipelines — compose the #90 OHLC-noise stage and the #91
+  log-difference bar-permutation stage in the plan-declared order. Use
+  `monte_carlo::mutation_pipeline(...)` for single-timeframe Runtime configs;
+  use `monte_carlo::lowest_timeframe_pipeline(...)` for multi-timeframe configs
+  so the pipeline mutates the smallest configured timeframe and regenerates all
+  larger configured timeframes with the #93 reaggregation model.
 
 Trade-order resampling (#95) is a different future analysis. It operates on a
 completed baseline trade ledger/equity path after the backtest, does not mutate
