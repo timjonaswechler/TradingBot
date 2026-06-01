@@ -33,6 +33,15 @@ pub struct BaselinePlanTest {
 pub enum MonteCarloProcedure {
     CandlePermutation,
     OhlcNoise,
+    LogBarPermutation {
+        volume_mode: LogBarPermutationVolumeMode,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogBarPermutationVolumeMode {
+    Shuffled,
+    Timestamp,
 }
 
 #[derive(Debug, Clone)]
@@ -127,10 +136,16 @@ struct OhlcNoiseConfigPlanSpec {
     atr_period: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogBarPermutationConfigPlanSpec {
+    volume_mode: LogBarPermutationVolumeMode,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum SyntheticProcedurePlanSpec {
     CandlePermutation,
     OhlcNoise(OhlcNoiseConfigPlanSpec),
+    LogBarPermutation(LogBarPermutationConfigPlanSpec),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -442,6 +457,59 @@ fn run_synthetic_monte_carlo(
                 iterations,
             })
         }
+        SyntheticProcedurePlanSpec::LogBarPermutation(log_bar_config) => {
+            ensure_single_timeframe_synthetic_procedure(
+                effective_config,
+                "monte_carlo::log_bar_permutation",
+            )?;
+            let primary_warmup_requirement = warmup_plan
+                .requirement_for(effective_config.primary_timeframe)
+                .unwrap_or(0);
+            let mut iterations = Vec::with_capacity(synthetic_spec.config.iterations);
+
+            for iteration_index in 0..synthetic_spec.config.iterations {
+                let seed = derive_monte_carlo_seed(
+                    synthetic_spec.config.base_seed,
+                    iteration_index,
+                    0,
+                    LOG_BAR_PERMUTATION_PROCEDURE_ID,
+                );
+                let synthetic_market_data = apply_log_bar_permutation_to_market_data(
+                    source_market_data,
+                    log_bar_config,
+                    seed,
+                    primary_warmup_requirement,
+                )?;
+                let strategy = RhaiStrategy::load(strategy_src)?;
+                let runtime_result = run_prepared_runtime_backtest(
+                    strategy,
+                    effective_config.clone(),
+                    warmup_plan.clone(),
+                    synthetic_market_data,
+                    initial_balance,
+                )?;
+
+                if runtime_result.result.equity_curve.is_empty() {
+                    return Err(anyhow!(
+                        "monte_carlo::log_bar_permutation iteration {} produced no tradable candles",
+                        iteration_index + 1
+                    ));
+                }
+
+                iterations.push(iteration_diagnostics(
+                    iteration_index + 1,
+                    seed,
+                    &runtime_result,
+                ));
+            }
+
+            Ok(SyntheticMonteCarloReport {
+                procedure: MonteCarloProcedure::LogBarPermutation {
+                    volume_mode: log_bar_config.volume_mode,
+                },
+                iterations,
+            })
+        }
     }
 }
 
@@ -496,6 +564,7 @@ impl RuntimeEventCounters {
 
 const CANDLE_PERMUTATION_PROCEDURE_ID: u64 = 0x4341_4e44_4c45_5031; // "CANDLEP1"
 const OHLC_NOISE_PROCEDURE_ID: u64 = 0x4f48_4c43_4e4f_4931; // "OHLCNOI1"
+const LOG_BAR_PERMUTATION_PROCEDURE_ID: u64 = 0x4c4f_4742_4152_5031; // "LOGBARP1"
 const DEFAULT_OHLC_NOISE_ATR_PERIOD: usize = 14;
 const SPLITMIX64_INCREMENT: u64 = 0x9e37_79b9_7f4a_7c15;
 
@@ -713,6 +782,249 @@ fn apply_ohlc_noise_to_candles(
     Ok(mutated)
 }
 
+fn apply_log_bar_permutation_to_market_data(
+    source: &HistoricalMarketData,
+    config: &LogBarPermutationConfigPlanSpec,
+    seed: u64,
+    warmup_requirement: usize,
+) -> Result<HistoricalMarketData> {
+    if !source.secondary.is_empty() {
+        return Err(anyhow!(
+            "monte_carlo::log_bar_permutation requires single-timeframe source market data; use the future #93 lowest-timeframe reaggregation consistency model for multi-timeframe runs"
+        ));
+    }
+
+    Ok(HistoricalMarketData::single_timeframe(
+        apply_log_bar_permutation_to_candles(
+            &source.primary,
+            config,
+            seed,
+            warmup_requirement,
+            "Primary",
+        )?,
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LogBarTuple {
+    open_gap: f64,
+    high_from_open: f64,
+    low_from_open: f64,
+    close_from_open: f64,
+    volume: f64,
+}
+
+fn apply_log_bar_permutation_to_candles(
+    source: &[Candle],
+    config: &LogBarPermutationConfigPlanSpec,
+    seed: u64,
+    warmup_requirement: usize,
+    role: &str,
+) -> Result<Vec<Candle>> {
+    let mut slots = source.to_vec();
+    slots.sort_by_key(|candle| candle.timestamp);
+
+    validate_log_bar_permutation_population(&slots, warmup_requirement, role)?;
+    for candle in &slots {
+        validate_log_bar_source_candle_values(candle, role)?;
+    }
+
+    let mut tuples = Vec::with_capacity(slots.len().saturating_sub(1));
+    for index in 1..slots.len() {
+        tuples.push(log_bar_tuple_from_source(
+            &slots[index - 1],
+            &slots[index],
+            role,
+        )?);
+    }
+
+    let mut rng = SplitMix64::new(seed);
+    for index in (1..tuples.len()).rev() {
+        let swap_index = rng.next_index(index + 1);
+        tuples.swap(index, swap_index);
+    }
+
+    let mut reconstructed = Vec::with_capacity(slots.len());
+    reconstructed.push(slots[0].clone());
+    let mut previous_reconstructed_close = slots[0].close;
+
+    for (offset, tuple) in tuples.into_iter().enumerate() {
+        let slot = &slots[offset + 1];
+        let mut candle = slot.clone();
+        candle.open = reconstruct_log_bar_price(
+            previous_reconstructed_close,
+            tuple.open_gap,
+            role,
+            slot.timestamp,
+            "open",
+        )?;
+        candle.high = reconstruct_log_bar_price(
+            candle.open,
+            tuple.high_from_open,
+            role,
+            slot.timestamp,
+            "high",
+        )?;
+        candle.low = reconstruct_log_bar_price(
+            candle.open,
+            tuple.low_from_open,
+            role,
+            slot.timestamp,
+            "low",
+        )?;
+        candle.close = reconstruct_log_bar_price(
+            candle.open,
+            tuple.close_from_open,
+            role,
+            slot.timestamp,
+            "close",
+        )?;
+        if config.volume_mode == LogBarPermutationVolumeMode::Shuffled {
+            candle.volume = tuple.volume;
+        }
+        repair_ohlc_range_to_body(&mut candle);
+        validate_synthetic_candle_values(&candle, "monte_carlo::log_bar_permutation", role)?;
+        previous_reconstructed_close = candle.close;
+        reconstructed.push(candle);
+    }
+
+    Ok(reconstructed)
+}
+
+fn validate_log_bar_permutation_population(
+    candles: &[Candle],
+    warmup_requirement: usize,
+    role: &str,
+) -> Result<()> {
+    if candles.len() <= warmup_requirement {
+        return Err(anyhow!(
+            "monte_carlo::log_bar_permutation {role} series contains {} candles but Runtime warmup requires {warmup_requirement} and at least one tradable candle",
+            candles.len()
+        ));
+    }
+    if candles.len().saturating_sub(1) < 2 {
+        return Err(anyhow!(
+            "monte_carlo::log_bar_permutation {role} series requires at least two permutable log-bar tuples; got {}",
+            candles.len().saturating_sub(1)
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_log_bar_source_candle_values(candle: &Candle, role: &str) -> Result<()> {
+    for (field, value) in [
+        ("open", candle.open),
+        ("high", candle.high),
+        ("low", candle.low),
+        ("close", candle.close),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(anyhow!(
+                "monte_carlo::log_bar_permutation {role} source candle at {} has non-finite or non-positive {field} value",
+                candle.timestamp
+            ));
+        }
+    }
+
+    let highest_body_price = candle.open.max(candle.close);
+    let lowest_body_price = candle.open.min(candle.close);
+    if candle.high < highest_body_price || candle.low > lowest_body_price {
+        return Err(anyhow!(
+            "monte_carlo::log_bar_permutation {role} source candle at {} violates OHLC invariants",
+            candle.timestamp
+        ));
+    }
+
+    Ok(())
+}
+
+fn log_bar_tuple_from_source(
+    previous: &Candle,
+    current: &Candle,
+    role: &str,
+) -> Result<LogBarTuple> {
+    Ok(LogBarTuple {
+        open_gap: checked_log_ratio(
+            current.open,
+            previous.close,
+            role,
+            current.timestamp,
+            "open_gap",
+        )?,
+        high_from_open: checked_log_ratio(
+            current.high,
+            current.open,
+            role,
+            current.timestamp,
+            "high_from_open",
+        )?,
+        low_from_open: checked_log_ratio(
+            current.low,
+            current.open,
+            role,
+            current.timestamp,
+            "low_from_open",
+        )?,
+        close_from_open: checked_log_ratio(
+            current.close,
+            current.open,
+            role,
+            current.timestamp,
+            "close_from_open",
+        )?,
+        volume: current.volume,
+    })
+}
+
+fn checked_log_ratio(
+    numerator: f64,
+    denominator: f64,
+    role: &str,
+    timestamp: i64,
+    component: &str,
+) -> Result<f64> {
+    let ratio = numerator / denominator;
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return Err(anyhow!(
+            "monte_carlo::log_bar_permutation {role} candle at {timestamp} produced invalid {component} ratio"
+        ));
+    }
+
+    let value = ratio.ln();
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(anyhow!(
+            "monte_carlo::log_bar_permutation {role} candle at {timestamp} produced invalid {component} log value"
+        ))
+    }
+}
+
+fn reconstruct_log_bar_price(
+    base: f64,
+    log_component: f64,
+    role: &str,
+    timestamp: i64,
+    field: &str,
+) -> Result<f64> {
+    let multiplier = log_component.exp();
+    if !multiplier.is_finite() || multiplier <= 0.0 {
+        return Err(anyhow!(
+            "monte_carlo::log_bar_permutation {role} candle at {timestamp} produced invalid {field} multiplier during reconstruction"
+        ));
+    }
+
+    let value = base * multiplier;
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err(anyhow!(
+            "monte_carlo::log_bar_permutation {role} candle at {timestamp} produced non-finite or non-positive {field} during reconstruction"
+        ))
+    }
+}
+
 impl OhlcNoiseConfigPlanSpec {
     fn new(mutation_probability: f64, max_atr_change: f64) -> Self {
         Self {
@@ -724,6 +1036,14 @@ impl OhlcNoiseConfigPlanSpec {
 
     fn is_effective_noop(&self) -> bool {
         self.mutation_probability == 0.0 || self.max_atr_change == 0.0
+    }
+}
+
+impl LogBarPermutationConfigPlanSpec {
+    fn new() -> Self {
+        Self {
+            volume_mode: LogBarPermutationVolumeMode::Shuffled,
+        }
     }
 }
 
@@ -947,6 +1267,9 @@ fn render_synthetic_monte_carlo(
         "- Procedure: {}",
         monte_carlo_procedure_label(&synthetic.procedure)
     );
+    if let Some(volume_mode) = monte_carlo_volume_mode_label(&synthetic.procedure) {
+        let _ = writeln!(out, "- Volume mode: {volume_mode}");
+    }
     let _ = writeln!(out, "- Iterations: {}", synthetic.iterations.len());
 
     if synthetic.iterations.is_empty() {
@@ -1008,6 +1331,17 @@ fn monte_carlo_procedure_label(procedure: &MonteCarloProcedure) -> &'static str 
     match procedure {
         MonteCarloProcedure::CandlePermutation => "Candle permutation",
         MonteCarloProcedure::OhlcNoise => "ATR-scaled OHLC noise",
+        MonteCarloProcedure::LogBarPermutation { .. } => "Log-difference bar permutation",
+    }
+}
+
+fn monte_carlo_volume_mode_label(procedure: &MonteCarloProcedure) -> Option<&'static str> {
+    match procedure {
+        MonteCarloProcedure::LogBarPermutation { volume_mode } => Some(match volume_mode {
+            LogBarPermutationVolumeMode::Shuffled => "shuffled volume",
+            LogBarPermutationVolumeMode::Timestamp => "timestamp volume",
+        }),
+        _ => None,
     }
 }
 
@@ -1205,6 +1539,7 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_type_with_name::<SyntheticPlanSpec>("SyntheticMonteCarlo");
     rhai.register_type_with_name::<MonteCarloConfigPlanSpec>("MonteCarloConfig");
     rhai.register_type_with_name::<OhlcNoiseConfigPlanSpec>("OhlcNoiseConfig");
+    rhai.register_type_with_name::<LogBarPermutationConfigPlanSpec>("LogBarPermutationConfig");
     rhai.register_type_with_name::<DatasetPlanSpec>("Dataset");
     rhai.register_type_with_name::<RunConfigPlanSpec>("RunConfig");
     rhai.register_type_with_name::<PlanTimestamp>("PlanTime");
@@ -1221,6 +1556,10 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
         monte_carlo_config_new,
     );
     rhai.register_fn("__backtester_ohlc_noise_config_new", ohlc_noise_config_new);
+    rhai.register_fn(
+        "__backtester_log_bar_permutation_config_new",
+        log_bar_permutation_config_new,
+    );
     rhai.register_fn("with_title", |mut result: PlanResultSpec, title: &str| {
         result.title = Some(title.to_string());
         result
@@ -1231,6 +1570,8 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     rhai.register_fn("with_balance", with_balance_float);
     rhai.register_fn("with_balance", with_balance_int);
     rhai.register_fn("with_atr_period", with_atr_period);
+    rhai.register_fn("with_shuffled_volume", with_shuffled_volume);
+    rhai.register_fn("with_timestamp_volume", with_timestamp_volume);
 
     let mut dataset_module = Module::new();
     dataset_module.set_native_fn("load", dataset_load);
@@ -1243,6 +1584,7 @@ fn register_plan_api(rhai: &mut RhaiEngine) {
     let mut monte_carlo_module = Module::new();
     monte_carlo_module.set_native_fn("candle_permutation", candle_permutation_monte_carlo);
     monte_carlo_module.set_native_fn("ohlc_noise", ohlc_noise_monte_carlo);
+    monte_carlo_module.set_native_fn("log_bar_permutation", log_bar_permutation_monte_carlo);
     rhai.register_static_module("monte_carlo", Arc::new(monte_carlo_module));
 }
 
@@ -1423,6 +1765,24 @@ fn with_atr_period(
     Ok(config)
 }
 
+fn log_bar_permutation_config_new() -> LogBarPermutationConfigPlanSpec {
+    LogBarPermutationConfigPlanSpec::new()
+}
+
+fn with_shuffled_volume(
+    mut config: LogBarPermutationConfigPlanSpec,
+) -> LogBarPermutationConfigPlanSpec {
+    config.volume_mode = LogBarPermutationVolumeMode::Shuffled;
+    config
+}
+
+fn with_timestamp_volume(
+    mut config: LogBarPermutationConfigPlanSpec,
+) -> LogBarPermutationConfigPlanSpec {
+    config.volume_mode = LogBarPermutationVolumeMode::Timestamp;
+    config
+}
+
 fn candle_permutation_monte_carlo(
     baseline: Dynamic,
     config: Dynamic,
@@ -1470,6 +1830,36 @@ fn ohlc_noise_monte_carlo(
 
     Ok(SyntheticPlanSpec {
         procedure: SyntheticProcedurePlanSpec::OhlcNoise(ohlc_noise_config),
+        baseline,
+        config,
+    })
+}
+
+fn log_bar_permutation_monte_carlo(
+    baseline: Dynamic,
+    config: Dynamic,
+    log_bar_config: Dynamic,
+) -> std::result::Result<SyntheticPlanSpec, Box<EvalAltResult>> {
+    let baseline = baseline.try_cast::<BaselinePlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::log_bar_permutation requires a BaselineRun host object from `baseline::run(...)`",
+        )
+    })?;
+    let config = config.try_cast::<MonteCarloConfigPlanSpec>().ok_or_else(|| {
+        Box::<EvalAltResult>::from(
+            "monte_carlo::log_bar_permutation requires a MonteCarloConfig host object from `monte_carlo_config::new(...)`",
+        )
+    })?;
+    let log_bar_config = log_bar_config
+        .try_cast::<LogBarPermutationConfigPlanSpec>()
+        .ok_or_else(|| {
+            Box::<EvalAltResult>::from(
+                "monte_carlo::log_bar_permutation requires a LogBarPermutationConfig host object from `log_bar_permutation_config::new()`",
+            )
+        })?;
+
+    Ok(SyntheticPlanSpec {
+        procedure: SyntheticProcedurePlanSpec::LogBarPermutation(log_bar_config),
         baseline,
         config,
     })
@@ -1540,7 +1930,7 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
     // Rhai 1.24 reserves `new` even in module paths such as
     // `plan_result::new()`. Keep the approved plan-facing API and lower only
     // these typed constructors to private host functions before compilation.
-    const REPLACEMENTS: [(&str, &str); 5] = [
+    const REPLACEMENTS: [(&str, &str); 6] = [
         ("plan_result::new(", "__backtester_plan_result_new("),
         ("plan_test::new(", "__backtester_plan_test_new("),
         ("run_config::new(", "__backtester_run_config_new("),
@@ -1551,6 +1941,10 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
         (
             "ohlc_noise_config::new(",
             "__backtester_ohlc_noise_config_new(",
+        ),
+        (
+            "log_bar_permutation_config::new(",
+            "__backtester_log_bar_permutation_config_new(",
         ),
     ];
 
@@ -1686,6 +2080,104 @@ mod tests {
             make_candle(day(3), 101.0),
             make_candle(day(4), 102.0),
         ]
+    }
+
+    fn log_bar_source_candles() -> Vec<Candle> {
+        let timeframe = Timeframe::days(1);
+        vec![
+            Candle {
+                timestamp: day(1),
+                symbol: "AAPL".to_string(),
+                open: 100.0,
+                high: 110.0,
+                low: 95.0,
+                close: 105.0,
+                volume: 1_000.0,
+                timeframe,
+            },
+            Candle {
+                timestamp: day(2),
+                symbol: "AAPL".to_string(),
+                open: 111.0,
+                high: 120.0,
+                low: 100.0,
+                close: 114.0,
+                volume: 2_000.0,
+                timeframe,
+            },
+            Candle {
+                timestamp: day(3),
+                symbol: "AAPL".to_string(),
+                open: 112.0,
+                high: 118.0,
+                low: 101.0,
+                close: 103.0,
+                volume: 3_000.0,
+                timeframe,
+            },
+            Candle {
+                timestamp: day(4),
+                symbol: "AAPL".to_string(),
+                open: 107.0,
+                high: 130.0,
+                low: 90.0,
+                close: 125.0,
+                volume: 4_000.0,
+                timeframe,
+            },
+        ]
+    }
+
+    fn log_bar_tuple_signature(candles: &[Candle], index: usize, include_volume: bool) -> Vec<f64> {
+        let previous_close = candles[index - 1].close;
+        let candle = &candles[index];
+        let mut signature = vec![
+            (candle.open / previous_close).ln(),
+            (candle.high / candle.open).ln(),
+            (candle.low / candle.open).ln(),
+            (candle.close / candle.open).ln(),
+        ];
+        if include_volume {
+            signature.push(candle.volume);
+        }
+        signature
+    }
+
+    fn log_bar_tuple_signatures(candles: &[Candle], include_volume: bool) -> Vec<Vec<f64>> {
+        (1..candles.len())
+            .map(|index| log_bar_tuple_signature(candles, index, include_volume))
+            .collect()
+    }
+
+    fn assert_log_bar_tuple_multisets_close(
+        mut actual: Vec<Vec<f64>>,
+        mut expected: Vec<Vec<f64>>,
+    ) {
+        fn compare_signature(left: &[f64], right: &[f64]) -> std::cmp::Ordering {
+            for (left, right) in left.iter().zip(right.iter()) {
+                let ordering = left.total_cmp(right);
+                if ordering != std::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+            left.len().cmp(&right.len())
+        }
+
+        actual.sort_by(|left, right| compare_signature(left, right));
+        expected.sort_by(|left, right| compare_signature(left, right));
+        assert_eq!(actual.len(), expected.len());
+
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected.iter()) {
+                assert!(
+                    (*actual - *expected).abs() <= 1.0e-10,
+                    "expected {} to be close to {}",
+                    *actual,
+                    *expected
+                );
+            }
+        }
     }
 
     fn example_candles_for_request(
@@ -2432,6 +2924,267 @@ fn plan() {
     }
 
     #[test]
+    fn log_bar_permutation_monte_carlo_plan_runs_runtime_backed_iterations() {
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-06"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::log_bar_permutation(
+        baseline,
+        monte_carlo_config::new(2, 42),
+        log_bar_permutation_config::new()
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("baseline vs log-bar permutation")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, _window| {
+                Ok(vec![
+                    candle_for(symbol, timeframe, day(2), 100.0),
+                    candle_for(symbol, timeframe, day(3), 101.0),
+                    candle_for(symbol, timeframe, day(4), 102.0),
+                    candle_for(symbol, timeframe, day(5), 103.0),
+                ])
+            },
+        )
+        .unwrap();
+
+        let synthetic = report.tests[0]
+            .synthetic
+            .as_ref()
+            .expect("test should include a synthetic Monte Carlo result");
+        assert_eq!(
+            synthetic.procedure,
+            MonteCarloProcedure::LogBarPermutation {
+                volume_mode: LogBarPermutationVolumeMode::Shuffled,
+            }
+        );
+        assert_eq!(synthetic.iterations.len(), 2);
+        assert_ne!(synthetic.iterations[0].seed, synthetic.iterations[1].seed);
+        assert_eq!(synthetic.iterations[0].iteration, 1);
+        assert_eq!(synthetic.iterations[0].final_equity, 10000.0);
+        assert_eq!(synthetic.iterations[0].trade_count, 0);
+    }
+
+    #[test]
+    fn log_bar_permutation_timestamp_volume_plan_renders_selected_volume_mode() {
+        let report = execute_plan(
+            HOLD_STRATEGY,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-02"), time("2020-01-06"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::log_bar_permutation(
+        baseline,
+        monte_carlo_config::new(1, 42),
+        log_bar_permutation_config::new().with_timestamp_volume()
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("timestamp volume log-bar permutation")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |symbol, timeframe, _window| {
+                Ok(vec![
+                    candle_for(symbol, timeframe, day(2), 100.0),
+                    candle_for(symbol, timeframe, day(3), 101.0),
+                    candle_for(symbol, timeframe, day(4), 102.0),
+                    candle_for(symbol, timeframe, day(5), 103.0),
+                ])
+            },
+        )
+        .unwrap();
+
+        let synthetic = report.tests[0]
+            .synthetic
+            .as_ref()
+            .expect("test should include a synthetic Monte Carlo result");
+        assert_eq!(
+            synthetic.procedure,
+            MonteCarloProcedure::LogBarPermutation {
+                volume_mode: LogBarPermutationVolumeMode::Timestamp,
+            }
+        );
+
+        let markdown = render_markdown(&report, "strategies/test.rhai");
+        assert!(markdown.contains("- Procedure: Log-difference bar permutation"));
+        assert!(markdown.contains("- Volume mode: timestamp volume"));
+    }
+
+    #[test]
+    fn log_bar_permutation_reconstructs_from_anchor_and_shuffles_whole_tuples() {
+        let source = log_bar_source_candles();
+        let config = LogBarPermutationConfigPlanSpec::new();
+        let seed = derive_monte_carlo_seed(42, 0, 0, LOG_BAR_PERMUTATION_PROCEDURE_ID);
+
+        let synthetic =
+            apply_log_bar_permutation_to_candles(&source, &config, seed, 1, "Primary").unwrap();
+        let synthetic_again =
+            apply_log_bar_permutation_to_candles(&source, &config, seed, 1, "Primary").unwrap();
+
+        assert_eq!(
+            seed,
+            derive_monte_carlo_seed(42, 0, 0, LOG_BAR_PERMUTATION_PROCEDURE_ID)
+        );
+        assert_ne!(
+            seed,
+            derive_monte_carlo_seed(42, 1, 0, LOG_BAR_PERMUTATION_PROCEDURE_ID)
+        );
+        assert_eq!(synthetic, synthetic_again);
+        assert_eq!(synthetic[0], source[0]);
+        assert_eq!(synthetic.len(), source.len());
+        assert!(synthetic
+            .iter()
+            .zip(source.iter())
+            .all(|(synthetic, source)| {
+                synthetic.timestamp == source.timestamp
+                    && synthetic.symbol == source.symbol
+                    && synthetic.timeframe == source.timeframe
+            }));
+        assert!(synthetic.iter().all(|candle| {
+            candle.open.is_finite()
+                && candle.open > 0.0
+                && candle.high.is_finite()
+                && candle.high > 0.0
+                && candle.low.is_finite()
+                && candle.low > 0.0
+                && candle.close.is_finite()
+                && candle.close > 0.0
+                && candle.high >= candle.open.max(candle.close)
+                && candle.low <= candle.open.min(candle.close)
+        }));
+        assert_ne!(
+            log_bar_tuple_signatures(&synthetic, true),
+            log_bar_tuple_signatures(&source, true)
+        );
+        assert_log_bar_tuple_multisets_close(
+            log_bar_tuple_signatures(&synthetic, true),
+            log_bar_tuple_signatures(&source, true),
+        );
+    }
+
+    #[test]
+    fn log_bar_permutation_supports_timestamp_volume_without_shuffling_slot_volume() {
+        let source = log_bar_source_candles();
+        let config = LogBarPermutationConfigPlanSpec {
+            volume_mode: LogBarPermutationVolumeMode::Timestamp,
+        };
+        let seed = derive_monte_carlo_seed(7, 0, 0, LOG_BAR_PERMUTATION_PROCEDURE_ID);
+
+        let synthetic =
+            apply_log_bar_permutation_to_candles(&source, &config, seed, 0, "Primary").unwrap();
+
+        assert_eq!(
+            synthetic
+                .iter()
+                .map(|candle| candle.volume)
+                .collect::<Vec<_>>(),
+            source
+                .iter()
+                .map(|candle| candle.volume)
+                .collect::<Vec<_>>()
+        );
+        assert_log_bar_tuple_multisets_close(
+            log_bar_tuple_signatures(&synthetic, false),
+            log_bar_tuple_signatures(&source, false),
+        );
+    }
+
+    #[test]
+    fn log_bar_permutation_uses_shared_ohlc_repair_rule() {
+        let mut candle = candle_for("AAPL", Timeframe::days(1), day(1), 10.0);
+        candle.open = 12.0;
+        candle.high = 9.0;
+        candle.low = 11.0;
+        candle.close = 10.0;
+
+        repair_ohlc_range_to_body(&mut candle);
+
+        assert_eq!(candle.high, 12.0);
+        assert_eq!(candle.low, 10.0);
+        validate_synthetic_candle_values(&candle, "monte_carlo::log_bar_permutation", "Primary")
+            .unwrap();
+    }
+
+    #[test]
+    fn log_bar_permutation_rejects_invalid_source_prices_and_ohlc_invariants() {
+        let mut non_positive = log_bar_source_candles();
+        non_positive[1].open = 0.0;
+        let err = apply_log_bar_permutation_to_candles(
+            &non_positive,
+            &LogBarPermutationConfigPlanSpec::new(),
+            42,
+            0,
+            "Primary",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("non-finite or non-positive open"));
+
+        let mut non_finite = log_bar_source_candles();
+        non_finite[1].close = f64::INFINITY;
+        let err = apply_log_bar_permutation_to_candles(
+            &non_finite,
+            &LogBarPermutationConfigPlanSpec::new(),
+            42,
+            0,
+            "Primary",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("non-finite or non-positive close"));
+
+        let mut invalid_invariants = log_bar_source_candles();
+        invalid_invariants[1].high = invalid_invariants[1].open - 1.0;
+        let err = apply_log_bar_permutation_to_candles(
+            &invalid_invariants,
+            &LogBarPermutationConfigPlanSpec::new(),
+            42,
+            0,
+            "Primary",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("violates OHLC invariants"));
+    }
+
+    #[test]
+    fn log_bar_permutation_rejects_insufficient_population() {
+        let source = log_bar_source_candles();
+        let too_few_tuples = apply_log_bar_permutation_to_candles(
+            &source[..2],
+            &LogBarPermutationConfigPlanSpec::new(),
+            42,
+            0,
+            "Primary",
+        )
+        .unwrap_err();
+        assert!(too_few_tuples
+            .to_string()
+            .contains("at least two permutable log-bar tuples"));
+
+        let no_tradable_after_warmup = apply_log_bar_permutation_to_candles(
+            &source[..3],
+            &LogBarPermutationConfigPlanSpec::new(),
+            42,
+            3,
+            "Primary",
+        )
+        .unwrap_err();
+        assert!(no_tradable_after_warmup
+            .to_string()
+            .contains("Runtime warmup requires 3 and at least one tradable candle"));
+    }
+
+    #[test]
     fn monte_carlo_diagnostics_count_runtime_exit_events() {
         let plan = r#"
 fn plan() {
@@ -2945,6 +3698,60 @@ fn plan() {
 
         let msg = err.to_string();
         assert!(msg.contains("monte_carlo::ohlc_noise"));
+        assert!(msg.contains("single-timeframe"));
+        assert!(msg.contains("#93"));
+    }
+
+    #[test]
+    fn log_bar_permutation_rejects_multi_timeframe_configs_until_reaggregation_issue_93() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let err = execute_plan(
+            r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::optional(H1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-01"), time("2020-01-02"));
+    let baseline = baseline::run(dataset, run_config::new().with_balance(10000.0));
+    let synthetic = monte_carlo::log_bar_permutation(
+        baseline,
+        monte_carlo_config::new(1, 42),
+        log_bar_permutation_config::new()
+    );
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("multi-timeframe log-bar permutation")
+                .with_baseline(baseline)
+                .with_synthetic(synthetic)
+        )
+}
+"#,
+            |_symbol, timeframe, _window| match timeframe {
+                tf if tf == primary => Ok(vec![
+                    candle_for("AAPL", primary, day(1), 100.0),
+                    candle_for("AAPL", primary, day(1) + 60_000, 101.0),
+                    candle_for("AAPL", primary, day(1) + 120_000, 102.0),
+                ]),
+                tf if tf == secondary => Ok(vec![candle_for("AAPL", secondary, day(1), 200.0)]),
+                _ => Ok(Vec::new()),
+            },
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("monte_carlo::log_bar_permutation"));
         assert!(msg.contains("single-timeframe"));
         assert!(msg.contains("#93"));
     }

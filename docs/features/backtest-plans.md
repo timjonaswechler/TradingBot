@@ -89,6 +89,10 @@ Current plan-facing constructors/functions:
 - `ohlc_noise_config::new(mutation_probability, max_atr_change)`
 - `ohlc_noise_config::new(...).with_atr_period(period)`
 - `monte_carlo::ohlc_noise(baseline, config, ohlc_noise_config)`
+- `log_bar_permutation_config::new()`
+- `log_bar_permutation_config::new().with_shuffled_volume()`
+- `log_bar_permutation_config::new().with_timestamp_volume()`
+- `monte_carlo::log_bar_permutation(baseline, config, log_bar_permutation_config)`
 - `plan_test::new(name).with_baseline(...).with_synthetic(...)`
 - `plan_result::new().with_title(...).with_test(...)`
 
@@ -142,8 +146,10 @@ Each test section includes the baseline Runtime-backed metrics:
 
 Synthetic Market Data Monte Carlo tests add a comparison section:
 
-- `Procedure` identifies the mutation procedure, such as `Candle permutation`
-  or `ATR-scaled OHLC noise`.
+- `Procedure` identifies the mutation procedure, such as `Candle permutation`,
+  `ATR-scaled OHLC noise`, or `Log-difference bar permutation`.
+- Log-difference bar permutation reports also show `Volume mode` as either
+  `shuffled volume` or `timestamp volume`.
 - `Iterations` is the number declared in `monte_carlo_config::new(...)`.
 - The metric table compares baseline final equity and max drawdown against
   synthetic p5, p50, and p95 values.
@@ -175,11 +181,16 @@ full strategy against each synthetic candle path. Currently available procedures
   mutated body, and leaves identity fields plus volume unchanged. This procedure
   is intentionally single-timeframe only; multi-timeframe consistency is reserved
   for #93 lowest-timeframe reaggregation.
+- #91 log-difference bar permutation — keeps the first candle as a deterministic
+  anchor, shuffles whole log-difference bar tuples, reconstructs a synthetic
+  single-timeframe OHLC path, repairs OHLC ranges, and can either shuffle volume
+  with each tuple or keep volume attached to each timestamp slot. This procedure
+  is intentionally single-timeframe only; multi-timeframe consistency is reserved
+  for #93 lowest-timeframe reaggregation.
 
 Future Synthetic Market Data mutation issues remain separate and are not
 available yet:
 
-- #91 — log-difference bar permutation
 - #93 — regenerate higher timeframes from a mutated lowest timeframe
 - #94 — composed Synthetic Market Data mutation pipelines
 
