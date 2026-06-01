@@ -147,12 +147,26 @@ Rules:
 ## Indicators
 
 Indicator bindings consume `CandleHistory` values from `market.candles(...)`.
-The typed runtime currently exposes:
+The typed runtime currently exposes the scalar v1 pack:
 
 | Function | Returns |
 | --- | --- |
-| `indicators::sma(history, period)` | `float` or `()` |
-| `indicators::sma(history, period, offset)` | `float` or `()` |
+| `indicators::sma(history, period)` / `indicators::sma(history, period, offset)` | `float` or `()` |
+| `indicators::ema(history, period)` / `indicators::ema(history, period, offset)` | `float` or `()` |
+| `indicators::dema(history, period)` / `indicators::dema(history, period, offset)` | `float` or `()` |
+| `indicators::tema(history, period)` / `indicators::tema(history, period, offset)` | `float` or `()` |
+| `indicators::slope(history, period)` / `indicators::slope(history, period, offset)` | `float` or `()` |
+| `indicators::rsi(history, period)` / `indicators::rsi(history, period, offset)` | `float` or `()` |
+| `indicators::roc(history, period)` / `indicators::roc(history, period, offset)` | `float` or `()` |
+| `indicators::cci(history, period)` / `indicators::cci(history, period, offset)` | `float` or `()` |
+| `indicators::williams_r(history, period)` / `indicators::williams_r(history, period, offset)` | `float` or `()` |
+| `indicators::atr(history, period)` / `indicators::atr(history, period, offset)` | `float` or `()` |
+| `indicators::mfi(history, period)` / `indicators::mfi(history, period, offset)` | `float` or `()` |
+| `indicators::obv(history)` / `indicators::obv(history, offset)` | `float` or `()` |
+
+Full indicator documentation remains tracked by #26; structured-result,
+session-/period-aware, OBV-series, and strategic Fibonacci APIs are outside this
+scalar Runtime binding pack.
 
 Example:
 
@@ -174,7 +188,8 @@ fn on_tick(market, context) {
 ```
 
 Most history-dependent indicators return `()` until enough visible history is
-available. Keep explicit warmup guards in strategy code.
+available or when a period/offset argument is invalid. Keep explicit warmup
+guards in strategy code.
 
 ## Strategy Context
 

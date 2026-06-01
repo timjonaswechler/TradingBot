@@ -85,7 +85,9 @@ let newest = candles[1];
 
 Candle histories are 1-indexed and newest-first for strategy authors:
 `market.candles()[1]` is the current Primary candle. Out-of-range indexes return
-`()`. Indicator bindings consume histories returned by `market.candles(...)`:
+`()`. Scalar indicator bindings consume histories returned by
+`market.candles(...)`; the v1 pack includes `sma`, `ema`, `dema`, `tema`,
+`slope`, `rsi`, `roc`, `cci`, `williams_r`, `atr`, `mfi`, and scalar `obv`:
 
 ```rhai
 fn on_tick(market, context) {
@@ -197,8 +199,9 @@ Ticks until the Primary Timeframe and each configured Secondary Timeframe have
 satisfied warmup. During warmup, `on_tick` is not called and Strategy State is
 not mutated.
 
-Indicators can still return `()` when there is insufficient visible history, so
-keep explicit guards in strategy logic:
+Indicators can still return `()` when there is insufficient visible history or
+an invalid period/offset argument, so keep explicit guards in strategy logic.
+Full per-indicator documentation remains tracked by #26.
 
 ```rhai
 let s = indicators::sma(market.candles(), 20);

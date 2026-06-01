@@ -14,7 +14,14 @@ use crate::{
     StrategyError, StrategyHandler, StrategyState, StrategyStateValue, StrategyTickInput,
     StrategyTickResult,
 };
-use indicators::{anchored::evaluators::TrendLine, trend::sma::sma};
+use indicators::{
+    anchored::evaluators::TrendLine,
+    momentum::{cci::cci, roc::roc, rsi::rsi, williams_r::williams_r},
+    slope::slope,
+    trend::{dema::dema, ema::ema, sma::sma, tema::tema},
+    volatility::atr::atr,
+    volume::{mfi::mfi, obv::obv},
+};
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
 use shared::{Candle, Position, Timeframe};
 use std::{collections::HashMap, error::Error, fmt, path::Path, sync::Arc};
@@ -841,36 +848,127 @@ fn register_anchored_api(engine: &mut RhaiEngine) {
 
 fn register_indicator_api(engine: &mut RhaiEngine) {
     let mut indicators_module = Module::new();
+
+    register_period_close_indicator(&mut indicators_module, "sma", sma);
+    register_period_close_indicator(&mut indicators_module, "ema", ema);
+    register_period_close_indicator(&mut indicators_module, "dema", dema);
+    register_period_close_indicator(&mut indicators_module, "tema", tema);
+    register_period_close_indicator(&mut indicators_module, "slope", slope);
+    register_period_close_indicator(&mut indicators_module, "rsi", rsi);
+    register_period_close_indicator(&mut indicators_module, "roc", roc);
+
+    register_period_candle_indicator(&mut indicators_module, "cci", cci);
+    register_period_candle_indicator(&mut indicators_module, "williams_r", williams_r);
+    register_period_candle_indicator(&mut indicators_module, "atr", atr);
+    register_period_candle_indicator(&mut indicators_module, "mfi", mfi);
+
     indicators_module.set_native_fn(
-        "sma",
-        |history: &mut RhaiCandleHistory, period: INT| -> Result<Dynamic, Box<EvalAltResult>> {
-            Ok(option_f64(sma(
-                &history.chronological_closes_before_offset(0),
-                non_negative_usize(period)?,
+        "obv",
+        |history: &mut RhaiCandleHistory| -> Result<Dynamic, Box<EvalAltResult>> {
+            Ok(option_f64(obv(
+                history.chronological_candles_before_offset(0)
             )))
         },
     );
     indicators_module.set_native_fn(
-        "sma",
-        |history: &mut RhaiCandleHistory,
-         period: INT,
-         offset: INT|
-         -> Result<Dynamic, Box<EvalAltResult>> {
-            Ok(option_f64(sma(
-                &history.chronological_closes_before_offset(non_negative_usize(offset)?),
-                non_negative_usize(period)?,
+        "obv",
+        |history: &mut RhaiCandleHistory, offset: INT| -> Result<Dynamic, Box<EvalAltResult>> {
+            let Some(offset) = non_negative_usize(offset) else {
+                return Ok(Dynamic::UNIT);
+            };
+            Ok(option_f64(obv(
+                history.chronological_candles_before_offset(offset)
             )))
         },
     );
+
     engine.register_static_module("indicators", Arc::new(indicators_module));
+}
+
+fn register_period_close_indicator(
+    module: &mut Module,
+    name: &'static str,
+    indicator: fn(&[f64], usize) -> Option<f64>,
+) {
+    module.set_native_fn(
+        name,
+        move |history: &mut RhaiCandleHistory,
+              period: INT|
+              -> Result<Dynamic, Box<EvalAltResult>> {
+            Ok(period_close_indicator(history, period, 0, indicator))
+        },
+    );
+    module.set_native_fn(
+        name,
+        move |history: &mut RhaiCandleHistory,
+              period: INT,
+              offset: INT|
+              -> Result<Dynamic, Box<EvalAltResult>> {
+            Ok(period_close_indicator(history, period, offset, indicator))
+        },
+    );
+}
+
+fn register_period_candle_indicator(
+    module: &mut Module,
+    name: &'static str,
+    indicator: fn(&[Candle], usize) -> Option<f64>,
+) {
+    module.set_native_fn(
+        name,
+        move |history: &mut RhaiCandleHistory,
+              period: INT|
+              -> Result<Dynamic, Box<EvalAltResult>> {
+            Ok(period_candle_indicator(history, period, 0, indicator))
+        },
+    );
+    module.set_native_fn(
+        name,
+        move |history: &mut RhaiCandleHistory,
+              period: INT,
+              offset: INT|
+              -> Result<Dynamic, Box<EvalAltResult>> {
+            Ok(period_candle_indicator(history, period, offset, indicator))
+        },
+    );
+}
+
+fn period_close_indicator(
+    history: &RhaiCandleHistory,
+    period: INT,
+    offset: INT,
+    indicator: fn(&[f64], usize) -> Option<f64>,
+) -> Dynamic {
+    let (Some(period), Some(offset)) = (non_negative_usize(period), non_negative_usize(offset))
+    else {
+        return Dynamic::UNIT;
+    };
+    let closes = history.chronological_closes_before_offset(offset);
+    option_f64(indicator(&closes, period))
+}
+
+fn period_candle_indicator(
+    history: &RhaiCandleHistory,
+    period: INT,
+    offset: INT,
+    indicator: fn(&[Candle], usize) -> Option<f64>,
+) -> Dynamic {
+    let (Some(period), Some(offset)) = (non_negative_usize(period), non_negative_usize(offset))
+    else {
+        return Dynamic::UNIT;
+    };
+    option_f64(indicator(
+        history.chronological_candles_before_offset(offset),
+        period,
+    ))
 }
 
 fn option_f64(value: Option<f64>) -> Dynamic {
     value.map(Dynamic::from).unwrap_or(Dynamic::UNIT)
 }
 
-fn non_negative_usize(value: INT) -> Result<usize, Box<EvalAltResult>> {
-    usize::try_from(value).map_err(|_| "value must be a non-negative integer".into())
+fn non_negative_usize(value: INT) -> Option<usize> {
+    usize::try_from(value).ok()
 }
 
 fn strategy_state_get_int(
@@ -1592,6 +1690,253 @@ if average != () && average == 101.0 {
     }
 
     #[test]
+    fn primary_market_view_history_accepts_v1_scalar_indicator_pack() {
+        let source = source_returning(
+            r#"
+let candles = market.candles();
+let ema = indicators::ema(candles, 5);
+let dema = indicators::dema(candles, 5);
+let tema = indicators::tema(candles, 5);
+let slope = indicators::slope(candles, 5);
+let rsi = indicators::rsi(candles, 5);
+let roc = indicators::roc(candles, 5);
+let cci = indicators::cci(candles, 5);
+let williams = indicators::williams_r(candles, 5);
+let atr = indicators::atr(candles, 5);
+let mfi = indicators::mfi(candles, 5);
+let obv = indicators::obv(candles);
+
+let all_available = true;
+if ema == () { all_available = false; }
+if dema == () { all_available = false; }
+if tema == () { all_available = false; }
+if slope == () { all_available = false; }
+if rsi == () { all_available = false; }
+if roc == () { all_available = false; }
+if cci == () { all_available = false; }
+if williams == () { all_available = false; }
+if atr == () { all_available = false; }
+if mfi == () { all_available = false; }
+if obv == () { all_available = false; }
+
+if all_available {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+        let mut latest_step = None;
+
+        for index in 1..=30 {
+            let close = index as f64;
+            latest_step = Some(
+                runtime
+                    .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                        close,
+                        close + 0.5,
+                        close - 0.5,
+                        close,
+                        index * 60_000,
+                        Timeframe::minutes(1),
+                    )))
+                    .expect("primary completed candle should be accepted"),
+            );
+        }
+
+        assert_eq!(
+            produced_decision(&latest_step.expect("at least one step should run")),
+            StrategyDecision::open_long(1.0)
+        );
+    }
+
+    #[test]
+    fn v1_scalar_indicator_pack_supports_offset_overloads() {
+        let source = source_returning(
+            r#"
+let candles = market.candles();
+let sma_offset = indicators::sma(candles, 5, 1);
+let ema = indicators::ema(candles, 5, 1);
+let dema = indicators::dema(candles, 5, 1);
+let tema = indicators::tema(candles, 5, 1);
+let slope = indicators::slope(candles, 5, 1);
+let rsi = indicators::rsi(candles, 5, 1);
+let roc = indicators::roc(candles, 5, 1);
+let cci = indicators::cci(candles, 5, 1);
+let williams = indicators::williams_r(candles, 5, 1);
+let atr = indicators::atr(candles, 5, 1);
+let mfi = indicators::mfi(candles, 5, 1);
+let obv_offset = indicators::obv(candles, 1);
+
+let all_available = true;
+if sma_offset == () { all_available = false; }
+if ema == () { all_available = false; }
+if dema == () { all_available = false; }
+if tema == () { all_available = false; }
+if slope == () { all_available = false; }
+if rsi == () { all_available = false; }
+if roc == () { all_available = false; }
+if cci == () { all_available = false; }
+if williams == () { all_available = false; }
+if atr == () { all_available = false; }
+if mfi == () { all_available = false; }
+if obv_offset == () { all_available = false; }
+
+if all_available && sma_offset == 27.0 && obv_offset == 28000.0 {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+        let mut latest_step = None;
+
+        for index in 1..=30 {
+            let close = index as f64;
+            latest_step = Some(
+                runtime
+                    .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                        close,
+                        close + 0.5,
+                        close - 0.5,
+                        close,
+                        index * 60_000,
+                        Timeframe::minutes(1),
+                    )))
+                    .expect("primary completed candle should be accepted"),
+            );
+        }
+
+        assert_eq!(
+            produced_decision(&latest_step.expect("at least one step should run")),
+            StrategyDecision::open_long(1.0)
+        );
+    }
+
+    #[test]
+    fn scalar_indicator_bindings_return_unit_for_insufficient_history_and_invalid_periods() {
+        let source = source_returning(
+            r#"
+let candles = market.candles();
+let all_unit = true;
+
+if indicators::sma(candles, 2) != () { all_unit = false; }
+if indicators::sma(candles, 0) != () { all_unit = false; }
+if indicators::ema(candles, -5) != () { all_unit = false; }
+if indicators::ema(candles, 5, -1) != () { all_unit = false; }
+if indicators::dema(candles, -5) != () { all_unit = false; }
+if indicators::tema(candles, -5) != () { all_unit = false; }
+if indicators::slope(candles, -5) != () { all_unit = false; }
+if indicators::rsi(candles, -5) != () { all_unit = false; }
+if indicators::roc(candles, -5) != () { all_unit = false; }
+if indicators::cci(candles, -5) != () { all_unit = false; }
+if indicators::williams_r(candles, -5) != () { all_unit = false; }
+if indicators::atr(candles, -5) != () { all_unit = false; }
+if indicators::mfi(candles, -5) != () { all_unit = false; }
+if indicators::obv(candles) != () { all_unit = false; }
+if indicators::obv(candles, -1) != () { all_unit = false; }
+
+if all_unit {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+
+        let step = run_completed_tick(&source);
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn secondary_market_view_history_accepts_v1_scalar_indicator_pack() {
+        let source = r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(H1))
+}
+
+fn scalar_pack_available(candles) {
+    let ema = indicators::ema(candles, 5);
+    let dema = indicators::dema(candles, 5);
+    let tema = indicators::tema(candles, 5);
+    let slope = indicators::slope(candles, 5);
+    let rsi = indicators::rsi(candles, 5);
+    let roc = indicators::roc(candles, 5);
+    let cci = indicators::cci(candles, 5);
+    let williams = indicators::williams_r(candles, 5);
+    let atr = indicators::atr(candles, 5);
+    let mfi = indicators::mfi(candles, 5);
+    let obv = indicators::obv(candles);
+
+    let all_available = true;
+    if ema == () { all_available = false; }
+    if dema == () { all_available = false; }
+    if tema == () { all_available = false; }
+    if slope == () { all_available = false; }
+    if rsi == () { all_available = false; }
+    if roc == () { all_available = false; }
+    if cci == () { all_available = false; }
+    if williams == () { all_available = false; }
+    if atr == () { all_available = false; }
+    if mfi == () { all_available = false; }
+    if obv == () { all_available = false; }
+    all_available
+}
+
+fn on_tick(market, context) {
+    if scalar_pack_available(market.candles(H1)) {
+        decision::open_long(1.0)
+    } else {
+        decision::hold()
+    }
+}
+"#;
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let mut runtime = TradingRuntime::with_config(
+            RuntimeConfig::with_secondary_configs(
+                "BTC-USD",
+                Timeframe::minutes(1),
+                [SecondaryTimeframeConfig::required(Timeframe::hours(1), 0)],
+            ),
+            PortfolioState::new(1_000.0),
+            0,
+            strategy,
+        );
+
+        for index in 1..=30 {
+            let close = index as f64;
+            runtime
+                .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                    close,
+                    close + 0.5,
+                    close - 0.5,
+                    close,
+                    index as i64 * 3_600_000,
+                    Timeframe::hours(1),
+                )))
+                .expect("secondary completed candle should be accepted");
+        }
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                100.0,
+                30 * 3_600_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("primary completed candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
     fn warmup_input_populates_market_state_without_calling_rhai_on_tick() {
         let source = source_returning(
             r#"
@@ -1617,6 +1962,62 @@ if previous != () && previous.close == 99.0 {
             .events
             .iter()
             .any(|event| matches!(event, RuntimeEvent::StrategyTickStarted { .. })));
+        assert_eq!(
+            produced_decision(&first_strategy_tick),
+            StrategyDecision::open_long(1.0)
+        );
+    }
+
+    #[test]
+    fn scalar_indicators_read_warmup_rebuilt_market_state_not_strategy_buffers() {
+        let source = source_returning(
+            r#"
+let seen = context.state.get("seen", 0);
+context.state.set("seen", seen + 1);
+
+let candles = market.candles();
+let tema = indicators::tema(candles, 5);
+let obv = indicators::obv(candles);
+
+if seen == 0 && tema != () && obv == 29000.0 {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 29, strategy);
+
+        for index in 1..=29 {
+            let close = index as f64;
+            let warmup = runtime
+                .on_market_input(MarketInput::WarmupCandle(candle_ohlc_at(
+                    close,
+                    close + 0.5,
+                    close - 0.5,
+                    close,
+                    index * 60_000,
+                    Timeframe::minutes(1),
+                )))
+                .expect("warmup candle should be accepted");
+            assert!(!warmup
+                .events
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::StrategyTickStarted { .. })));
+        }
+
+        let first_strategy_tick = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                30.0,
+                30.5,
+                29.5,
+                30.0,
+                30 * 60_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("completed primary candle should be accepted");
+
         assert_eq!(
             produced_decision(&first_strategy_tick),
             StrategyDecision::open_long(1.0)

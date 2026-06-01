@@ -149,9 +149,16 @@ fn warmup_hint_for_call(call: &FnCallExpr, scope: &Scope<'_>) -> Option<usize> {
     }
 
     match call.name.as_str() {
-        // Single-period indicators.
-        "sma" | "ema" | "dema" | "tema" | "adx" | "rsi" | "cci" | "williams_r" | "roc" | "atr"
-        | "mfi" | "slope" | "bollinger" | "keltner" => arg(call, 1, scope),
+        // Single declared-period indicators. The detector's final +1 supplies
+        // the donor warmup margin and the extra candle needed by change/TR
+        // indicators such as RSI, ROC, ATR, and MFI.
+        "sma" | "ema" | "adx" | "rsi" | "cci" | "williams_r" | "roc" | "atr" | "mfi" | "slope"
+        | "bollinger" | "keltner" => arg(call, 1, scope),
+
+        // DEMA/TEMA apply EMA repeatedly, so their minimum history is larger
+        // than one simple period before the detector's extra candle is added.
+        "dema" => arg(call, 1, scope).map(dema_history_requirement),
+        "tema" => arg(call, 1, scope).map(tema_history_requirement),
 
         // Stochastic variants.
         "stochastic_fast" => arg(call, 1, scope),
@@ -181,6 +188,14 @@ fn warmup_hint_for_call(call: &FnCallExpr, scope: &Scope<'_>) -> Option<usize> {
             .filter_map(|expr| resolve_period(expr, scope))
             .max(),
     }
+}
+
+fn dema_history_requirement(period: usize) -> usize {
+    period.saturating_mul(2).saturating_sub(1)
+}
+
+fn tema_history_requirement(period: usize) -> usize {
+    period.saturating_mul(3).saturating_sub(2)
 }
 
 fn resolve_period(expr: &Expr, scope: &Scope<'_>) -> Option<usize> {
@@ -284,6 +299,52 @@ fn on_tick(market, context) {
         let strategy = load(source);
 
         assert_eq!(detect_auto_warmup(strategy.ast(), strategy.scope()), 27);
+    }
+
+    #[test]
+    fn detects_v1_scalar_indicator_pack_names() {
+        for (call, expected) in [
+            ("indicators::sma(market.candles(), 7)", 8),
+            ("indicators::ema(market.candles(), 7)", 8),
+            ("indicators::dema(market.candles(), 7)", 14),
+            ("indicators::tema(market.candles(), 7)", 20),
+            ("indicators::slope(market.candles(), 7)", 8),
+            ("indicators::rsi(market.candles(), 7)", 8),
+            ("indicators::roc(market.candles(), 7)", 8),
+            ("indicators::cci(market.candles(), 7)", 8),
+            ("indicators::williams_r(market.candles(), 7)", 8),
+            ("indicators::atr(market.candles(), 7)", 8),
+            ("indicators::mfi(market.candles(), 7)", 8),
+            ("indicators::obv(market.candles())", 2),
+        ] {
+            let source = source_with_on_tick(&format!(
+                r#"
+let value = {call};
+decision::hold()
+"#
+            ));
+            let strategy = load(&source);
+
+            assert_eq!(
+                detect_auto_warmup(strategy.ast(), strategy.scope()),
+                expected,
+                "{call}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_dema_and_tema_expanded_history_requirements() {
+        let source = source_with_on_tick(
+            r#"
+let dema_value = indicators::dema(market.candles(), 20);
+let tema_value = indicators::tema(market.candles(), 20);
+decision::hold()
+"#,
+        );
+        let strategy = load(&source);
+
+        assert_eq!(detect_auto_warmup(strategy.ast(), strategy.scope()), 59);
     }
 
     #[test]
