@@ -28,9 +28,25 @@ _Avoid_: Trading Engine when only script execution is meant
 The component that coordinates a trading session across market data, strategy execution, portfolio state, and execution. A Trading Runtime may be used by live trading or backtesting.
 _Avoid_: Strategy Engine when portfolio/execution coordination is meant
 
+**Runtime Session**:
+A single running Trading Runtime instance bound to one strategy, one Runtime Asset, one runtime-local Portfolio State, one Market State, one Strategy State, and one ordered Runtime Event stream. A Runtime Session can be hosted by a Live Runner Session or a Backtest Session.
+_Avoid_: Runner Session, Live Runner Session, Backtest Session, Strategy State
+
+**Runner Session**:
+A runner-owned execution context that hosts one or more Runtime Sessions and owns runner concerns such as market data source, IO adapters, timing or replay orchestration, shutdown policy, and reporting policy.
+_Avoid_: Runtime Session, Trading Runtime, Strategy State
+
+**Live Runner Session**:
+A Runner Session for live trading. In the first model, a Live Runner Session hosts exactly one active Runtime Session while it coordinates live market input, live IO, and runner shutdown behavior.
+_Avoid_: Runtime Session, Backtest Session, Market Session
+
+**Backtest Session**:
+A Runner Session for historical replay or research. A Backtest Session is the concrete execution of a direct backtest or Backtest Plan and may coordinate multiple Runtime Sessions for baselines, variants, or Synthetic Market Data comparisons, but it does not own Strategy Decisions or Portfolio Transitions.
+_Avoid_: Backtest Plan, Runtime Session, Trading Runtime
+
 **Backtest Plan**:
-An operator-authored research workflow that assembles one or more Runtime-backed historical runs and comparisons into a structured report result. A Backtest Plan orchestrates datasets, run configuration, and research procedures, but it does not own Strategy Decisions or Portfolio Transitions.
-_Avoid_: Trading Engine, Strategy Script
+An operator-authored research workflow definition that assembles one or more Runtime-backed historical runs and comparisons into a structured report result. A Backtest Plan orchestrates datasets, run configuration, and research procedures, but it does not own Strategy Decisions or Portfolio Transitions and is distinct from the Backtest Session that executes it.
+_Avoid_: Backtest Session, Trading Engine, Strategy Script
 
 **Strategy Hook**:
 A named strategy function that the runtime may call at a defined point in the trading session. Missing optional hooks use runtime defaults or no-op behavior.
@@ -95,6 +111,10 @@ _Avoid_: Warmup Input, historical preload
 **Market Data Source**:
 The origin of candles that drive a run. Live trading uses a provider-backed source that fetches new candles over time; backtesting uses a historical source that replays stored candles.
 _Avoid_: Engine, Strategy
+
+**Market Session**:
+The market-data calendar or trading-hours context used to decide which candle intervals belong to a visible market session, such as regular trading hours, extended hours, holidays, or exchange session boundaries. A Market Session can affect provider fetching, dataset loading, and candle interpretation, but it is distinct from a Runtime Session, Runner Session, and Strategy State.
+_Avoid_: Runtime Session, Runner Session, Strategy State
 
 **Synthetic Market Data**:
 Historical-derived candle data transformed for robustness testing before it is fed to a backtest. Synthetic Market Data may reorder, perturb, or regenerate candles, but the Trading Runtime treats it as ordinary market input.
@@ -187,6 +207,8 @@ _Avoid_: Live Tick Compute, Trading Runtime
 ## Flagged ambiguities
 
 **Engine** is currently ambiguous. Use **Strategy Engine** for Rhai/script execution and **Trading Runtime** for the higher-level trading session coordinator.
+
+**Session** is currently ambiguous. Use **Runtime Session** for one running Trading Runtime instance, **Live Runner Session** for the live runner's execution context, **Backtest Session** for a concrete historical replay or research execution, and **Market Session** for trading-hours/calendar context.
 
 **Run configuration** owns concrete runner/session settings such as Runtime Asset, mode/source choices, and portfolio inputs. **Strategy Configuration** owns the strategy timeframe contract: the Primary Timeframe plus any Secondary-Timeframe requirements/defaults. Avoid defining timeframes independently in both places.
 
