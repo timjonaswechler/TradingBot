@@ -1,6 +1,6 @@
 # ADR 0001: Model strategic Fibonacci as an anchored structure indicator
 
-- Status: accepted
+- Status: accepted; partially superseded by ADR 0008 for Market Structure terminology/API direction
 - Date: 2026-05-11
 
 ## Context
@@ -50,6 +50,14 @@ kind: "fibonacci_retracement"
 
 This output should be documented as intentionally minimal in v1 and explicitly
 open to future expansion.
+
+### Update from ADR 0008
+
+ADR 0008 reframes the long-term strategy-facing API from `anchored` to explicit
+Market Structure terminology. Before implementing strategic Fibonacci, this ADR
+should be revised or superseded so Fibonacci is described as a Structure Object
+or related Market Structure primitive declared through `structure_config()`,
+not as a new extension of the old `anchored` authoring term.
 
 ### Naming direction
 

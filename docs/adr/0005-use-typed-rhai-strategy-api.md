@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-05-29
 
-The new Trading Runtime exposes strategy-facing Rhai APIs as typed custom values built through constructors and fluent methods rather than as loosely parsed object maps and magic strings. This applies to Strategy Decisions, Strategy Configuration, Timeframes, Secondary-Timeframe requirements, and Anchored/structure-aware configuration.
+The new Trading Runtime exposes strategy-facing Rhai APIs as typed custom values built through constructors and fluent methods rather than as loosely parsed object maps and magic strings. This applies to Strategy Decisions, Strategy Configuration, Timeframes, Secondary-Timeframe requirements, and Market Structure / currently implemented anchored configuration.
 
 Examples of the intended shape:
 

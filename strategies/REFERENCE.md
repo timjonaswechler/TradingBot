@@ -323,6 +323,11 @@ without changing the strategy hook shape.
 
 ## Anchored / structure-aware compute
 
+This section documents the current implemented API. #84 / ADR 0008 accepts a
+future Market Structure authoring surface using `structure_config()` and
+`market.structure.active(...)`; do not expand `anchored` as the long-term
+strategy-authoring term.
+
 `anchored_config()` returns a typed `AnchoredConfig`. Anchored outputs are read
 through `market`.
 

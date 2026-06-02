@@ -34,6 +34,7 @@ The current engine crate should not remain as a separate legacy strategy-engine 
 - A strategy has one Primary Timeframe that triggers tradable ticks.
 - Secondary Timeframes provide context but do not independently trigger trades in the first version.
 - Strategy-facing market data should be exposed through a Market View, not through the portfolio/runtime context.
+- Market Structure is a runtime-owned derived domain from Market State. Strategies declare Structure needs through explicit typed hooks and read active snapshots through Market View; Structure Object truth, lifecycle, and annotations remain runtime-owned.
 - Target Rhai API should move toward `on_tick(market, context)`.
 - New strategy decisions should use explicit direction-aware intents: `HOLD`, `OPEN_LONG`, `CLOSE_LONG`, `OPEN_SHORT`, and `CLOSE_SHORT`, rather than the old `BUY`, `SELL`, `SHORT`, `COVER` signal names.
 - Opening strategy decisions should specify `quantity` as asset units/contracts. The first runtime version should not interpret ambiguous `size` or calculate quantity from notional/balance fractions; strategies can calculate quantity from `context` and `market` themselves.
