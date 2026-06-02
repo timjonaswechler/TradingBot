@@ -33,7 +33,9 @@ pub mod warmup;
 pub use anchored::{
     AnchoredConfiguration, AnchoredConfigurationError, AnchoredDetectorSpec,
     AnchoredEvaluatorConfiguration, AnchoredEvaluatorSpec, AnchoredOutput, AnchoredOutputs,
-    AnchoredRuntime, PivotDetectorConfiguration, PivotEvent, PivotSide,
+    AnchoredRuntime, PivotDetectorConfiguration, PivotEvent, PivotSide, StructureConfiguration,
+    StructureConfigurationError, StructureObjectConfiguration, StructureObjectRegistry,
+    StructurePointRegistry, StructurePointSource,
 };
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,

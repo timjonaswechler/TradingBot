@@ -12,7 +12,8 @@ use crate::{
     AnchoredRuntime, MarketState, PivotDetectorConfiguration, PivotEvent, PivotSide,
     RuntimePortfolioSnapshot, SecondaryTimeframeConfig, StrategyConfiguration, StrategyDecision,
     StrategyError, StrategyHandler, StrategyState, StrategyStateValue, StrategyTickInput,
-    StrategyTickResult,
+    StrategyTickResult, StructureConfiguration, StructureObjectConfiguration,
+    StructureObjectRegistry, StructurePointRegistry, StructurePointSource,
 };
 use indicators::{
     anchored::evaluators::TrendLine,
@@ -24,7 +25,13 @@ use indicators::{
 };
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
 use shared::{Candle, Position, Timeframe};
-use std::{collections::HashMap, error::Error, fmt, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt,
+    path::Path,
+    sync::Arc,
+};
 
 /// Strategy hooks detected during Rhai strategy loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +39,7 @@ pub struct RhaiStrategyHooks {
     pub has_on_tick: bool,
     pub has_strategy_config: bool,
     pub has_anchored_config: bool,
+    pub has_structure_config: bool,
 }
 
 /// Runtime-owned compiled Rhai strategy and load-time metadata.
@@ -42,6 +50,8 @@ pub struct RhaiStrategy {
     hooks: RhaiStrategyHooks,
     strategy_config: StrategyConfiguration,
     anchored_config: Option<AnchoredConfiguration>,
+    structure_config: Option<StructureConfiguration>,
+    structure_object_ids: Option<HashSet<String>>,
     anchored_runtime: Option<AnchoredRuntime>,
 }
 
@@ -51,12 +61,14 @@ struct RhaiMarketView {
     primary_history: RhaiCandleHistory,
     histories_by_timeframe: HashMap<Timeframe, Option<RhaiCandleHistory>>,
     anchored_outputs: Option<AnchoredOutputs>,
+    structure_object_ids: Option<HashSet<String>>,
 }
 
 impl RhaiMarketView {
     fn from_runtime(
         market: &crate::MarketView<'_>,
         anchored_outputs: Option<AnchoredOutputs>,
+        structure_object_ids: Option<HashSet<String>>,
     ) -> Self {
         let primary_history = RhaiCandleHistory::new(market.primary_history().to_vec());
         let mut view = Self {
@@ -67,6 +79,7 @@ impl RhaiMarketView {
                 Some(primary_history),
             )]),
             anchored_outputs,
+            structure_object_ids,
         };
 
         for timeframe in market.configured_timeframes() {
@@ -98,6 +111,31 @@ impl RhaiMarketView {
             Some(history) => Ok(history.clone()),
             None => Err(format!("unconfigured timeframe `{timeframe}`").into()),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RhaiMarketStructureView {
+    outputs: Option<AnchoredOutputs>,
+    object_ids: Option<HashSet<String>>,
+}
+
+impl RhaiMarketStructureView {
+    fn active(&self, object_id: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+        let Some(object_ids) = &self.object_ids else {
+            return Err("no `structure_config()` declared Market Structure objects".into());
+        };
+        if !object_ids.contains(object_id) {
+            return Err(format!("unknown Structure Object id `{object_id}`").into());
+        }
+
+        let lines = self
+            .outputs
+            .as_ref()
+            .and_then(|outputs| outputs.values.get(object_id))
+            .map(trendlines_to_rhai_array)
+            .unwrap_or_default();
+        Ok(Dynamic::from(lines))
     }
 }
 
@@ -234,6 +272,7 @@ impl StrategyHandler for RhaiStrategy {
             self.anchored_runtime
                 .as_ref()
                 .map(|runtime| runtime.outputs().clone()),
+            self.structure_object_ids.clone(),
         );
         let context =
             RhaiStrategyContext::from_runtime(input.context.portfolio, input.context.state);
@@ -278,6 +317,8 @@ impl RhaiStrategy {
         validate_required_on_tick(&ast)?;
         validate_required_zero_arg_hook(&ast, STRATEGY_CONFIG_HOOK)?;
         validate_optional_zero_arg_hook(&ast, ANCHORED_CONFIG_HOOK)?;
+        validate_optional_zero_arg_hook(&ast, STRUCTURE_CONFIG_HOOK)?;
+        validate_no_conflicting_structure_hooks(&ast)?;
 
         let mut scope = Scope::new();
         engine
@@ -293,20 +334,40 @@ impl RhaiStrategy {
         } else {
             None
         };
-        let anchored_runtime = anchored_config
+        let structure_config = if has_zero_arg_hook(&ast, STRUCTURE_CONFIG_HOOK) {
+            Some(call_typed_structure_config(&engine, &mut scope, &ast)?)
+        } else {
+            None
+        };
+        let runtime_config = match (&anchored_config, &structure_config) {
+            (Some(config), None) => Some((ANCHORED_CONFIG_HOOK, config.clone())),
+            (None, Some(config)) => {
+                Some((STRUCTURE_CONFIG_HOOK, config.to_anchored_configuration()))
+            }
+            (None, None) => None,
+            (Some(_), Some(_)) => unreachable!("conflicting hooks are validated before loading"),
+        };
+        let anchored_runtime = runtime_config
             .as_ref()
-            .filter(|config| !config.is_empty())
-            .map(AnchoredRuntime::from_config)
-            .transpose()
-            .map_err(|error| RhaiStrategyLoadError::HookEvaluation {
-                hook: ANCHORED_CONFIG_HOOK,
-                message: error.to_string(),
-            })?;
+            .filter(|(_, config)| !config.is_empty())
+            .map(|(hook, config)| {
+                AnchoredRuntime::from_config(config).map_err(|error| {
+                    RhaiStrategyLoadError::HookEvaluation {
+                        hook: *hook,
+                        message: error.to_string(),
+                    }
+                })
+            })
+            .transpose()?;
+        let structure_object_ids = structure_config
+            .as_ref()
+            .map(StructureConfiguration::object_ids);
 
         let hooks = RhaiStrategyHooks {
             has_on_tick: true,
             has_strategy_config: has_zero_arg_hook(&ast, STRATEGY_CONFIG_HOOK),
             has_anchored_config: has_zero_arg_hook(&ast, ANCHORED_CONFIG_HOOK),
+            has_structure_config: has_zero_arg_hook(&ast, STRUCTURE_CONFIG_HOOK),
         };
 
         Ok(Self {
@@ -316,6 +377,8 @@ impl RhaiStrategy {
             hooks,
             strategy_config,
             anchored_config,
+            structure_config,
+            structure_object_ids,
             anchored_runtime,
         })
     }
@@ -340,6 +403,10 @@ impl RhaiStrategy {
         self.anchored_config.as_ref()
     }
 
+    pub fn structure_config(&self) -> Option<&StructureConfiguration> {
+        self.structure_config.as_ref()
+    }
+
     /// Rhai engine with runtime-owned strategy-facing registrations.
     pub fn engine(&self) -> &RhaiEngine {
         &self.engine
@@ -359,6 +426,7 @@ impl RhaiStrategy {
 const ON_TICK_HOOK: &str = "on_tick";
 const STRATEGY_CONFIG_HOOK: &str = "strategy_config";
 const ANCHORED_CONFIG_HOOK: &str = "anchored_config";
+const STRUCTURE_CONFIG_HOOK: &str = "structure_config";
 
 /// Load-time errors from Rhai strategy handling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,6 +458,10 @@ pub enum RhaiStrategyLoadError {
     InvalidStrategyConfiguration {
         message: String,
     },
+    ConflictingHooks {
+        first: &'static str,
+        second: &'static str,
+    },
 }
 
 impl fmt::Display for RhaiStrategyLoadError {
@@ -416,6 +488,10 @@ impl fmt::Display for RhaiStrategyLoadError {
             Self::InvalidStrategyConfiguration { message } => {
                 write!(formatter, "strategy configuration error: {message}")
             }
+            Self::ConflictingHooks { first, second } => write!(
+                formatter,
+                "strategy hooks `{first}` and `{second}` are mutually exclusive"
+            ),
         }
     }
 }
@@ -429,6 +505,7 @@ impl fmt::Debug for RhaiStrategy {
             .field("hooks", &self.hooks)
             .field("strategy_config", &self.strategy_config)
             .field("anchored_config", &self.anchored_config)
+            .field("structure_config", &self.structure_config)
             .finish_non_exhaustive()
     }
 }
@@ -442,7 +519,13 @@ fn new_rhai_engine() -> RhaiEngine {
     engine.register_type_with_name::<AnchoredConfiguration>("AnchoredConfig");
     engine.register_type_with_name::<PivotDetectorConfiguration>("PivotDetectorConfig");
     engine.register_type_with_name::<AnchoredEvaluatorConfiguration>("AnchoredEvaluatorConfig");
+    engine.register_type_with_name::<StructureConfiguration>("StructureConfig");
+    engine.register_type_with_name::<StructurePointRegistry>("StructurePointRegistry");
+    engine.register_type_with_name::<StructureObjectRegistry>("StructureObjectRegistry");
+    engine.register_type_with_name::<StructurePointSource>("StructurePointSource");
+    engine.register_type_with_name::<StructureObjectConfiguration>("StructureObjectConfig");
     engine.register_type_with_name::<PivotSide>("PivotSide");
+    engine.register_type_with_name::<RhaiMarketStructureView>("MarketStructureView");
     engine.register_type_with_name::<RhaiTrendLine>("TrendLine");
     engine.register_type_with_name::<RhaiPivotEvent>("PivotEvent");
     engine.register_type_with_name::<StrategyDecision>("StrategyDecision");
@@ -479,9 +562,26 @@ fn new_rhai_engine() -> RhaiEngine {
     engine.register_fn("with_tolerance", anchored_evaluator_with_tolerance);
     engine.register_fn("with_min_touches", anchored_evaluator_with_min_touches);
     engine.register_fn("with_max_lines", anchored_evaluator_with_max_lines);
+    engine.register_fn("pivots", structure_points_pivots);
+    engine.register_fn("trendline", structure_objects_trendline);
+    engine.register_fn("with_side", structure_object_with_side);
+    engine.register_fn("with_pivot_buffer", structure_object_with_pivot_buffer);
+    engine.register_fn("with_tolerance", structure_object_with_tolerance);
+    engine.register_fn("with_min_touches", structure_object_with_min_touches);
+    engine.register_fn("with_max_active", structure_object_with_max_active);
+    engine.register_get("points", |config: &mut StructureConfiguration| {
+        config.points()
+    });
+    engine.register_get("objects", |config: &mut StructureConfiguration| {
+        config.objects()
+    });
 
     engine.register_fn("__runtime_strategy_config_new", StrategyConfiguration::new);
     engine.register_fn("__runtime_anchored_config_new", AnchoredConfiguration::new);
+    engine.register_fn(
+        "__runtime_structure_config_new",
+        StructureConfiguration::new,
+    );
     engine.register_fn("__runtime_pivot_detector_new", pivot_detector_new);
 
     let mut strategy_config_module = Module::new();
@@ -501,6 +601,10 @@ fn new_rhai_engine() -> RhaiEngine {
     anchored_config_module.set_native_fn("new", || Ok(AnchoredConfiguration::new()));
     engine.register_static_module("anchored_config", Arc::new(anchored_config_module));
 
+    let mut structure_config_module = Module::new();
+    structure_config_module.set_native_fn("new", || Ok(StructureConfiguration::new()));
+    engine.register_static_module("structure_config", Arc::new(structure_config_module));
+
     let mut pivot_detector_module = Module::new();
     pivot_detector_module.set_native_fn("new", |id: &str| Ok(PivotDetectorConfiguration::new(id)));
     engine.register_static_module("pivot_detector", Arc::new(pivot_detector_module));
@@ -509,6 +613,11 @@ fn new_rhai_engine() -> RhaiEngine {
     pivot_side_module.set_native_fn("high", || Ok(PivotSide::high()));
     pivot_side_module.set_native_fn("low", || Ok(PivotSide::low()));
     engine.register_static_module("pivot_side", Arc::new(pivot_side_module));
+
+    let mut structure_side_module = Module::new();
+    structure_side_module.set_native_fn("high", || Ok(PivotSide::high()));
+    structure_side_module.set_native_fn("low", || Ok(PivotSide::low()));
+    engine.register_static_module("structure_side", Arc::new(structure_side_module));
 
     let mut anchored_module = Module::new();
     anchored_module.set_native_fn("trendline", |expose_as: &str, pivot_source: &str| {
@@ -550,9 +659,10 @@ fn normalize_reserved_constructor_names(source: &str) -> String {
     // 0005 and lower only these approved typed constructors to private runtime
     // function names before compilation. This is intentionally lexical enough to
     // avoid rewriting string literals or comments.
-    const REPLACEMENTS: [(&str, &str); 3] = [
+    const REPLACEMENTS: [(&str, &str); 4] = [
         ("strategy_config::new(", "__runtime_strategy_config_new("),
         ("anchored_config::new(", "__runtime_anchored_config_new("),
+        ("structure_config::new(", "__runtime_structure_config_new("),
         ("pivot_detector::new(", "__runtime_pivot_detector_new("),
     ];
 
@@ -713,6 +823,17 @@ fn parse_timeframe(raw: &str) -> Result<Timeframe, Box<EvalAltResult>> {
 }
 
 fn register_market_view_api(engine: &mut RhaiEngine) {
+    engine.register_get("structure", |market: &mut RhaiMarketView| {
+        RhaiMarketStructureView {
+            outputs: market.anchored_outputs.clone(),
+            object_ids: market.structure_object_ids.clone(),
+        }
+    });
+    engine.register_fn(
+        "active",
+        |structure: &mut RhaiMarketStructureView, object_id: &str| structure.active(object_id),
+    );
+
     engine.register_fn("candle", |market: &mut RhaiMarketView| {
         market.current.clone()
     });
@@ -776,6 +897,16 @@ fn register_market_view_api(engine: &mut RhaiEngine) {
     });
 }
 
+fn trendlines_to_rhai_array(output: &AnchoredOutput) -> rhai::Array {
+    match output {
+        AnchoredOutput::Trendlines(lines) => lines
+            .iter()
+            .copied()
+            .map(|line| Dynamic::from(RhaiTrendLine::new(line)))
+            .collect(),
+    }
+}
+
 fn register_anchored_api(engine: &mut RhaiEngine) {
     engine.register_fn(
         "anchored",
@@ -785,14 +916,7 @@ fn register_anchored_api(engine: &mut RhaiEngine) {
             };
 
             match outputs.values.get(name) {
-                Some(AnchoredOutput::Trendlines(lines)) => {
-                    let lines: rhai::Array = lines
-                        .iter()
-                        .copied()
-                        .map(|line| Dynamic::from(RhaiTrendLine::new(line)))
-                        .collect();
-                    Dynamic::from(lines)
-                }
+                Some(output) => Dynamic::from(trendlines_to_rhai_array(output)),
                 None => Dynamic::UNIT,
             }
         },
@@ -1088,6 +1212,87 @@ fn pivot_detector_new(id: &str) -> PivotDetectorConfiguration {
     PivotDetectorConfiguration::new(id)
 }
 
+fn structure_points_pivots(
+    points: StructurePointRegistry,
+    id: &str,
+    left_bars: INT,
+    right_bars: INT,
+) -> Result<StructurePointSource, Box<EvalAltResult>> {
+    let left_bars = positive_usize(left_bars, "left_bars")?;
+    let right_bars = positive_usize(right_bars, "right_bars")?;
+    points
+        .pivots(id, left_bars, right_bars)
+        .map_err(|error| error.to_string().into())
+}
+
+fn structure_objects_trendline(
+    objects: StructureObjectRegistry,
+    object_id: &str,
+    point_source: StructurePointSource,
+) -> Result<StructureObjectConfiguration, Box<EvalAltResult>> {
+    objects
+        .trendline(object_id, point_source)
+        .map_err(|error| error.to_string().into())
+}
+
+fn structure_object_with_side(
+    object: StructureObjectConfiguration,
+    side: PivotSide,
+) -> Result<StructureObjectConfiguration, Box<EvalAltResult>> {
+    object
+        .with_side(side)
+        .map_err(|error| error.to_string().into())
+}
+
+fn structure_object_with_pivot_buffer(
+    object: StructureObjectConfiguration,
+    pivot_buffer: INT,
+) -> Result<StructureObjectConfiguration, Box<EvalAltResult>> {
+    let pivot_buffer = positive_usize(pivot_buffer, "pivot_buffer")?;
+    if pivot_buffer < 3 {
+        return Err("pivot_buffer must be >= 3".into());
+    }
+    object
+        .with_pivot_buffer(pivot_buffer)
+        .map_err(|error| error.to_string().into())
+}
+
+fn structure_object_with_tolerance(
+    object: StructureObjectConfiguration,
+    tolerance: FLOAT,
+) -> Result<StructureObjectConfiguration, Box<EvalAltResult>> {
+    if !(tolerance.is_finite() && tolerance > 0.0 && tolerance < 0.5) {
+        return Err("tolerance must be finite and in (0.0, 0.5)".into());
+    }
+    object
+        .with_tolerance(tolerance)
+        .map_err(|error| error.to_string().into())
+}
+
+fn structure_object_with_min_touches(
+    object: StructureObjectConfiguration,
+    min_touches: INT,
+) -> Result<StructureObjectConfiguration, Box<EvalAltResult>> {
+    let min_touches = u32::try_from(min_touches)
+        .map_err(|_| "min_touches must be a non-negative integer fitting u32".to_string())?;
+    if min_touches < 3 {
+        return Err("min_touches must be >= 3".into());
+    }
+    object
+        .with_min_touches(min_touches)
+        .map_err(|error| error.to_string().into())
+}
+
+fn structure_object_with_max_active(
+    object: StructureObjectConfiguration,
+    max_active: INT,
+) -> Result<StructureObjectConfiguration, Box<EvalAltResult>> {
+    let max_active = positive_usize(max_active, "max_active")?;
+    object
+        .with_max_active(max_active)
+        .map_err(|error| error.to_string().into())
+}
+
 fn anchored_config_with_detector(
     config: AnchoredConfiguration,
     detector: PivotDetectorConfiguration,
@@ -1270,6 +1475,7 @@ fn validate_required_zero_arg_hook(
             expected: match hook {
                 STRATEGY_CONFIG_HOOK => "fn strategy_config()",
                 ANCHORED_CONFIG_HOOK => "fn anchored_config()",
+                STRUCTURE_CONFIG_HOOK => "fn structure_config()",
                 _ => "fn hook()",
             },
         });
@@ -1279,6 +1485,7 @@ fn validate_required_zero_arg_hook(
         expected: match hook {
             STRATEGY_CONFIG_HOOK => "fn strategy_config()",
             ANCHORED_CONFIG_HOOK => "fn anchored_config()",
+            STRUCTURE_CONFIG_HOOK => "fn structure_config()",
             _ => "fn hook()",
         },
     })
@@ -1297,9 +1504,22 @@ fn validate_optional_zero_arg_hook(
         expected: match hook {
             STRATEGY_CONFIG_HOOK => "fn strategy_config()",
             ANCHORED_CONFIG_HOOK => "fn anchored_config()",
+            STRUCTURE_CONFIG_HOOK => "fn structure_config()",
             _ => "fn hook()",
         },
     })
+}
+
+fn validate_no_conflicting_structure_hooks(ast: &AST) -> Result<(), RhaiStrategyLoadError> {
+    if has_zero_arg_hook(ast, ANCHORED_CONFIG_HOOK) && has_zero_arg_hook(ast, STRUCTURE_CONFIG_HOOK)
+    {
+        Err(RhaiStrategyLoadError::ConflictingHooks {
+            first: ANCHORED_CONFIG_HOOK,
+            second: STRUCTURE_CONFIG_HOOK,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn call_typed_strategy_config(
@@ -1343,6 +1563,28 @@ fn call_typed_anchored_config(
     Ok(config)
 }
 
+fn call_typed_structure_config(
+    engine: &RhaiEngine,
+    scope: &mut Scope<'static>,
+    ast: &AST,
+) -> Result<StructureConfiguration, RhaiStrategyLoadError> {
+    let result = call_load_time_hook(engine, scope, ast, STRUCTURE_CONFIG_HOOK)?;
+    let config = result.try_cast::<StructureConfiguration>().ok_or(
+        RhaiStrategyLoadError::InvalidHookReturn {
+            hook: STRUCTURE_CONFIG_HOOK,
+            expected: "a typed StructureConfig from `structure_config::new()`",
+        },
+    )?;
+    config
+        .validate()
+        .map_err(|error| RhaiStrategyLoadError::HookEvaluation {
+            hook: STRUCTURE_CONFIG_HOOK,
+            message: error.to_string(),
+        })?;
+    config.seal();
+    Ok(config)
+}
+
 fn call_load_time_hook(
     engine: &RhaiEngine,
     scope: &mut Scope<'static>,
@@ -1374,8 +1616,8 @@ fn has_hook_with_arity(ast: &AST, name: &str, arity: usize) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        ExecutionAction, IgnoredDecisionReason, MarketInput, PortfolioState, RuntimeConfig,
-        RuntimeEvent, StrategyDecisionIntent, TradingRuntime,
+        AnchoredEvaluatorSpec, ExecutionAction, IgnoredDecisionReason, MarketInput, PortfolioState,
+        RuntimeConfig, RuntimeEvent, StrategyDecisionIntent, TradingRuntime,
     };
     use shared::{Candle, Timeframe};
 
@@ -2363,6 +2605,7 @@ decision::hold()
                 has_on_tick: true,
                 has_strategy_config: true,
                 has_anchored_config: false,
+                has_structure_config: false,
             }
         );
         assert_eq!(
@@ -2913,6 +3156,229 @@ fn on_tick(market, context) {
     }
 
     #[test]
+    fn present_structure_config_is_called_and_preserves_fluent_object_settings() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn structure_config() {
+    let s = structure_config::new();
+    let swing = s.points.pivots("swing", 1, 2);
+    s.objects.trendline("support", swing)
+        .with_side(structure_side::low())
+        .with_pivot_buffer(5)
+        .with_tolerance(0.02)
+        .with_min_touches(4)
+        .with_max_active(2);
+    s
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let config = strategy
+            .structure_config()
+            .expect("structure config should load");
+        let lowered = config.to_anchored_configuration();
+
+        assert!(strategy.hooks().has_structure_config);
+        assert_eq!(lowered.detectors().len(), 1);
+        assert_eq!(lowered.evaluators().len(), 1);
+        assert_eq!(lowered.detectors()[0].id(), "swing");
+        match &lowered.evaluators()[0] {
+            AnchoredEvaluatorSpec::Trendline {
+                expose_as,
+                pivot_source,
+                side,
+                pivot_buffer,
+                tolerance,
+                min_touches,
+                max_lines,
+            } => {
+                assert_eq!(expose_as, "support");
+                assert_eq!(pivot_source, "swing");
+                assert_eq!(
+                    *side,
+                    indicators::anchored::evaluators::TrendlineSide::Support
+                );
+                assert_eq!(*pivot_buffer, 5);
+                assert_eq!(*tolerance, 0.02);
+                assert_eq!(*min_touches, 4);
+                assert_eq!(*max_lines, 2);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_structure_config_fails_load() {
+        let cases = [
+            (
+                r#"
+fn structure_config() {
+    let s = structure_config::new();
+    s.points.pivots("swing", 1, 1);
+    s.points.pivots("swing", 2, 2);
+    s
+}
+"#,
+                "duplicate point id",
+            ),
+            (
+                r#"
+fn structure_config() {
+    let s = structure_config::new();
+    let swing = s.points.pivots("swing", 1, 1);
+    s.objects.trendline("trend", swing);
+    s.objects.trendline("trend", swing);
+    s
+}
+"#,
+                "duplicate object id",
+            ),
+            (
+                r#"
+fn structure_config() {
+    let source = structure_config::new().points.pivots("other", 1, 1);
+    let s = structure_config::new();
+    s.objects.trendline("trend", source);
+    s
+}
+"#,
+                "unknown point source",
+            ),
+            (
+                r#"
+fn structure_config() {
+    let s = structure_config::new();
+    s.points.pivots("swing", 0, 1);
+    s
+}
+"#,
+                "left_bars",
+            ),
+            (
+                r#"
+fn structure_config() {
+    let s = structure_config::new();
+    let swing = s.points.pivots("swing", 1, 1);
+    s.objects.trendline("trend", swing).with_min_touches(2);
+    s
+}
+"#,
+                "min_touches",
+            ),
+            (
+                r#"
+fn structure_config() {
+    let s = structure_config::new();
+    let swing = s.points.pivots("swing", 1, 1);
+    s.objects.trendline("trend", swing).with_max_active(0);
+    s
+}
+"#,
+                "max_active",
+            ),
+        ];
+
+        for (structure_hook, expected_message) in cases {
+            let source = format!(
+                r#"
+fn strategy_config() {{
+    strategy_config::new().with_primary(timeframe("1m"))
+}}
+
+{structure_hook}
+
+fn on_tick(market, context) {{
+    decision::hold()
+}}
+"#
+            );
+
+            let error = RhaiStrategy::load(&source).unwrap_err();
+
+            assert!(matches!(
+                error,
+                RhaiStrategyLoadError::HookEvaluation {
+                    hook: STRUCTURE_CONFIG_HOOK,
+                    ..
+                }
+            ));
+            assert!(
+                error.to_string().contains(expected_message),
+                "{expected_message}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_structure_registries_are_not_magically_merged() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn structure_config() {
+    let ignored = structure_config::new();
+    ignored.points.pivots("ignored", 1, 1);
+
+    structure_config::new()
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let lowered = strategy
+            .structure_config()
+            .expect("structure config should be present")
+            .to_anchored_configuration();
+
+        assert!(lowered.detectors().is_empty());
+        assert!(lowered.evaluators().is_empty());
+    }
+
+    #[test]
+    fn anchored_and_structure_config_are_mutually_exclusive() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn anchored_config() {
+    anchored_config::new().with_detector(pivot_detector::new("swing"))
+}
+
+fn structure_config() {
+    let s = structure_config::new();
+    s.points.pivots("swing", 1, 1);
+    s
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+
+        let error = RhaiStrategy::load(source).unwrap_err();
+
+        assert_eq!(
+            error,
+            RhaiStrategyLoadError::ConflictingHooks {
+                first: ANCHORED_CONFIG_HOOK,
+                second: STRUCTURE_CONFIG_HOOK,
+            }
+        );
+        assert!(error.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
     fn missing_anchored_config_loads_and_market_outputs_are_unit() {
         let source = source_returning(
             r#"
@@ -3105,6 +3571,136 @@ fn on_tick(market, context) {
     }
 
     #[test]
+    fn market_structure_active_returns_empty_array_for_declared_inactive_object() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn structure_config() {
+    let s = structure_config::new();
+    let swing = s.points.pivots("swing", 1, 1);
+    s.objects.trendline("trend", swing)
+        .with_side(structure_side::high())
+        .with_min_touches(3);
+    s
+}
+
+fn on_tick(market, context) {
+    let lines = market.structure.active("trend");
+    if lines.len() == 0 {
+        decision::open_long(1.0)
+    } else {
+        decision::hold()
+    }
+}
+"#;
+
+        let step = run_completed_tick(source);
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn market_structure_active_unknown_object_is_strategy_error() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn structure_config() {
+    let s = structure_config::new();
+    let swing = s.points.pivots("swing", 1, 1);
+    s.objects.trendline("trend", swing);
+    s
+}
+
+fn on_tick(market, context) {
+    let lines = market.structure.active("missing");
+    decision::hold()
+}
+"#;
+
+        let step = run_completed_tick(source);
+        let message = strategy_error_message(&step);
+
+        assert!(
+            message.contains("unknown Structure Object id `missing`"),
+            "{message}"
+        );
+        assert!(!step
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+    }
+
+    #[test]
+    fn market_structure_active_returns_trendline_output_from_runtime_market_state() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn structure_config() {
+    let s = structure_config::new();
+    let swing = s.points.pivots("swing", 1, 1);
+    s.objects.trendline("trend", swing)
+        .with_side(structure_side::high())
+        .with_pivot_buffer(3)
+        .with_min_touches(3)
+        .with_max_active(1);
+    s
+}
+
+fn on_tick(market, context) {
+    let lines = market.structure.active("trend");
+    if lines.len() != 1 {
+        return decision::hold();
+    }
+
+    let line = lines[0];
+    let fields_visible = line.touches == 3
+        && line.side == "resistance"
+        && line.slope == line.slope
+        && line.intercept == line.intercept
+        && line.anchor_start_bar >= 0
+        && line.anchor_end_bar >= 0;
+
+    if fields_visible && line.y_at(market.candles().len() - 1) > 0.0 {
+        decision::open_long(1.0)
+    } else {
+        decision::hold()
+    }
+}
+"#;
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+        let highs = [90.0, 100.0, 90.0, 100.0, 90.0, 100.0, 90.0];
+        let mut last_step = None;
+
+        for (index, high) in highs.into_iter().enumerate() {
+            last_step = Some(
+                runtime
+                    .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                        90.0,
+                        high,
+                        80.0,
+                        90.0,
+                        index as i64,
+                        Timeframe::minutes(1),
+                    )))
+                    .expect("completed primary candle should be accepted"),
+            );
+        }
+
+        let final_step = last_step.expect("test should feed candles");
+        assert_eq!(
+            produced_decision(&final_step),
+            StrategyDecision::open_long(1.0)
+        );
+    }
+
+    #[test]
     fn context_does_not_expose_anchored_compatibility_alias() {
         let source = source_returning(
             r#"
@@ -3205,9 +3801,11 @@ fn on_tick(market, context) {
 // strategy_config::new(
 const LABEL = "strategy_config::new(";
 const PIVOT_LABEL = "pivot_detector::new(";
+const STRUCTURE_LABEL = "structure_config::new(";
 /* anchored_config::new( */
 fn strategy_config() { strategy_config::new() }
 fn anchored_config() { anchored_config::new() }
+fn structure_config() { structure_config::new() }
 fn detector() { pivot_detector::new("swing") }
 "#;
 
@@ -3216,9 +3814,11 @@ fn detector() { pivot_detector::new("swing") }
         assert!(normalized.contains("// strategy_config::new("));
         assert!(normalized.contains("\"strategy_config::new(\""));
         assert!(normalized.contains("\"pivot_detector::new(\""));
+        assert!(normalized.contains("\"structure_config::new(\""));
         assert!(normalized.contains("/* anchored_config::new( */"));
         assert!(normalized.contains("fn strategy_config() { __runtime_strategy_config_new() }"));
         assert!(normalized.contains("fn anchored_config() { __runtime_anchored_config_new() }"));
+        assert!(normalized.contains("fn structure_config() { __runtime_structure_config_new() }"));
         assert!(normalized.contains("fn detector() { __runtime_pivot_detector_new(\"swing\") }"));
     }
 

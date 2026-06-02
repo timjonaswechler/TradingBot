@@ -11,7 +11,10 @@ use indicators::anchored::{
     AnchorEvent, Invalidator, RollingDetector, SegmentState,
 };
 use shared::Candle;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+};
 
 /// Typed strategy-declared anchored compute configuration.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -99,6 +102,354 @@ impl AnchoredConfiguration {
 
         Ok(())
     }
+}
+
+/// Typed strategy-declared Market Structure configuration registry.
+///
+/// The Rhai `structure_config()` hook returns this registry. Namespaced
+/// `points` and `objects` handles share the same inner state so fluent object
+/// configuration mutates the returned registry instead of a detached copy.
+#[derive(Debug, Clone, Default)]
+pub struct StructureConfiguration {
+    inner: Arc<Mutex<StructureConfigurationState>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StructureConfigurationState {
+    detectors: Vec<AnchoredDetectorSpec>,
+    evaluators: Vec<AnchoredEvaluatorSpec>,
+    sealed: bool,
+}
+
+impl StructureConfiguration {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn points(&self) -> StructurePointRegistry {
+        StructurePointRegistry {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    pub fn objects(&self) -> StructureObjectRegistry {
+        StructureObjectRegistry {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        let state = self.lock_state();
+        state.detectors.is_empty() && state.evaluators.is_empty()
+    }
+
+    pub fn validate(&self) -> Result<(), StructureConfigurationError> {
+        let state = self.lock_state();
+        validate_structure_state(&state)
+    }
+
+    pub fn to_anchored_configuration(&self) -> AnchoredConfiguration {
+        let state = self.lock_state();
+        AnchoredConfiguration {
+            detectors: state.detectors.clone(),
+            evaluators: state.evaluators.clone(),
+        }
+    }
+
+    pub fn object_ids(&self) -> HashSet<String> {
+        let state = self.lock_state();
+        state
+            .evaluators
+            .iter()
+            .map(|evaluator| evaluator.expose_as().to_string())
+            .collect()
+    }
+
+    pub fn seal(&self) {
+        let mut state = self.lock_state();
+        state.sealed = true;
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, StructureConfigurationState> {
+        self.inner
+            .lock()
+            .expect("structure configuration state should not be poisoned")
+    }
+}
+
+/// Namespaced `s.points` registry returned to Rhai strategies.
+#[derive(Debug, Clone)]
+pub struct StructurePointRegistry {
+    inner: Arc<Mutex<StructureConfigurationState>>,
+}
+
+impl StructurePointRegistry {
+    pub fn pivots(
+        &self,
+        id: impl Into<String>,
+        left_bars: usize,
+        right_bars: usize,
+    ) -> Result<StructurePointSource, StructureConfigurationError> {
+        let id = id.into();
+        let mut state = self
+            .inner
+            .lock()
+            .expect("structure configuration state should not be poisoned");
+
+        ensure_structure_state_is_mutable(&state)?;
+
+        if id.is_empty() {
+            return Err(StructureConfigurationError::new(
+                "point id must not be empty",
+            ));
+        }
+        if state.detectors.iter().any(|detector| detector.id() == id) {
+            return Err(StructureConfigurationError::new(format!(
+                "duplicate point id `{id}`"
+            )));
+        }
+
+        state.detectors.push(AnchoredDetectorSpec::Pivot {
+            id: id.clone(),
+            left_bars,
+            right_bars,
+        });
+
+        Ok(StructurePointSource { id })
+    }
+}
+
+/// Typed point-source handle returned by `s.points.*` declarations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructurePointSource {
+    id: String,
+}
+
+impl StructurePointSource {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+/// Namespaced `s.objects` registry returned to Rhai strategies.
+#[derive(Debug, Clone)]
+pub struct StructureObjectRegistry {
+    inner: Arc<Mutex<StructureConfigurationState>>,
+}
+
+impl StructureObjectRegistry {
+    pub fn trendline(
+        &self,
+        object_id: impl Into<String>,
+        point_source: StructurePointSource,
+    ) -> Result<StructureObjectConfiguration, StructureConfigurationError> {
+        let object_id = object_id.into();
+        let mut state = self
+            .inner
+            .lock()
+            .expect("structure configuration state should not be poisoned");
+
+        ensure_structure_state_is_mutable(&state)?;
+
+        if object_id.is_empty() {
+            return Err(StructureConfigurationError::new(
+                "object id must not be empty",
+            ));
+        }
+        if state
+            .evaluators
+            .iter()
+            .any(|evaluator| evaluator.expose_as() == object_id)
+        {
+            return Err(StructureConfigurationError::new(format!(
+                "duplicate object id `{object_id}`"
+            )));
+        }
+        if !state
+            .detectors
+            .iter()
+            .any(|detector| detector.id() == point_source.id())
+        {
+            return Err(StructureConfigurationError::new(format!(
+                "object `{object_id}` references unknown point source `{}`",
+                point_source.id()
+            )));
+        }
+
+        state.evaluators.push(AnchoredEvaluatorSpec::Trendline {
+            expose_as: object_id.clone(),
+            pivot_source: point_source.id().to_string(),
+            side: PivotSide::High.as_trendline_side(),
+            pivot_buffer: 6,
+            tolerance: 0.01,
+            min_touches: 3,
+            max_lines: 1,
+        });
+
+        Ok(StructureObjectConfiguration {
+            inner: Arc::clone(&self.inner),
+            object_id,
+        })
+    }
+}
+
+/// Typed object handle returned by `s.objects.*` declarations.
+#[derive(Debug, Clone)]
+pub struct StructureObjectConfiguration {
+    inner: Arc<Mutex<StructureConfigurationState>>,
+    object_id: String,
+}
+
+impl StructureObjectConfiguration {
+    pub fn with_side(self, side: PivotSide) -> Result<Self, StructureConfigurationError> {
+        self.update_trendline(|evaluator_side, _, _, _, _| {
+            *evaluator_side = side.as_trendline_side();
+        })?;
+        Ok(self)
+    }
+
+    pub fn with_pivot_buffer(
+        self,
+        pivot_buffer: usize,
+    ) -> Result<Self, StructureConfigurationError> {
+        self.update_trendline(|_, evaluator_pivot_buffer, _, _, _| {
+            *evaluator_pivot_buffer = pivot_buffer;
+        })?;
+        Ok(self)
+    }
+
+    pub fn with_tolerance(self, tolerance: f64) -> Result<Self, StructureConfigurationError> {
+        self.update_trendline(|_, _, evaluator_tolerance, _, _| {
+            *evaluator_tolerance = tolerance;
+        })?;
+        Ok(self)
+    }
+
+    pub fn with_min_touches(self, min_touches: u32) -> Result<Self, StructureConfigurationError> {
+        self.update_trendline(|_, _, _, evaluator_min_touches, _| {
+            *evaluator_min_touches = min_touches;
+        })?;
+        Ok(self)
+    }
+
+    pub fn with_max_active(self, max_active: usize) -> Result<Self, StructureConfigurationError> {
+        self.update_trendline(|_, _, _, _, evaluator_max_lines| {
+            *evaluator_max_lines = max_active;
+        })?;
+        Ok(self)
+    }
+
+    fn update_trendline(
+        &self,
+        update: impl FnOnce(&mut TrendlineSide, &mut usize, &mut f64, &mut u32, &mut usize),
+    ) -> Result<(), StructureConfigurationError> {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("structure configuration state should not be poisoned");
+        ensure_structure_state_is_mutable(&state)?;
+
+        let Some(evaluator) = state
+            .evaluators
+            .iter_mut()
+            .find(|evaluator| evaluator.expose_as() == self.object_id)
+        else {
+            return Err(StructureConfigurationError::new(format!(
+                "unknown object id `{}`",
+                self.object_id
+            )));
+        };
+
+        match evaluator {
+            AnchoredEvaluatorSpec::Trendline {
+                side,
+                pivot_buffer,
+                tolerance,
+                min_touches,
+                max_lines,
+                ..
+            } => update(side, pivot_buffer, tolerance, min_touches, max_lines),
+        }
+
+        Ok(())
+    }
+}
+
+/// Load-time validation error for typed Market Structure config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructureConfigurationError {
+    message: String,
+}
+
+impl StructureConfigurationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for StructureConfigurationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "structure_config: {}", self.message)
+    }
+}
+
+impl std::error::Error for StructureConfigurationError {}
+
+fn ensure_structure_state_is_mutable(
+    state: &StructureConfigurationState,
+) -> Result<(), StructureConfigurationError> {
+    if state.sealed {
+        Err(StructureConfigurationError::new(
+            "registry is sealed after load-time evaluation",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_structure_state(
+    state: &StructureConfigurationState,
+) -> Result<(), StructureConfigurationError> {
+    let mut point_ids = HashSet::new();
+    for detector in &state.detectors {
+        if detector.id().is_empty() {
+            return Err(StructureConfigurationError::new(
+                "point id must not be empty",
+            ));
+        }
+        if !point_ids.insert(detector.id().to_string()) {
+            return Err(StructureConfigurationError::new(format!(
+                "duplicate point id `{}`",
+                detector.id()
+            )));
+        }
+    }
+
+    let mut object_ids = HashSet::new();
+    for evaluator in &state.evaluators {
+        if evaluator.expose_as().is_empty() {
+            return Err(StructureConfigurationError::new(
+                "object id must not be empty",
+            ));
+        }
+        if !object_ids.insert(evaluator.expose_as().to_string()) {
+            return Err(StructureConfigurationError::new(format!(
+                "duplicate object id `{}`",
+                evaluator.expose_as()
+            )));
+        }
+        if !point_ids.contains(evaluator.pivot_source()) {
+            return Err(StructureConfigurationError::new(format!(
+                "object `{}` references unknown point source `{}`",
+                evaluator.expose_as(),
+                evaluator.pivot_source()
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 /// Typed pivot detector spec supported by the first anchored path.
