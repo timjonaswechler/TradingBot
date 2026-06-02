@@ -971,22 +971,27 @@ fn register_anchored_api(engine: &mut RhaiEngine) {
 }
 
 fn register_indicator_api(engine: &mut RhaiEngine) {
-    let mut indicators_module = Module::new();
+    engine.register_static_module("ta", Arc::new(indicator_module()));
+    engine.register_static_module("indicators", Arc::new(indicator_module()));
+}
 
-    register_period_close_indicator(&mut indicators_module, "sma", sma);
-    register_period_close_indicator(&mut indicators_module, "ema", ema);
-    register_period_close_indicator(&mut indicators_module, "dema", dema);
-    register_period_close_indicator(&mut indicators_module, "tema", tema);
-    register_period_close_indicator(&mut indicators_module, "slope", slope);
-    register_period_close_indicator(&mut indicators_module, "rsi", rsi);
-    register_period_close_indicator(&mut indicators_module, "roc", roc);
+fn indicator_module() -> Module {
+    let mut module = Module::new();
 
-    register_period_candle_indicator(&mut indicators_module, "cci", cci);
-    register_period_candle_indicator(&mut indicators_module, "williams_r", williams_r);
-    register_period_candle_indicator(&mut indicators_module, "atr", atr);
-    register_period_candle_indicator(&mut indicators_module, "mfi", mfi);
+    register_period_close_indicator(&mut module, "sma", sma);
+    register_period_close_indicator(&mut module, "ema", ema);
+    register_period_close_indicator(&mut module, "dema", dema);
+    register_period_close_indicator(&mut module, "tema", tema);
+    register_period_close_indicator(&mut module, "slope", slope);
+    register_period_close_indicator(&mut module, "rsi", rsi);
+    register_period_close_indicator(&mut module, "roc", roc);
 
-    indicators_module.set_native_fn(
+    register_period_candle_indicator(&mut module, "cci", cci);
+    register_period_candle_indicator(&mut module, "williams_r", williams_r);
+    register_period_candle_indicator(&mut module, "atr", atr);
+    register_period_candle_indicator(&mut module, "mfi", mfi);
+
+    module.set_native_fn(
         "obv",
         |history: &mut RhaiCandleHistory| -> Result<Dynamic, Box<EvalAltResult>> {
             Ok(option_f64(obv(
@@ -994,7 +999,7 @@ fn register_indicator_api(engine: &mut RhaiEngine) {
             )))
         },
     );
-    indicators_module.set_native_fn(
+    module.set_native_fn(
         "obv",
         |history: &mut RhaiCandleHistory, offset: INT| -> Result<Dynamic, Box<EvalAltResult>> {
             let Some(offset) = non_negative_usize(offset) else {
@@ -1006,7 +1011,7 @@ fn register_indicator_api(engine: &mut RhaiEngine) {
         },
     );
 
-    engine.register_static_module("indicators", Arc::new(indicators_module));
+    module
 }
 
 fn register_period_close_indicator(
@@ -1932,21 +1937,76 @@ if average != () && average == 101.0 {
     }
 
     #[test]
+    fn ta_namespace_indicator_runs_after_explicit_strategy_warmup() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_minimum_warmup(2)
+}
+
+fn on_tick(market, context) {
+    let average = ta::sma(market.candles(), 3);
+    if average != () && average == 101.0 {
+        decision::open_long(1.0)
+    } else {
+        decision::hold()
+    }
+}
+"#;
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let runtime_config =
+            RuntimeConfig::from_strategy_config("BTC-USD", strategy.strategy_config())
+                .expect("strategy config should resolve");
+        let warmup_requirement = strategy.strategy_config().minimum_warmup();
+        let mut runtime = TradingRuntime::with_config(
+            runtime_config,
+            PortfolioState::new(1_000.0),
+            warmup_requirement,
+            strategy,
+        );
+
+        runtime
+            .on_market_input(MarketInput::WarmupCandle(candle_at(
+                100.0,
+                60_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("first warmup candle should be accepted");
+        runtime
+            .on_market_input(MarketInput::WarmupCandle(candle_at(
+                101.0,
+                120_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("second warmup candle should be accepted");
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                102.0,
+                180_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
     fn primary_market_view_history_accepts_v1_scalar_indicator_pack() {
-        let source = source_returning(
-            r#"
+        for namespace in ["ta", "indicators"] {
+            let body = r#"
 let candles = market.candles();
-let ema = indicators::ema(candles, 5);
-let dema = indicators::dema(candles, 5);
-let tema = indicators::tema(candles, 5);
-let slope = indicators::slope(candles, 5);
-let rsi = indicators::rsi(candles, 5);
-let roc = indicators::roc(candles, 5);
-let cci = indicators::cci(candles, 5);
-let williams = indicators::williams_r(candles, 5);
-let atr = indicators::atr(candles, 5);
-let mfi = indicators::mfi(candles, 5);
-let obv = indicators::obv(candles);
+let ema = NS::ema(candles, 5);
+let dema = NS::dema(candles, 5);
+let tema = NS::tema(candles, 5);
+let slope = NS::slope(candles, 5);
+let rsi = NS::rsi(candles, 5);
+let roc = NS::roc(candles, 5);
+let cci = NS::cci(candles, 5);
+let williams = NS::williams_r(candles, 5);
+let atr = NS::atr(candles, 5);
+let mfi = NS::mfi(candles, 5);
+let obv = NS::obv(candles);
 
 let all_available = true;
 if ema == () { all_available = false; }
@@ -1966,51 +2026,54 @@ if all_available {
 } else {
     decision::hold()
 }
-"#,
-        );
-        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
-        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
-        let mut latest_step = None;
+"#
+            .replace("NS::", &format!("{namespace}::"));
+            let source = source_returning(&body);
+            let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+            let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+            let mut latest_step = None;
 
-        for index in 1..=30 {
-            let close = index as f64;
-            latest_step = Some(
-                runtime
-                    .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
-                        close,
-                        close + 0.5,
-                        close - 0.5,
-                        close,
-                        index * 60_000,
-                        Timeframe::minutes(1),
-                    )))
-                    .expect("primary completed candle should be accepted"),
+            for index in 1..=30 {
+                let close = index as f64;
+                latest_step = Some(
+                    runtime
+                        .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                            close,
+                            close + 0.5,
+                            close - 0.5,
+                            close,
+                            index * 60_000,
+                            Timeframe::minutes(1),
+                        )))
+                        .expect("primary completed candle should be accepted"),
+                );
+            }
+
+            assert_eq!(
+                produced_decision(&latest_step.expect("at least one step should run")),
+                StrategyDecision::open_long(1.0),
+                "{namespace} namespace should expose the scalar indicator pack"
             );
         }
-
-        assert_eq!(
-            produced_decision(&latest_step.expect("at least one step should run")),
-            StrategyDecision::open_long(1.0)
-        );
     }
 
     #[test]
     fn v1_scalar_indicator_pack_supports_offset_overloads() {
-        let source = source_returning(
-            r#"
+        for namespace in ["ta", "indicators"] {
+            let body = r#"
 let candles = market.candles();
-let sma_offset = indicators::sma(candles, 5, 1);
-let ema = indicators::ema(candles, 5, 1);
-let dema = indicators::dema(candles, 5, 1);
-let tema = indicators::tema(candles, 5, 1);
-let slope = indicators::slope(candles, 5, 1);
-let rsi = indicators::rsi(candles, 5, 1);
-let roc = indicators::roc(candles, 5, 1);
-let cci = indicators::cci(candles, 5, 1);
-let williams = indicators::williams_r(candles, 5, 1);
-let atr = indicators::atr(candles, 5, 1);
-let mfi = indicators::mfi(candles, 5, 1);
-let obv_offset = indicators::obv(candles, 1);
+let sma_offset = NS::sma(candles, 5, 1);
+let ema = NS::ema(candles, 5, 1);
+let dema = NS::dema(candles, 5, 1);
+let tema = NS::tema(candles, 5, 1);
+let slope = NS::slope(candles, 5, 1);
+let rsi = NS::rsi(candles, 5, 1);
+let roc = NS::roc(candles, 5, 1);
+let cci = NS::cci(candles, 5, 1);
+let williams = NS::williams_r(candles, 5, 1);
+let atr = NS::atr(candles, 5, 1);
+let mfi = NS::mfi(candles, 5, 1);
+let obv_offset = NS::obv(candles, 1);
 
 let all_available = true;
 if sma_offset == () { all_available = false; }
@@ -2031,68 +2094,76 @@ if all_available && sma_offset == 27.0 && obv_offset == 28000.0 {
 } else {
     decision::hold()
 }
-"#,
-        );
-        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
-        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
-        let mut latest_step = None;
+"#
+            .replace("NS::", &format!("{namespace}::"));
+            let source = source_returning(&body);
+            let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+            let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+            let mut latest_step = None;
 
-        for index in 1..=30 {
-            let close = index as f64;
-            latest_step = Some(
-                runtime
-                    .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
-                        close,
-                        close + 0.5,
-                        close - 0.5,
-                        close,
-                        index * 60_000,
-                        Timeframe::minutes(1),
-                    )))
-                    .expect("primary completed candle should be accepted"),
+            for index in 1..=30 {
+                let close = index as f64;
+                latest_step = Some(
+                    runtime
+                        .on_market_input(MarketInput::CompletedCandle(candle_ohlc_at(
+                            close,
+                            close + 0.5,
+                            close - 0.5,
+                            close,
+                            index * 60_000,
+                            Timeframe::minutes(1),
+                        )))
+                        .expect("primary completed candle should be accepted"),
+                );
+            }
+
+            assert_eq!(
+                produced_decision(&latest_step.expect("at least one step should run")),
+                StrategyDecision::open_long(1.0),
+                "{namespace} namespace should expose offset overloads"
             );
         }
-
-        assert_eq!(
-            produced_decision(&latest_step.expect("at least one step should run")),
-            StrategyDecision::open_long(1.0)
-        );
     }
 
     #[test]
     fn scalar_indicator_bindings_return_unit_for_insufficient_history_and_invalid_periods() {
-        let source = source_returning(
-            r#"
+        for namespace in ["ta", "indicators"] {
+            let body = r#"
 let candles = market.candles();
 let all_unit = true;
 
-if indicators::sma(candles, 2) != () { all_unit = false; }
-if indicators::sma(candles, 0) != () { all_unit = false; }
-if indicators::ema(candles, -5) != () { all_unit = false; }
-if indicators::ema(candles, 5, -1) != () { all_unit = false; }
-if indicators::dema(candles, -5) != () { all_unit = false; }
-if indicators::tema(candles, -5) != () { all_unit = false; }
-if indicators::slope(candles, -5) != () { all_unit = false; }
-if indicators::rsi(candles, -5) != () { all_unit = false; }
-if indicators::roc(candles, -5) != () { all_unit = false; }
-if indicators::cci(candles, -5) != () { all_unit = false; }
-if indicators::williams_r(candles, -5) != () { all_unit = false; }
-if indicators::atr(candles, -5) != () { all_unit = false; }
-if indicators::mfi(candles, -5) != () { all_unit = false; }
-if indicators::obv(candles) != () { all_unit = false; }
-if indicators::obv(candles, -1) != () { all_unit = false; }
+if NS::sma(candles, 2) != () { all_unit = false; }
+if NS::sma(candles, 0) != () { all_unit = false; }
+if NS::ema(candles, -5) != () { all_unit = false; }
+if NS::ema(candles, 5, -1) != () { all_unit = false; }
+if NS::dema(candles, -5) != () { all_unit = false; }
+if NS::tema(candles, -5) != () { all_unit = false; }
+if NS::slope(candles, -5) != () { all_unit = false; }
+if NS::rsi(candles, -5) != () { all_unit = false; }
+if NS::roc(candles, -5) != () { all_unit = false; }
+if NS::cci(candles, -5) != () { all_unit = false; }
+if NS::williams_r(candles, -5) != () { all_unit = false; }
+if NS::atr(candles, -5) != () { all_unit = false; }
+if NS::mfi(candles, -5) != () { all_unit = false; }
+if NS::obv(candles) != () { all_unit = false; }
+if NS::obv(candles, -1) != () { all_unit = false; }
 
 if all_unit {
     decision::open_long(1.0)
 } else {
     decision::hold()
 }
-"#,
-        );
+"#
+            .replace("NS::", &format!("{namespace}::"));
+            let source = source_returning(&body);
+            let step = run_completed_tick(&source);
 
-        let step = run_completed_tick(&source);
-
-        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+            assert_eq!(
+                produced_decision(&step),
+                StrategyDecision::open_long(1.0),
+                "{namespace} namespace should preserve unit-return behavior"
+            );
+        }
     }
 
     #[test]
