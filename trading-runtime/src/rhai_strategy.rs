@@ -24,7 +24,7 @@ use indicators::{
     volume::{mfi::mfi, obv::obv},
 };
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
-use shared::{Candle, Position, Timeframe};
+use shared::{Candle, Position, PositionSide, Timeframe};
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
@@ -781,6 +781,26 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
                 .unwrap_or(Dynamic::UNIT)
         },
     );
+    engine.register_fn("is_flat", |portfolio: &mut RhaiPortfolioSnapshot| {
+        portfolio.position.is_none()
+    });
+    engine.register_fn("has_position", |portfolio: &mut RhaiPortfolioSnapshot| {
+        portfolio.position.is_some()
+    });
+    engine.register_fn("is_long", |portfolio: &mut RhaiPortfolioSnapshot| {
+        portfolio
+            .position
+            .as_ref()
+            .map(|position| position.position.side == PositionSide::Long)
+            .unwrap_or(false)
+    });
+    engine.register_fn("is_short", |portfolio: &mut RhaiPortfolioSnapshot| {
+        portfolio
+            .position
+            .as_ref()
+            .map(|position| position.position.side == PositionSide::Short)
+            .unwrap_or(false)
+    });
 
     engine.register_get("side", |position: &mut RhaiPosition| {
         position.position.side.to_string()
@@ -805,6 +825,18 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
             .take_profit
             .map(Dynamic::from)
             .unwrap_or(Dynamic::UNIT)
+    });
+    engine.register_fn("is_long", |position: &mut RhaiPosition| {
+        position.position.side == PositionSide::Long
+    });
+    engine.register_fn("is_short", |position: &mut RhaiPosition| {
+        position.position.side == PositionSide::Short
+    });
+    engine.register_fn("has_stop_loss", |position: &mut RhaiPosition| {
+        position.position.stop_loss.is_some()
+    });
+    engine.register_fn("has_take_profit", |position: &mut RhaiPosition| {
+        position.position.take_profit.is_some()
     });
 
     engine.register_fn("get", strategy_state_get_int);
