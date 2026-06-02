@@ -147,40 +147,57 @@ Rules:
 ## Indicators
 
 Indicator bindings consume `CandleHistory` values from `market.candles(...)`.
-The typed runtime currently exposes the scalar v1 pack:
+Canonical indicator bindings live under `ta::*`. The typed runtime currently
+exposes the scalar v1 pack:
 
 | Function | Returns |
 | --- | --- |
-| `indicators::sma(history, period)` / `indicators::sma(history, period, offset)` | `float` or `()` |
-| `indicators::ema(history, period)` / `indicators::ema(history, period, offset)` | `float` or `()` |
-| `indicators::dema(history, period)` / `indicators::dema(history, period, offset)` | `float` or `()` |
-| `indicators::tema(history, period)` / `indicators::tema(history, period, offset)` | `float` or `()` |
-| `indicators::slope(history, period)` / `indicators::slope(history, period, offset)` | `float` or `()` |
-| `indicators::rsi(history, period)` / `indicators::rsi(history, period, offset)` | `float` or `()` |
-| `indicators::roc(history, period)` / `indicators::roc(history, period, offset)` | `float` or `()` |
-| `indicators::cci(history, period)` / `indicators::cci(history, period, offset)` | `float` or `()` |
-| `indicators::williams_r(history, period)` / `indicators::williams_r(history, period, offset)` | `float` or `()` |
-| `indicators::atr(history, period)` / `indicators::atr(history, period, offset)` | `float` or `()` |
-| `indicators::mfi(history, period)` / `indicators::mfi(history, period, offset)` | `float` or `()` |
-| `indicators::obv(history)` / `indicators::obv(history, offset)` | `float` or `()` |
+| `ta::sma(history, period)` / `ta::sma(history, period, offset)` | `float` or `()` |
+| `ta::ema(history, period)` / `ta::ema(history, period, offset)` | `float` or `()` |
+| `ta::dema(history, period)` / `ta::dema(history, period, offset)` | `float` or `()` |
+| `ta::tema(history, period)` / `ta::tema(history, period, offset)` | `float` or `()` |
+| `ta::slope(history, period)` / `ta::slope(history, period, offset)` | `float` or `()` |
+| `ta::rsi(history, period)` / `ta::rsi(history, period, offset)` | `float` or `()` |
+| `ta::roc(history, period)` / `ta::roc(history, period, offset)` | `float` or `()` |
+| `ta::cci(history, period)` / `ta::cci(history, period, offset)` | `float` or `()` |
+| `ta::williams_r(history, period)` / `ta::williams_r(history, period, offset)` | `float` or `()` |
+| `ta::atr(history, period)` / `ta::atr(history, period, offset)` | `float` or `()` |
+| `ta::mfi(history, period)` / `ta::mfi(history, period, offset)` | `float` or `()` |
+| `ta::obv(history)` / `ta::obv(history, offset)` | `float` or `()` |
+| `ta::cross_over(previous_a, previous_b, current_a, current_b)` | `bool` |
+| `ta::cross_under(previous_a, previous_b, current_a, current_b)` | `bool` |
 
-Full indicator documentation remains tracked by #26; structured-result,
-session-/period-aware, OBV-series, and strategic Fibonacci APIs are outside this
-scalar Runtime binding pack.
+`ta::cross_over(a_prev, b_prev, a, b)` is `a_prev <= b_prev && a > b`.
+`ta::cross_under(a_prev, b_prev, a, b)` is `a_prev >= b_prev && a < b`.
+
+`indicators::*` remains a transitional alias for the scalar indicator functions
+and offset variants, for example:
+
+```rhai
+indicators::sma(market.candles(), 20) // transitional alias only; prefer ta::sma
+```
+
+New strategies and maintained examples should prefer `ta::*`. Full indicator
+documentation remains tracked by #26; structured-result, session-/period-aware,
+OBV-series, first-class `series::*`, and strategic Fibonacci APIs are outside
+this scalar Runtime binding pack.
 
 Example:
 
 ```rhai
 fn on_tick(market, context) {
-    let fast = indicators::sma(market.candles(), 20);
-    let slow = indicators::sma(market.candles(), 50);
+    let candles = market.candles();
+    let fast = ta::sma(candles, 20);
+    let slow = ta::sma(candles, 50);
+    let fast_prev = ta::sma(candles, 20, 1);
+    let slow_prev = ta::sma(candles, 50, 1);
 
-    if fast == () || slow == () {
+    if fast == () || slow == () || fast_prev == () || slow_prev == () {
         return decision::hold().with_reason("warming up");
     }
 
-    if fast > slow {
-        decision::open_long(1.0).with_reason("fast above slow")
+    if ta::cross_over(fast_prev, slow_prev, fast, slow) && context.portfolio.is_flat() {
+        decision::open_long(1.0).with_reason("fast crossed above slow")
     } else {
         decision::hold()
     }
@@ -189,7 +206,7 @@ fn on_tick(market, context) {
 
 Most history-dependent indicators return `()` until enough visible history is
 available or when a period/offset argument is invalid. Keep explicit warmup
-guards in strategy code.
+guards in strategy code before passing indicator outputs to crossover helpers.
 
 ## Strategy Context
 
@@ -208,32 +225,42 @@ guards in strategy code.
 | `context.portfolio.equity` | current equity derived from Portfolio State and mark price |
 | `context.portfolio.completed_trades` | number of completed trades |
 | `context.portfolio.position` | `Position` or `()` |
+| `context.portfolio.is_flat()` | `true` when no position is open |
+| `context.portfolio.has_position()` | `true` when a position is open |
+| `context.portfolio.is_long()` | `true` when the open position is long |
+| `context.portfolio.is_short()` | `true` when the open position is short |
 
-`context.portfolio` is runtime-local Portfolio State. It is not an external
-broker/account snapshot.
+`context.portfolio` is a read-only runtime-local Portfolio Snapshot. It is not
+an external broker/account snapshot. Portfolio State, Execution Planning,
+Portfolio Transitions, and Risk Exits remain runtime-owned; strategy code reads
+snapshots and returns `decision::*` values rather than mutating portfolio or
+execution state.
 
 ### `Position`
 
 | Expression | Returns |
 | --- | --- |
-| `position.side` | `"Long"` or `"Short"` |
+| `position.side` | `"long"` or `"short"` |
 | `position.entry_price` | float |
 | `position.size` | float |
 | `position.entry_time` | integer timestamp |
 | `position.stop_loss` | float or `()` |
 | `position.take_profit` | float or `()` |
+| `position.is_long()` | `true` when this position is long |
+| `position.is_short()` | `true` when this position is short |
+| `position.has_stop_loss()` | `true` when this position has a stop-loss price |
+| `position.has_take_profit()` | `true` when this position has a take-profit price |
 
 Example:
 
 ```rhai
 fn on_tick(market, context) {
-    let position = context.portfolio.position;
-
-    if position == () {
+    if context.portfolio.is_flat() {
         return decision::open_long(1.0).with_reason("enter");
     }
 
-    if position.side == "Long" && market.candle().close < position.entry_price * 0.98 {
+    let position = context.portfolio.position;
+    if position != () && position.is_long() && market.candle().close < position.entry_price * 0.98 {
         return decision::close_long().with_reason("strategy exit");
     }
 
@@ -248,23 +275,30 @@ It persists between Strategy Ticks in one runtime session and starts empty for a
 new session/backtest. V1 does not persist Strategy State across live process
 restarts.
 
-Primitive-only API:
+Primitive-only typed helper API:
 
 | Expression | Returns / effect |
 | --- | --- |
-| `context.state.get(name, default_int)` | stored int or default |
-| `context.state.get(name, default_float)` | stored float or default |
-| `context.state.get(name, default_bool)` | stored bool or default |
-| `context.state.get(name, default_string)` | stored string or default |
-| `context.state.set(name, value)` | stores an int, float, bool, or string |
+| `context.state.int(name, default_int)` | stored int or default |
+| `context.state.float(name, default_float)` | stored float or default |
+| `context.state.bool(name, default_bool)` | stored bool or default |
+| `context.state.string(name, default_string)` | stored string or default |
+| `context.state.set_int(name, value)` | stores an int |
+| `context.state.set_float(name, value)` | stores a float |
+| `context.state.set_bool(name, value)` | stores a bool |
+| `context.state.set_string(name, value)` | stores a string |
 
-Use one primitive type per key. Reading a key as a different type is a Strategy
-Error.
+The older overloaded `context.state.get(name, default)` and
+`context.state.set(name, value)` API remains supported for int, float, bool, and
+string primitives. Use one primitive type per key. Reading a key as a different
+type is a Strategy Error. Strategy State remains primitive-only and
+session-local in v1; arrays, maps, host objects, Structure Object handles, and
+restart persistence are not supported.
 
 ```rhai
 fn on_tick(market, context) {
-    let seen = context.state.get("seen", 0);
-    context.state.set("seen", seen + 1);
+    let seen = context.state.int("seen", 0);
+    context.state.set_int("seen", seen + 1);
 
     decision::hold().with_reason("seen tick")
 }

@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use shared::Candle;
 use trading_runtime::{
@@ -27,11 +30,51 @@ fn load_example(name: &str) -> RhaiStrategy {
     RhaiStrategy::load_file(strategies_dir().join(name)).expect("example strategy should load")
 }
 
+fn example_source(name: &str) -> String {
+    fs::read_to_string(strategies_dir().join(name)).expect("example strategy should be readable")
+}
+
 fn produced_intent(events: &[RuntimeEvent]) -> Option<StrategyDecisionIntent> {
     events.iter().find_map(|event| match event {
         RuntimeEvent::StrategyDecisionProduced { decision } => Some(decision.intent),
         _ => None,
     })
+}
+
+#[test]
+fn maintained_examples_use_current_rhai_authoring_surface() {
+    for strategy in ["sma_cross.rhai", "min_loss.rhai", "trendline_break.rhai"] {
+        let source = example_source(strategy);
+        assert!(
+            !source.contains("indicators::"),
+            "{strategy} should use canonical ta::* instead of transitional indicators::*"
+        );
+    }
+
+    for strategy in ["sma_cross.rhai", "min_loss.rhai"] {
+        let source = example_source(strategy);
+        assert!(
+            source.contains("ta::cross_over("),
+            "{strategy} should use ta::cross_over for SMA crossover entries"
+        );
+        assert!(
+            source.contains("ta::cross_under("),
+            "{strategy} should use ta::cross_under for SMA crossover exits"
+        );
+    }
+
+    let sma_cross = example_source("sma_cross.rhai");
+    assert!(sma_cross.contains("context.portfolio.is_flat()"));
+    assert!(sma_cross.contains("context.portfolio.is_long()"));
+
+    let min_loss = example_source("min_loss.rhai");
+    assert!(min_loss.contains("position.is_long()"));
+    assert!(min_loss.contains("context.portfolio.is_flat()"));
+    assert!(min_loss.contains("context.state.float("));
+    assert!(min_loss.contains("context.state.set_float("));
+
+    let trendline_break = example_source("trendline_break.rhai");
+    assert!(trendline_break.contains("context.portfolio.has_position()"));
 }
 
 #[test]

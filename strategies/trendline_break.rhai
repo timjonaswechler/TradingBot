@@ -38,9 +38,8 @@ fn on_tick(market, context) {
     let current_bar = market.candles().len() - 1;
     let lines = market.anchored("resistance");
     let has_lines = type_of(lines) == "array" && lines.len() > 0;
-    let position = context.portfolio.position;
 
-    if position != () {
+    if context.portfolio.has_position() {
         return decision::hold();
     }
 

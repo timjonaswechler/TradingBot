@@ -17,8 +17,10 @@ need runner/runtime event details should also read
 3. Declare the strategy-owned Primary Timeframe in `strategy_config()`.
 4. Keep the required tick hook as `fn on_tick(market, context)`.
 5. Return typed decisions from `decision::*`.
-6. Declare optional warmup/Secondary requirements in `strategy_config()`.
-7. Declare optional anchored/structure compute in `anchored_config()`.
+6. Use canonical `ta::*` for technical-analysis helpers.
+7. Use read-only Portfolio/Position helpers and typed primitive Strategy State helpers for clarity.
+8. Declare optional warmup/Secondary requirements in `strategy_config()`.
+9. Declare optional anchored/structure compute in `anchored_config()`.
 
 The live daemon and backtester migration to the new runtime API is tracked
 separately. These examples are validated against `trading-runtime`'s typed Rhai
@@ -86,26 +88,39 @@ let newest = candles[1];
 Candle histories are 1-indexed and newest-first for strategy authors:
 `market.candles()[1]` is the current Primary candle. Out-of-range indexes return
 `()`. Scalar indicator bindings consume histories returned by
-`market.candles(...)`; the v1 pack includes `sma`, `ema`, `dema`, `tema`,
-`slope`, `rsi`, `roc`, `cci`, `williams_r`, `atr`, `mfi`, and scalar `obv`:
+`market.candles(...)`. Use canonical `ta::*` for new strategies; the v1 pack
+includes `sma`, `ema`, `dema`, `tema`, `slope`, `rsi`, `roc`, `cci`,
+`williams_r`, `atr`, `mfi`, scalar `obv`, and the scalar crossover helpers
+`ta::cross_over(...)` / `ta::cross_under(...)`:
 
 ```rhai
 fn on_tick(market, context) {
-    let fast = indicators::sma(market.candles(), 20);
-    let slow = indicators::sma(market.candles(), 50);
+    let candles = market.candles();
+    let fast = ta::sma(candles, 20);
+    let slow = ta::sma(candles, 50);
+    let fast_prev = ta::sma(candles, 20, 1);
+    let slow_prev = ta::sma(candles, 50, 1);
 
-    if fast == () || slow == () {
+    if fast == () || slow == () || fast_prev == () || slow_prev == () {
         return decision::hold().with_reason("warming up");
     }
 
-    if fast > slow {
+    if ta::cross_over(fast_prev, slow_prev, fast, slow) && context.portfolio.is_flat() {
         decision::open_long(1.0)
             .with_stop_loss(market.candle().close * 0.95)
-            .with_reason("sma crossover")
+            .with_reason("fast crossed above slow")
     } else {
         decision::hold()
     }
 }
+```
+
+`indicators::*` remains a transitional alias for the scalar indicator functions
+only. It still works for migration, but new strategies and examples should
+prefer `ta::*`:
+
+```rhai
+indicators::sma(market.candles(), 20) // transitional alias only; prefer ta::sma
 ```
 
 ## Strategy configuration and timeframes
@@ -159,35 +174,45 @@ values are primitives only: int, float, bool, and string.
 
 ```rhai
 fn on_tick(market, context) {
-    let seen = context.state.get("seen", 0);
-    context.state.set("seen", seen + 1);
+    let seen = context.state.int("seen", 0);
+    context.state.set_int("seen", seen + 1);
 
     decision::hold().with_reason("seen tick")
 }
 ```
 
 Use matching primitive types per key; reading a key as a different primitive type
-is a Strategy Error.
+is a Strategy Error. The older overloaded `context.state.get(...)` /
+`context.state.set(...)` API remains valid, but typed helpers make the intended
+primitive type explicit. Strategy State remains primitive-only and session-local
+in v1; do not use it for arrays, maps, host objects, Structure Object handles,
+or restart persistence.
 
 ## Portfolio context
 
 Portfolio data is grouped under `context.portfolio`:
 
 ```rhai
-let portfolio = context.portfolio;
-let position = portfolio.position;
-
-if position == () {
+if context.portfolio.is_flat() {
     return decision::open_long(1.0);
 }
 
-if position.side == "Long" {
+let position = context.portfolio.position;
+if position != () && position.is_long() {
     return decision::close_long().with_reason("exit long");
 }
 ```
 
+Useful read-only helpers include `context.portfolio.is_flat()`,
+`context.portfolio.has_position()`, `context.portfolio.is_long()`,
+`context.portfolio.is_short()`, plus `position.is_long()`,
+`position.is_short()`, `position.has_stop_loss()`, and
+`position.has_take_profit()` after checking `position != ()`.
+
 `context.portfolio` is the runtime-local Portfolio Snapshot, not an external
-broker account snapshot.
+broker account snapshot. Portfolio State, Execution Planning, Portfolio
+Transitions, and Risk Exits remain runtime-owned; strategy code reads snapshots
+and returns `decision::*` values rather than mutating portfolio/execution state.
 
 ## Warmup
 
@@ -204,7 +229,7 @@ an invalid period/offset argument, so keep explicit guards in strategy logic.
 Full per-indicator documentation remains tracked by #26.
 
 ```rhai
-let s = indicators::sma(market.candles(), 20);
+let s = ta::sma(market.candles(), 20);
 if s == () {
     return decision::hold().with_reason("warming up");
 }

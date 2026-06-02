@@ -19,36 +19,36 @@ fn on_tick(market, context) {
     let current = market.candle();
     let position = context.portfolio.position;
 
-    if position != () && position.side == "Long" {
-        let peak = context.state.get("peak_close", current.close);
+    if position != () && position.is_long() {
+        let peak = context.state.float("peak_close", current.close);
         let next_peak = if current.close > peak { current.close } else { peak };
-        context.state.set("peak_close", next_peak);
+        context.state.set_float("peak_close", next_peak);
 
         if current.close < next_peak * (1.0 - TRAIL_PCT) {
             return decision::close_long().with_reason("trailing close below peak");
         }
     } else {
-        context.state.set("peak_close", current.close);
+        context.state.set_float("peak_close", current.close);
     }
 
-    let fast      = indicators::sma(candles, FAST);
-    let slow      = indicators::sma(candles, SLOW);
-    let fast_prev = indicators::sma(candles, FAST, 1);
-    let slow_prev = indicators::sma(candles, SLOW, 1);
+    let fast      = ta::sma(candles, FAST);
+    let slow      = ta::sma(candles, SLOW);
+    let fast_prev = ta::sma(candles, FAST, 1);
+    let slow_prev = ta::sma(candles, SLOW, 1);
 
     if fast == () || slow == () || fast_prev == () || slow_prev == () {
         return decision::hold().with_reason("warming up");
     }
 
-    let crossed_up   = fast_prev <= slow_prev && fast > slow;
-    let crossed_down = fast_prev >= slow_prev && fast < slow;
+    let crossed_up   = ta::cross_over(fast_prev, slow_prev, fast, slow);
+    let crossed_down = ta::cross_under(fast_prev, slow_prev, fast, slow);
 
-    if crossed_up && position == () {
-        context.state.set("peak_close", current.close);
+    if crossed_up && context.portfolio.is_flat() {
+        context.state.set_float("peak_close", current.close);
         return decision::open_long(QUANTITY).with_reason("fast SMA crossed above slow SMA");
     }
 
-    if crossed_down && position != () && position.side == "Long" {
+    if crossed_down && position != () && position.is_long() {
         return decision::close_long().with_reason("fast SMA crossed below slow SMA");
     }
 
