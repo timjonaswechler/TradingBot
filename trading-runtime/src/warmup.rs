@@ -7,9 +7,10 @@ use std::collections::HashMap;
 
 /// Detect the automatic warmup requirement implied by typed Rhai indicator calls.
 ///
-/// This scans the compiled strategy AST for `indicators::*` calls whose first
-/// argument is the new Market View candle-history API: `market.candles()` or
-/// `market.candles(tf)`. The returned value includes one extra candle of history
+/// This scans the compiled strategy AST for canonical `ta::*` calls and
+/// transitional `indicators::*` calls whose first argument is the Market View
+/// candle-history API: `market.candles()` or `market.candles(tf)`. The returned
+/// value includes one extra candle of history
 /// for indicators with a detected period, matching the donor detector's rule.
 /// When no relevant indicator call is found, this returns `0` so the runtime
 /// minimum/default policy remains authoritative.
@@ -22,7 +23,7 @@ pub fn detect_auto_warmup(ast: &AST, scope: &Scope<'_>) -> usize {
             return true;
         };
 
-        if !is_indicators_call(call) || !first_arg_is_market_candles(call) {
+        if !is_indicator_namespace_call(call) || !first_arg_is_market_candles(call) {
             return true;
         }
 
@@ -114,13 +115,13 @@ pub fn resolve_warmup_plan(
     WarmupPlan::same_requirement(config, effective_warmup)
 }
 
-fn is_indicators_call(call: &FnCallExpr) -> bool {
+fn is_indicator_namespace_call(call: &FnCallExpr) -> bool {
     !call.namespace.is_empty()
         && call
             .namespace
             .path
             .first()
-            .map(|segment| segment.name.as_str() == "indicators")
+            .map(|segment| matches!(segment.name.as_str(), "ta" | "indicators"))
             .unwrap_or(false)
 }
 
@@ -258,6 +259,25 @@ decision::hold()
 "#,
         );
         let strategy = load(&source);
+
+        assert_eq!(detect_auto_warmup(strategy.ast(), strategy.scope()), 51);
+    }
+
+    #[test]
+    fn detects_ta_periods_from_primary_market_candles_for_literals_and_constants() {
+        let source = r#"
+const SLOW = 50;
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn on_tick(market, context) {
+    let fast = ta::sma(market.candles(), 20);
+    let slow = ta::sma(market.candles(), SLOW);
+    decision::hold()
+}
+"#;
+        let strategy = load(source);
 
         assert_eq!(detect_auto_warmup(strategy.ast(), strategy.scope()), 51);
     }
