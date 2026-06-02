@@ -843,10 +843,18 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
     engine.register_fn("get", strategy_state_get_float);
     engine.register_fn("get", strategy_state_get_bool);
     engine.register_fn("get", strategy_state_get_string);
+    engine.register_fn("int", strategy_state_get_int);
+    engine.register_fn("float", strategy_state_get_float);
+    engine.register_fn("bool", strategy_state_get_bool);
+    engine.register_fn("string", strategy_state_get_string);
     engine.register_fn("set", strategy_state_set_int);
     engine.register_fn("set", strategy_state_set_float);
     engine.register_fn("set", strategy_state_set_bool);
     engine.register_fn("set", strategy_state_set_string);
+    engine.register_fn("set_int", strategy_state_set_int);
+    engine.register_fn("set_float", strategy_state_set_float);
+    engine.register_fn("set_bool", strategy_state_set_bool);
+    engine.register_fn("set_string", strategy_state_set_string);
 }
 
 fn parse_timeframe(raw: &str) -> Result<Timeframe, Box<EvalAltResult>> {
@@ -1847,6 +1855,152 @@ if seen == 0 {
     }
 
     #[test]
+    fn strategy_state_typed_int_helpers_return_default_then_stored_value() {
+        let source = source_returning(
+            r#"
+let seen = context.state.int("seen", 0);
+context.state.set_int("seen", seen + 1);
+
+if seen == 0 {
+    decision::hold()
+} else if seen == 1 {
+    decision::open_long(1.0)
+} else {
+    decision::open_short(1.0)
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+
+        let first = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(100.0)))
+            .expect("first completed primary candle should be accepted");
+        let second = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(101.0)))
+            .expect("second completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&first), StrategyDecision::hold());
+        assert_eq!(produced_decision(&second), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn strategy_state_typed_float_helpers_return_default_then_stored_value() {
+        let source = source_returning(
+            r#"
+let threshold = context.state.float("threshold", 1.5);
+context.state.set_float("threshold", threshold + 1.0);
+
+if threshold == 1.5 {
+    decision::hold()
+} else if threshold == 2.5 {
+    decision::open_long(1.0)
+} else {
+    decision::open_short(1.0)
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+
+        let first = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(100.0)))
+            .expect("first completed primary candle should be accepted");
+        let second = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(101.0)))
+            .expect("second completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&first), StrategyDecision::hold());
+        assert_eq!(produced_decision(&second), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn strategy_state_typed_bool_helpers_return_default_then_stored_value() {
+        let source = source_returning(
+            r#"
+let enabled = context.state.bool("enabled", false);
+context.state.set_bool("enabled", true);
+
+if enabled {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+
+        let first = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(100.0)))
+            .expect("first completed primary candle should be accepted");
+        let second = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(101.0)))
+            .expect("second completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&first), StrategyDecision::hold());
+        assert_eq!(produced_decision(&second), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn strategy_state_typed_string_helpers_return_default_then_stored_value() {
+        let source = source_returning(
+            r#"
+let phase = context.state.string("phase", "new");
+context.state.set_string("phase", "active");
+
+if phase == "new" {
+    decision::hold()
+} else if phase == "active" {
+    decision::open_long(1.0)
+} else {
+    decision::open_short(1.0)
+}
+"#,
+        );
+        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let mut runtime = TradingRuntime::new(PortfolioState::new(1_000.0), 0, strategy);
+
+        let first = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(100.0)))
+            .expect("first completed primary candle should be accepted");
+        let second = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle(101.0)))
+            .expect("second completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&first), StrategyDecision::hold());
+        assert_eq!(produced_decision(&second), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn strategy_state_typed_getters_report_the_existing_type_mismatch_contract() {
+        let source = source_returning(
+            r#"
+context.state.set_int("seen", 1);
+let enabled = context.state.bool("seen", false);
+
+if enabled {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+
+        let step = run_completed_tick(&source);
+        let message = strategy_error_message(&step);
+
+        assert!(
+            message.contains("strategy state key `seen` contains int, not requested bool"),
+            "{message}"
+        );
+        assert!(!step
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::StrategyDecisionProduced { .. })));
+    }
+
+    #[test]
     fn strategy_state_starts_empty_for_each_runtime_session() {
         let source = source_returning(
             r#"
@@ -2802,6 +2956,8 @@ if price == 2.5 && enabled && label == "warm" {
         for expression in [
             r#"context.state.set("items", [1, 2, 3]);"#,
             r#"context.state.set("shape", #{ seen: 1 });"#,
+            r#"context.state.set_int("items", [1, 2, 3]);"#,
+            r#"context.state.set_string("shape", #{ seen: 1 });"#,
         ] {
             let source = source_returning(&format!(
                 r#"
