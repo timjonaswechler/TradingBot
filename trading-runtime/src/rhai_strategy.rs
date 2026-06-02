@@ -971,11 +971,11 @@ fn register_anchored_api(engine: &mut RhaiEngine) {
 }
 
 fn register_indicator_api(engine: &mut RhaiEngine) {
-    engine.register_static_module("ta", Arc::new(indicator_module()));
-    engine.register_static_module("indicators", Arc::new(indicator_module()));
+    engine.register_static_module("ta", Arc::new(indicator_module(true)));
+    engine.register_static_module("indicators", Arc::new(indicator_module(false)));
 }
 
-fn indicator_module() -> Module {
+fn indicator_module(include_cross_helpers: bool) -> Module {
     let mut module = Module::new();
 
     register_period_close_indicator(&mut module, "sma", sma);
@@ -990,6 +990,10 @@ fn indicator_module() -> Module {
     register_period_candle_indicator(&mut module, "williams_r", williams_r);
     register_period_candle_indicator(&mut module, "atr", atr);
     register_period_candle_indicator(&mut module, "mfi", mfi);
+
+    if include_cross_helpers {
+        register_cross_helpers(&mut module);
+    }
 
     module.set_native_fn(
         "obv",
@@ -1012,6 +1016,29 @@ fn indicator_module() -> Module {
     );
 
     module
+}
+
+fn register_cross_helpers(module: &mut Module) {
+    module.set_native_fn(
+        "cross_over",
+        |previous_a: FLOAT,
+         previous_b: FLOAT,
+         current_a: FLOAT,
+         current_b: FLOAT|
+         -> Result<bool, Box<EvalAltResult>> {
+            Ok(previous_a <= previous_b && current_a > current_b)
+        },
+    );
+    module.set_native_fn(
+        "cross_under",
+        |previous_a: FLOAT,
+         previous_b: FLOAT,
+         current_a: FLOAT,
+         current_b: FLOAT|
+         -> Result<bool, Box<EvalAltResult>> {
+            Ok(previous_a >= previous_b && current_a < current_b)
+        },
+    );
 }
 
 fn register_period_close_indicator(
@@ -1976,6 +2003,124 @@ fn on_tick(market, context) {
         runtime
             .on_market_input(MarketInput::WarmupCandle(candle_at(
                 101.0,
+                120_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("second warmup candle should be accepted");
+        let step = runtime
+            .on_market_input(MarketInput::CompletedCandle(candle_at(
+                102.0,
+                180_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("completed primary candle should be accepted");
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn ta_cross_over_returns_expected_booleans_for_crossing_and_non_crossing_inputs() {
+        let source = source_returning(
+            r#"
+let crossed = ta::cross_over(1.0, 1.0, 2.0, 1.5);
+let did_not_cross_when_already_above = ta::cross_over(2.0, 1.0, 3.0, 2.0);
+let did_not_cross_when_current_equal = ta::cross_over(1.0, 1.0, 1.0, 1.0);
+let did_not_cross_when_current_below = ta::cross_over(1.0, 2.0, 1.5, 2.0);
+
+if crossed
+        && !did_not_cross_when_already_above
+        && !did_not_cross_when_current_equal
+        && !did_not_cross_when_current_below {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+
+        let step = run_completed_tick(&source);
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn ta_cross_under_returns_expected_booleans_for_crossing_and_non_crossing_inputs() {
+        let source = source_returning(
+            r#"
+let crossed = ta::cross_under(2.0, 2.0, 1.0, 1.5);
+let did_not_cross_when_already_below = ta::cross_under(1.0, 2.0, 1.0, 2.5);
+let did_not_cross_when_current_equal = ta::cross_under(2.0, 2.0, 2.0, 2.0);
+let did_not_cross_when_current_above = ta::cross_under(2.0, 1.0, 2.5, 1.0);
+
+if crossed
+        && !did_not_cross_when_already_below
+        && !did_not_cross_when_current_equal
+        && !did_not_cross_when_current_above {
+    decision::open_long(1.0)
+} else {
+    decision::hold()
+}
+"#,
+        );
+
+        let step = run_completed_tick(&source);
+
+        assert_eq!(produced_decision(&step), StrategyDecision::open_long(1.0));
+    }
+
+    #[test]
+    fn ta_cross_helpers_accept_indicator_inputs_after_explicit_unit_guards() {
+        let source = r#"
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_minimum_warmup(2)
+}
+
+fn bullish_cross(market) {
+    let candles = market.candles();
+    let fast = ta::sma(candles, 1);
+    let slow = ta::sma(candles, 2);
+    let fast_prev = ta::sma(candles, 1, 1);
+    let slow_prev = ta::sma(candles, 2, 1);
+
+    if fast == () || slow == () || fast_prev == () || slow_prev == () {
+        return false;
+    }
+
+    ta::cross_over(fast_prev, slow_prev, fast, slow)
+}
+
+fn on_tick(market, context) {
+    if bullish_cross(market) {
+        decision::open_long(1.0)
+    } else {
+        decision::hold()
+    }
+}
+"#;
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
+        let runtime_config =
+            RuntimeConfig::from_strategy_config("BTC-USD", strategy.strategy_config())
+                .expect("strategy config should resolve");
+        let warmup_requirement = strategy.strategy_config().minimum_warmup();
+        let mut runtime = TradingRuntime::with_config(
+            runtime_config,
+            PortfolioState::new(1_000.0),
+            warmup_requirement,
+            strategy,
+        );
+
+        runtime
+            .on_market_input(MarketInput::WarmupCandle(candle_at(
+                100.0,
+                60_000,
+                Timeframe::minutes(1),
+            )))
+            .expect("first warmup candle should be accepted");
+        runtime
+            .on_market_input(MarketInput::WarmupCandle(candle_at(
+                100.0,
                 120_000,
                 Timeframe::minutes(1),
             )))
