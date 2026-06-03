@@ -366,16 +366,10 @@ where
         ));
     }
 
-    let last_visible_primary_ts = visible_primary
+    let last_visible_primary_close_time = visible_primary
         .last()
         .expect("non-empty visible Primary window should have a last candle")
-        .timestamp;
-    let secondary_context_end = last_visible_primary_ts.checked_add(1).ok_or_else(|| {
-        anyhow!(
-            "dataset::load visible Primary last timestamp {} cannot be converted to a half-open Secondary context range",
-            last_visible_primary_ts
-        )
-    })?;
+        .close_time();
 
     let mut primary = primary_prefix;
     primary.extend(visible_primary);
@@ -394,20 +388,49 @@ where
                 requirement,
                 "Secondary",
             )?;
-            let context = load_range(
-                load_candles,
-                &dataset.symbol,
-                timeframe,
-                dataset.start_ms,
-                secondary_context_end,
-                "Secondary context",
-            )?;
+            let secondary_context_end =
+                secondary_context_open_range_end(last_visible_primary_close_time, timeframe)?;
+            let context = if secondary_context_end <= dataset.start_ms {
+                Vec::new()
+            } else {
+                load_range(
+                    load_candles,
+                    &dataset.symbol,
+                    timeframe,
+                    dataset.start_ms,
+                    secondary_context_end,
+                    "Secondary context",
+                )?
+            };
             candles.extend(context);
             Ok(HistoricalCandleSeries { timeframe, candles })
         })
         .collect::<Result<Vec<_>>>()?;
 
     Ok(HistoricalMarketData::with_secondary(primary, secondary))
+}
+
+fn secondary_context_open_range_end(
+    last_visible_primary_close_time: i64,
+    secondary_timeframe: Timeframe,
+) -> Result<i64> {
+    let latest_visible_secondary_open = last_visible_primary_close_time
+        .checked_sub(secondary_timeframe.duration_ms())
+        .ok_or_else(|| {
+            anyhow!(
+                "dataset::load visible Primary Candle Close Time {} cannot be converted to a Secondary open timestamp boundary for {}",
+                last_visible_primary_close_time,
+                secondary_timeframe
+            )
+        })?;
+
+    latest_visible_secondary_open.checked_add(1).ok_or_else(|| {
+        anyhow!(
+            "dataset::load Secondary open timestamp boundary {} cannot be converted to a half-open context range for {}",
+            latest_visible_secondary_open,
+            secondary_timeframe
+        )
+    })
 }
 
 fn run_synthetic_monte_carlo(
@@ -1231,7 +1254,7 @@ fn reaggregate_timeframe_from_lowest_for_procedure(
     let target_role = format!("regenerated {target_timeframe}");
 
     for slot in slots {
-        let start_exclusive = slot.timestamp.checked_sub(target_duration).ok_or_else(|| {
+        let end_exclusive = slot.timestamp.checked_add(target_duration).ok_or_else(|| {
             anyhow!(
                 "{procedure_name} target {target_timeframe} candle at {} cannot compute aggregation boundary",
                 slot.timestamp
@@ -1239,14 +1262,12 @@ fn reaggregate_timeframe_from_lowest_for_procedure(
         })?;
         let lower_candles = source_sorted
             .iter()
-            .filter(|candle| {
-                candle.timestamp > start_exclusive && candle.timestamp <= slot.timestamp
-            })
+            .filter(|candle| candle.timestamp >= slot.timestamp && candle.timestamp < end_exclusive)
             .collect::<Vec<_>>();
 
         if lower_candles.is_empty() {
             return Err(anyhow!(
-                "{procedure_name} cannot reaggregate {target_timeframe} candle at {}: no {source_timeframe} candles in target slot (T - D, T]",
+                "{procedure_name} cannot reaggregate {target_timeframe} candle at {}: no {source_timeframe} candles in target slot [T, T + D)",
                 slot.timestamp
             ));
         }
@@ -3492,6 +3513,8 @@ fn plan() {
     fn dataset_loader_fetches_strategy_declared_secondary_timeframes() {
         let primary = Timeframe::minutes(1);
         let secondary = Timeframe::hours(1);
+        let start = day(1);
+        let primary_at_secondary_close = start + 59 * Timeframe::minutes(1).duration_ms();
         let strategy = r#"
 const H1 = timeframe("1h");
 
@@ -3511,7 +3534,7 @@ fn on_tick(market, context) {
             strategy,
             r#"
 fn plan() {
-    let dataset = dataset::load("AAPL", time("2020-01-01"), time("2020-01-02"));
+    let dataset = dataset::load("AAPL", time("2020-01-01T00:00:00Z"), time("2020-01-01T01:00:00Z"));
 
     plan_result::new()
         .with_test(
@@ -3524,11 +3547,11 @@ fn plan() {
                 requests.push((symbol.to_string(), timeframe, requested_window));
                 Ok(match timeframe {
                     tf if tf == primary => vec![
-                        candle_for(symbol, primary, day(1), 100.0),
-                        candle_for(symbol, primary, day(1) + 60_000, 101.0),
+                        candle_for(symbol, primary, start, 100.0),
+                        candle_for(symbol, primary, primary_at_secondary_close, 101.0),
                     ],
                     tf if tf == secondary => {
-                        vec![candle_for(symbol, secondary, day(1), 200.0)]
+                        vec![candle_for(symbol, secondary, start, 200.0)]
                     }
                     _ => Vec::new(),
                 })
@@ -3539,13 +3562,70 @@ fn plan() {
         assert_eq!(
             requests,
             vec![
-                ("AAPL".to_string(), primary, range(1, 2)),
                 (
                     "AAPL".to_string(),
-                    secondary,
-                    range_ms(day(1), day(1) + 60_000 + 1),
+                    primary,
+                    range_ms(start, start + 3_600_000)
                 ),
+                ("AAPL".to_string(), secondary, range_ms(start, start + 1)),
             ]
+        );
+    }
+
+    #[test]
+    fn dataset_loader_skips_secondary_context_range_when_no_secondary_candle_can_have_closed() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let start = day(1);
+        let strategy = r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::optional(H1))
+}
+
+fn on_tick(market, context) {
+    decision::hold()
+}
+"#;
+        let mut requests = Vec::new();
+
+        execute_plan(
+            strategy,
+            r#"
+fn plan() {
+    let dataset = dataset::load("AAPL", time("2020-01-01T00:00:00Z"), time("2020-01-01T00:02:00Z"));
+
+    plan_result::new()
+        .with_test(
+            plan_test::new("no future secondary")
+                .with_baseline(baseline::run(dataset, run_config::new().with_balance(10000.0)))
+        )
+}
+"#,
+            |symbol, timeframe, request| {
+                requests.push((symbol.to_string(), timeframe, request));
+                Ok(match timeframe {
+                    tf if tf == primary => vec![
+                        candle_for(symbol, primary, start, 100.0),
+                        candle_for(symbol, primary, start + primary.duration_ms(), 101.0),
+                    ],
+                    tf if tf == secondary => Vec::new(),
+                    _ => Vec::new(),
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            requests,
+            vec![(
+                "AAPL".to_string(),
+                primary,
+                range_ms(start, start + 120_000)
+            )]
         );
     }
 
@@ -3639,8 +3719,8 @@ fn plan() {
     fn warmup_aware_dataset_loads_secondary_prefix_and_context_to_last_visible_primary() {
         let primary = Timeframe::minutes(1);
         let secondary = Timeframe::hours(1);
-        let start = day(1) + 60_000;
-        let last_primary = start + 60_000;
+        let start = day(1);
+        let last_primary = start + 59 * Timeframe::minutes(1).duration_ms();
         let strategy = r#"
 const H1 = timeframe("1h");
 
@@ -3659,8 +3739,8 @@ fn on_tick(market, context) {
 fn plan() {
     let dataset = dataset::load(
         "AAPL",
-        time("2020-01-01T00:01:00Z"),
-        time("2020-01-01T00:03:00Z")
+        time("2020-01-01T00:00:00Z"),
+        time("2020-01-01T01:00:00Z")
     );
 
     plan_result::new()
@@ -3676,14 +3756,24 @@ fn plan() {
             requests.push((symbol.to_string(), timeframe, request));
             Ok(match (timeframe, request) {
                 (tf, DatasetCandleRequest::WarmupPrefix { .. }) if tf == primary => {
-                    vec![candle_for(symbol, primary, day(1), 99.0)]
+                    vec![candle_for(
+                        symbol,
+                        primary,
+                        start - primary.duration_ms(),
+                        99.0,
+                    )]
                 }
                 (tf, DatasetCandleRequest::Range { .. }) if tf == primary => vec![
                     candle_for(symbol, primary, start, 100.0),
                     candle_for(symbol, primary, last_primary, 101.0),
                 ],
                 (tf, DatasetCandleRequest::WarmupPrefix { .. }) if tf == secondary => {
-                    vec![candle_for(symbol, secondary, day(1), 200.0)]
+                    vec![candle_for(
+                        symbol,
+                        secondary,
+                        start - secondary.duration_ms(),
+                        200.0,
+                    )]
                 }
                 (tf, DatasetCandleRequest::Range { .. }) if tf == secondary => {
                     vec![candle_for(symbol, secondary, start, 201.0)]
@@ -3700,14 +3790,10 @@ fn plan() {
                 (
                     "AAPL".to_string(),
                     primary,
-                    range_ms(start, day(1) + 180_000)
+                    range_ms(start, start + 3_600_000)
                 ),
                 ("AAPL".to_string(), secondary, warmup_prefix(start, 1)),
-                (
-                    "AAPL".to_string(),
-                    secondary,
-                    range_ms(start, last_primary + 1),
-                ),
+                ("AAPL".to_string(), secondary, range_ms(start, start + 1)),
             ]
         );
     }
@@ -4561,9 +4647,10 @@ fn plan() {
         let higher = Timeframe::hours(1);
         let target_ts = day(1) + 3_600_000;
         let lower_candles = vec![
-            ohlcv(target_ts - 3_600_000, lower, 1.0, 100.0, 1.0, 1.0, 10.0),
-            ohlcv(target_ts - 60_000, lower, 20.0, 25.0, 15.0, 21.0, 2.0),
-            ohlcv(target_ts, lower, 30.0, 35.0, 29.0, 34.0, 3.0),
+            ohlcv(target_ts - 60_000, lower, 1.0, 100.0, 1.0, 1.0, 10.0),
+            ohlcv(target_ts, lower, 10.0, 12.0, 9.0, 11.0, 1.0),
+            ohlcv(target_ts + 60_000, lower, 20.0, 25.0, 15.0, 21.0, 2.0),
+            ohlcv(target_ts + 3_600_000, lower, 30.0, 35.0, 29.0, 34.0, 3.0),
         ];
         let target_slots = vec![candle_for("OLD", higher, target_ts, 999.0)];
 
@@ -4576,11 +4663,11 @@ fn plan() {
         assert_eq!(candle.timestamp, target_ts);
         assert_eq!(candle.symbol, "AAPL");
         assert_eq!(candle.timeframe, higher);
-        assert_eq!(candle.open, 20.0);
-        assert_eq!(candle.high, 35.0);
-        assert_eq!(candle.low, 15.0);
-        assert_eq!(candle.close, 34.0);
-        assert_eq!(candle.volume, 5.0);
+        assert_eq!(candle.open, 10.0);
+        assert_eq!(candle.high, 25.0);
+        assert_eq!(candle.low, 9.0);
+        assert_eq!(candle.close, 21.0);
+        assert_eq!(candle.volume, 3.0);
         assert!(candle.high >= candle.open.max(candle.close));
         assert!(candle.low <= candle.open.min(candle.close));
     }
@@ -4600,7 +4687,7 @@ fn plan() {
         let msg = err.to_string();
         assert!(msg.contains("monte_carlo::lowest_timeframe_ohlc_noise"));
         assert!(msg.contains("no 1m candles"));
-        assert!(msg.contains("(T - D, T]"));
+        assert!(msg.contains("[T, T + D)"));
     }
 
     #[test]

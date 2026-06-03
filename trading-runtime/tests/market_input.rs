@@ -1033,7 +1033,7 @@ fn short_risk_exit_closes_before_missing_required_secondary_can_block_strategy_t
 #[test]
 fn long_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick() {
     let stale_secondary = candle(0, "1h", 100.0);
-    let primary = ohlc_candle(3_600_001, "1m", 100.0, 105.0, 90.0, 99.0);
+    let primary = ohlc_candle(7_200_000, "1m", 100.0, 105.0, 90.0, 99.0);
     let open_position = position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), None);
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
@@ -1085,7 +1085,7 @@ fn long_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick
 #[test]
 fn short_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick() {
     let stale_secondary = candle(0, "1h", 100.0);
-    let primary = ohlc_candle(3_600_001, "1m", 100.0, 105.0, 80.0, 90.0);
+    let primary = ohlc_candle(7_200_000, "1m", 100.0, 105.0, 80.0, 90.0);
     let open_position = position_with_entry_risk(PositionSide::Short, 100.0, None, Some(80.0));
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
@@ -1198,8 +1198,8 @@ fn open_position_without_risk_exit_keeps_missing_required_secondary_as_strategy_
 #[test]
 fn coarse_required_secondary_remains_fresh_until_duration_and_tolerance_are_exceeded() {
     let secondary = candle(0, "1h", 100.0);
-    let fresh_primary = candle(3_600_000, "1m", 101.0);
-    let stale_primary = candle(7_200_001, "1m", 102.0);
+    let fresh_primary = candle(10_740_000, "1m", 101.0);
+    let stale_primary = candle(10_800_000, "1m", 102.0);
     let calls = Rc::new(RefCell::new(0));
     let mut runtime = TradingRuntime::with_config(
         runtime_config_with_secondary_configs(
@@ -1258,7 +1258,7 @@ fn coarse_required_secondary_remains_fresh_until_duration_and_tolerance_are_exce
 #[test]
 fn optional_secondary_stale_emits_diagnostic_but_allows_same_strategy_tick() {
     let secondary = candle(0, "1h", 100.0);
-    let primary = candle(3_600_001, "1m", 101.0);
+    let primary = candle(7_200_000, "1m", 101.0);
     let calls = Rc::new(RefCell::new(0));
     let mut runtime = TradingRuntime::with_config(
         runtime_config_with_secondary_configs(
@@ -1306,7 +1306,7 @@ fn optional_secondary_stale_emits_diagnostic_but_allows_same_strategy_tick() {
 #[test]
 fn required_and_optional_secondary_differ_for_the_same_stale_context() {
     let secondary = candle(0, "1h", 100.0);
-    let primary = candle(3_600_001, "1m", 101.0);
+    let primary = candle(7_200_000, "1m", 101.0);
     let required_calls = Rc::new(RefCell::new(0));
     let optional_calls = Rc::new(RefCell::new(0));
     let mut required_runtime = TradingRuntime::with_config(

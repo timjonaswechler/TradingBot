@@ -22,7 +22,7 @@ For planned multi-timeframe Synthetic Market Data, the preferred consistency mod
 3. Regenerate every larger configured timeframe from the mutated smallest timeframe by deterministic OHLCV aggregation.
 4. Replay the regenerated multi-timeframe dataset through the ordinary Runtime-backed backtest path.
 
-Aggregation for each larger timeframe uses its existing target candle timestamps as the slot calendar. For a target candle with close timestamp `T` and duration `D`, lower-timeframe candles with close timestamps in `(T - D, T]` are aggregated:
+Aggregation for each larger timeframe uses its existing target Candle Timestamps as the slot calendar. Candle Timestamps are open/start timestamps for completed candle intervals. For a target candle with open timestamp `T` and duration `D`, lower-timeframe candles with open timestamps in `[T, T + D)` are aggregated:
 
 ```text
 open      = first lower candle open by timestamp

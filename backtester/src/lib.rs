@@ -588,11 +588,11 @@ fn run_prepared_runtime_backtest(
 
     replay_inputs.sort_by(|left, right| {
         left.candle
-            .timestamp
-            .cmp(&right.candle.timestamp)
+            .close_time()
+            .cmp(&right.candle.close_time())
             .then_with(|| {
-                input_order_for_same_timestamp(&effective_config, &left.candle).cmp(
-                    &input_order_for_same_timestamp(&effective_config, &right.candle),
+                input_order_for_same_close_time(&effective_config, &left.candle).cmp(
+                    &input_order_for_same_close_time(&effective_config, &right.candle),
                 )
             })
             .then_with(|| {
@@ -707,7 +707,7 @@ fn insert_history(
     Ok(())
 }
 
-fn input_order_for_same_timestamp(config: &RuntimeConfig, candle: &Candle) -> u8 {
+fn input_order_for_same_close_time(config: &RuntimeConfig, candle: &Candle) -> u8 {
     if candle.timeframe == config.primary_timeframe {
         1
     } else {
@@ -1134,6 +1134,106 @@ fn on_tick(market, context) {
             .open_position
             .is_none());
         assert!(backtest.result.equity_curve.is_empty());
+    }
+
+    #[test]
+    fn runtime_backtest_replays_secondary_at_same_derived_close_time_before_primary() {
+        let primary = Timeframe::minutes(1);
+        let secondary = Timeframe::hours(1);
+        let ten_oclock = 10 * Timeframe::hours(1).duration_ms();
+        let source = r#"
+const H1 = timeframe("1h");
+
+fn strategy_config() {
+    strategy_config::new()
+        .with_primary(timeframe("1m"))
+        .with_secondary(secondary::required(H1).with_max_missing_candles(0))
+}
+
+fn on_tick(market, context) {
+    if market.candle(H1) == () {
+        decision::hold().with_reason("missing secondary")
+    } else {
+        decision::open_long(1.0).with_reason("same-boundary secondary visible")
+    }
+}
+"#;
+        let before_secondary_close = ten_oclock + 58 * Timeframe::minutes(1).duration_ms();
+        let at_secondary_close = ten_oclock + 59 * Timeframe::minutes(1).duration_ms();
+        let market_data = HistoricalMarketData::with_secondary(
+            vec![
+                candle_at(before_secondary_close, 100.0, primary),
+                candle_at(at_secondary_close, 101.0, primary),
+            ],
+            [HistoricalCandleSeries {
+                timeframe: secondary,
+                candles: vec![candle_at(ten_oclock, 200.0, secondary)],
+            }],
+        );
+
+        let backtest = run_runtime_backtest(
+            source,
+            market_data,
+            RuntimeBacktestConfig::new("TEST", 10_000.0),
+        )
+        .unwrap();
+
+        let early_primary_index = backtest
+            .steps
+            .iter()
+            .position(|step| {
+                step.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        RuntimeEvent::TradableCandleAccepted { candle }
+                            if candle.timeframe == primary && candle.timestamp == before_secondary_close
+                    )
+                })
+            })
+            .expect("primary before secondary close should be replayed");
+        let secondary_index = backtest
+            .steps
+            .iter()
+            .position(|step| {
+                step.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        RuntimeEvent::MarketInputAccepted { candle }
+                            if candle.timeframe == secondary && candle.timestamp == ten_oclock
+                    )
+                })
+            })
+            .expect("secondary input should be replayed");
+        let boundary_primary_index = backtest
+            .steps
+            .iter()
+            .position(|step| {
+                step.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        RuntimeEvent::TradableCandleAccepted { candle }
+                            if candle.timeframe == primary && candle.timestamp == at_secondary_close
+                    )
+                })
+            })
+            .expect("same-boundary primary should be replayed");
+
+        assert!(early_primary_index < secondary_index);
+        assert!(secondary_index < boundary_primary_index);
+        assert!(backtest.steps[early_primary_index]
+            .events
+            .iter()
+            .any(|event| {
+                matches!(event, RuntimeEvent::StrategyTickBlocked { blocked_contexts, .. }
+                if blocked_contexts.iter().any(|blocked| blocked.timeframe == secondary))
+            }));
+        assert!(backtest.steps[boundary_primary_index]
+            .events
+            .iter()
+            .any(|event| {
+                matches!(event, RuntimeEvent::StrategyDecisionProduced { decision }
+                if decision.intent == StrategyDecisionIntent::OpenLong)
+            }));
     }
 
     #[test]

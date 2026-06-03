@@ -12,6 +12,10 @@ _Avoid_: State, Engine State, Portfolio State, Market State
 The canonical trading state of a live or simulated trading session: realized cash balance, open position, and completed trade count. Equity is derived from Portfolio State and current market prices rather than treated as independent account truth; a run may start from an initial completed trade count and then continue counting completed trades from there.
 _Avoid_: Strategy State, Context State, External Account Snapshot
 
+**Open Position**:
+An active long or short market exposure for one Runtime Asset, described by its side, entry price, quantity, entry time, and optional Entry Risk Parameters. An Open Position is part of Portfolio State; its profit/loss, equity impact, and lifecycle are Portfolio Transition semantics.
+_Avoid_: Closed Trade, DB Position, Portfolio Snapshot, size when quantity is meant
+
 **Runtime Portfolio Snapshot**:
 A point-in-time view of one Trading Runtime's Portfolio State for a runtime step. It includes cash balance, open position, completed trade count, and current equity derived from the current mark price.
 _Avoid_: External Account Snapshot, Account Balance
@@ -121,8 +125,12 @@ Historical-derived candle data transformed for robustness testing before it is f
 _Avoid_: Runtime Mutation, Strategy Mutation
 
 **Candle Timestamp**:
-The timestamp that identifies a completed candle at the close/end boundary of its interval. Trading Runtime freshness checks, Market State ordering, and Strategy Tick timing interpret Candle Timestamps as close timestamps; provider adapters that receive open timestamps must normalize them before runtime ingestion.
-_Avoid_: Open timestamp, provider raw timestamp when runtime semantics are meant
+The timestamp that identifies a completed candle by the open/start boundary of its interval. A Candle is still completed market data; when runtime logic needs the close/end boundary, it derives Candle Close Time from the Candle Timestamp plus the candle's Timeframe duration.
+_Avoid_: Candle Close Time, provider raw timestamp when runtime semantics are meant
+
+**Candle Close Time**:
+The derived close/end boundary of a completed candle interval, computed from the Candle Timestamp plus the candle's Timeframe duration. Use Candle Close Time only when logic needs to reason about when the interval became complete, not as the canonical candle identifier.
+_Avoid_: Candle Timestamp when the open/start boundary is meant
 
 **Candle Volume**:
 The traded market quantity reported for one completed candle interval. Candle Volume is Market Data and may be transformed with a Synthetic Market Data candle payload, but it is not Strategy Decision quantity, Position size, or Portfolio State.

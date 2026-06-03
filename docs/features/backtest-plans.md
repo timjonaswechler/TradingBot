@@ -139,8 +139,9 @@ Warmup behavior:
   the resolved Runtime `WarmupPlan`.
 - Configured Secondary Timeframes also receive their hidden warmup prefixes.
 - Secondary context after warmup is derived from the visible Primary series and
-  is loaded only through the last visible Primary Candle Timestamp; the loader
-  does not fetch future Secondary candles after the visible Primary window.
+  is loaded only through the last visible Primary candle's derived Candle Close Time;
+  Candle Timestamps themselves remain open/start timestamps. The loader does not
+  fetch future Secondary candles after the visible Primary window.
 - If the visible Primary window is empty, or the DB does not contain enough
   Primary/Secondary history before `start` to satisfy Runtime warmup, plan
   execution fails before rendering a partial report.

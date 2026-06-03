@@ -2572,7 +2572,7 @@ fn on_tick(market, context) {
         let step = runtime
             .on_market_input(MarketInput::CompletedCandle(candle_at(
                 100.0,
-                30 * 3_600_000,
+                31 * 3_600_000 - Timeframe::minutes(1).duration_ms(),
                 Timeframe::minutes(1),
             )))
             .expect("primary completed candle should be accepted");
@@ -2725,7 +2725,7 @@ fn on_tick(market, context) {
         let step = runtime
             .on_market_input(MarketInput::CompletedCandle(candle_at(
                 100.0,
-                3_600_000,
+                7_200_000 - Timeframe::minutes(1).duration_ms(),
                 Timeframe::minutes(1),
             )))
             .expect("primary candle should be accepted");
@@ -2802,7 +2802,7 @@ if market.candle(H1) == () && market.candles(H1) == () {
         let step = runtime
             .on_market_input(MarketInput::CompletedCandle(candle_at(
                 100.0,
-                3_600_001,
+                7_200_000,
                 Timeframe::minutes(1),
             )))
             .expect("primary candle should be accepted");
@@ -2910,7 +2910,7 @@ if average != () && average == 175.0 {
         let step = runtime
             .on_market_input(MarketInput::CompletedCandle(candle_at(
                 100.0,
-                3_600_000,
+                7_200_000 - Timeframe::minutes(1).duration_ms(),
                 Timeframe::minutes(1),
             )))
             .expect("primary candle should be accepted");

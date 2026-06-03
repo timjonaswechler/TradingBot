@@ -107,12 +107,11 @@ Secondary readiness is evaluated from the latest accepted completed candle for a
 configured Secondary Timeframe:
 
 - `Missing`: no candle has been accepted for that Secondary Timeframe.
-- `Fresh`: latest Secondary close timestamp is within the allowed window.
-- `Stale`: the Primary candle timestamp is later than
-  `latest_secondary_timestamp + secondary_duration * (max_missing_candles + 1)`.
+- `Fresh`: the latest Secondary Candle Close Time is within the allowed window.
+- `Stale`: the Primary Candle Close Time is later than
+  `latest_secondary_close_time + secondary_duration * (max_missing_candles + 1)`.
 
-Freshness uses the Secondary Timeframe duration and close timestamps. The Primary
-Timeframe duration is not used for Secondary freshness.
+Candle Timestamps are open/start timestamps for completed candle intervals. Freshness derives Candle Close Time as `candle.timestamp + candle.timeframe.duration`; the Secondary Timeframe duration defines the missing-candle tolerance.
 
 Runtime readiness and Market View visibility share the same internal policy:
 
@@ -236,10 +235,11 @@ from the Runtime Asset plus strategy-owned timeframe contract, resolve the Warmu
 Plan, and replay historical Primary and Secondary candles into one
 `TradingRuntime`.
 
-Historical replay is globally ordered by candle close timestamp across configured
-timeframes. At the same timestamp, Secondary input is replayed before Primary
-input so a Primary Strategy Tick can see same-boundary Secondary context without
-future leakage.
+Historical replay is globally ordered by derived Candle Close Time across configured
+timeframes. Candle Timestamps remain open/start timestamps; close ordering is derived as
+`candle.timestamp + candle.timeframe.duration`. At the same derived close time,
+Secondary input is replayed before Primary input so a Primary Strategy Tick can see
+same-boundary Secondary context without future leakage.
 
 For each configured timeframe, the first `WarmupPlan` requirement count is sent
 as Warmup Input; remaining candles are sent as completed input. Completed

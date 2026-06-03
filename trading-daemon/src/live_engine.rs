@@ -444,7 +444,7 @@ fn on_tick(market, context) {
         assert!(secondary_step.portfolio_snapshot.open_position.is_none());
 
         let primary_step = runner
-            .on_completed_candle(candle("1m", 3_660_000, 100.0))
+            .on_completed_candle(candle("1m", 7_200_000, 100.0))
             .expect("primary candle should be accepted");
 
         assert!(primary_step.events.iter().any(|event| matches!(
