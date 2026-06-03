@@ -14,7 +14,11 @@ _Avoid_: Strategy State, Context State, External Account Snapshot
 
 **Open Position**:
 An active long or short market exposure for one Runtime Asset, described by its side, entry price, quantity, entry time, and optional Entry Risk Parameters. An Open Position is part of Portfolio State; its profit/loss, equity impact, and lifecycle are Portfolio Transition semantics.
-_Avoid_: Closed Trade, DB Position, Portfolio Snapshot, size when quantity is meant
+_Avoid_: DB Position, Portfolio Snapshot, size when quantity is meant
+
+**Closed Position**:
+The record that an Open Position has been closed, including the closed exposure, exit price, exit time, and realized PnL produced by the Portfolio Transition. A Closed Position is distinct from a backtest report row, DB trade row, broker order, or broker fill.
+_Avoid_: Trade when reporting, persistence, orders, or fills are meant
 
 **Runtime Portfolio Snapshot**:
 A point-in-time view of one Trading Runtime's Portfolio State for a runtime step. It includes cash balance, open position, completed trade count, and current equity derived from the current mark price.
@@ -91,6 +95,14 @@ _Avoid_: Risk Exit, hard stop, hard target
 **Execution Planning**:
 The runtime interpretation step that maps a Strategy Decision and the current Portfolio State to an execution action or an ignored decision. Execution Planning does not by itself change Portfolio State.
 _Avoid_: Execution State Machine when no pending/fill states are meant
+
+**Simulated Execution**:
+Runtime-owned execution that applies Execution Planning and Portfolio Transitions without sending broker orders. Simulated Execution can be used by historical Backtest Sessions and live Paper Trading sessions.
+_Avoid_: Backtester execution, daemon paper executor, fake strategy
+
+**Paper Trading**:
+A Live Runner Session that uses Simulated Execution instead of broker execution while still consuming live-style market input and runner policies. Paper Trading is distinct from a Backtest Session, even though both may share the same simulated Portfolio Transition semantics.
+_Avoid_: Backtest Session, historical replay
 
 **Portfolio Transition**:
 A change to Portfolio State, such as opening a position, closing a position, or applying a Risk Exit. Portfolio Transitions are owned by the Trading Runtime in both live and simulated runs.
