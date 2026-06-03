@@ -1,7 +1,7 @@
 //! Terminal backtester.
 //!
 //! Loads candles from SpacetimeDB (local cache), runs a `.rhai` strategy
-//! through the in-memory engine, prints a summary.
+//! through the Trading Runtime, prints a summary.
 //!
 //! Usage:
 //! ```
@@ -20,7 +20,10 @@ use backtester::{
 use db_layer::{get_candles, get_candles_before, get_candles_in_range, SpacetimeClient};
 
 #[derive(Parser, Debug)]
-#[command(name = "backtester", about = "In-memory backtester — no DB writes")]
+#[command(
+    name = "backtester",
+    about = "Runtime-backed backtester — no DB writes"
+)]
 struct Cli {
     /// Path to the `.rhai` strategy file.
     #[arg(short, long)]

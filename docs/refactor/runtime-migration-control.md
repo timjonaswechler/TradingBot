@@ -57,12 +57,8 @@ Old architecture documents are not source of truth unless an active issue explic
 
 ### Donor material / do not extend as architecture
 
-- `engine/`
-  - Donor only for old Rhai execution behavior, warmup detection, indicator bindings, anchored behavior, and Strategy State behavior.
-  - Do not add new product behavior or new runtime-facing APIs here.
-  - Do not make `trading-runtime` depend permanently on `engine`.
-  - After the mechanical `shared` → `domain` rename, the next preferred cleanup issue is to remove the legacy `engine` crate and old engine-backed paths, provided remaining desired donor behavior is already migrated/test-protected in `trading-runtime` or explicitly no longer desired.
-  - Once equivalent behavior is migrated and test-protected in `trading-runtime`, the donor code can be removed or absorbed.
+- No active donor crate remains for the old strategy engine. The legacy `engine/` crate was removed in #107 after the runtime-backed strategy, warmup, market-view, anchored, portfolio, risk-exit, and backtest paths became the productive paths.
+- Historical references to the old engine in ADRs and refactor notes remain donor/history context only. Do not recreate the legacy `engine` crate or old `on_tick(candles, context)` compatibility without reopening ADR 0004 / ADR 0005.
 
 ### Transitional / treat with caution
 
@@ -74,9 +70,8 @@ Old architecture documents are not source of truth unless an active issue explic
   - Helpers that express Portfolio/Execution behavior should migrate into `trading-runtime`.
 
 - Legacy backtester engine-backed runner paths
-  - Transitional regression/donor path only.
-  - Do not extend with new behavior.
-  - Can be removed once runtime-backed backtests cover the intended scenarios and #64 acceptance is satisfied.
+  - Removed in #107. Backtester productive code now uses runtime-backed replay/reporting APIs.
+  - Do not recreate `backtester::run_backtest(&mut Engine, ...)` or `InMemoryExecutor`; backtest behavior should feed `trading-runtime` and derive reports from Runtime Events/snapshots.
 
 - `trading-daemon/src/order_executor.rs`
   - Transitional live paper/DB execution path.
@@ -84,8 +79,7 @@ Old architecture documents are not source of truth unless an active issue explic
   - Use it as migration context and regression reference only until live runtime-backed execution/persistence boundaries are complete.
 
 - `trading-daemon/src/warmup.rs`
-  - Transitional old-engine warmup path.
-  - Do not extend for new runtime warmup behavior.
+  - Removed in #107 after live warmup moved to the runtime-feeding path in `trading-daemon/src/live_engine.rs`.
   - Runtime warmup behavior belongs in `trading-runtime`; runner fetching policy belongs in `trading-daemon`.
 
 ## Path inventory
@@ -109,17 +103,15 @@ Use this inventory when reviewing agent plans or deciding whether code may be ch
 - `trading-runtime/src/step.rs` — canonical ordered runtime step output.
 - `trading-runtime/src/anchored.rs` — canonical runtime-facing anchored/structure-aware behavior already ported from old donor concepts.
 
-### `engine/` donor inventory
+### Removed legacy `engine/` inventory
 
-- `engine/src/vm.rs` — donor for legacy Rhai execution, old `on_tick(candles, context)` behavior, Strategy State regression ideas, and old tests. Do not add new strategy API here.
-- `engine/src/candle_wrapper.rs` — donor for old Rhai candle/context wrapper behavior and CandleList indexing semantics. Target API is Market View in `trading-runtime`.
-- `engine/src/bindings.rs` — donor for old Rhai indicator bindings. New bindings belong in `trading-runtime/src/rhai_strategy.rs` or a runtime-owned submodule.
-- `engine/src/warmup_detector.rs` — donor for warmup detection behavior. Target is `trading-runtime/src/warmup.rs`.
-- `engine/src/warmup.rs` — donor/transitional old-engine warmup helper. Target warmup semantics belong in `trading-runtime`; runner fetch policy belongs in runner crates.
-- `engine/src/anchored.rs` — donor for anchored behavior not yet fully absorbed. New anchored runtime-facing behavior belongs in `trading-runtime/src/anchored.rs`.
-- `engine/src/indicator_cache.rs` — donor for old compute/cache behavior. New Compute State belongs inside `trading-runtime` when explicitly scoped.
-- `engine/src/strategy_loader.rs` — donor for old load-time validation/config ideas. Target is typed `RhaiStrategy` loading/config extraction.
-- `engine/src/error.rs` / `engine/src/lib.rs` — donor crate surface only. Do not expand public surface.
+#107 removed the legacy `engine/` crate and old engine-backed paths. Desired donor behavior is now protected by runtime-backed tests or documented as intentionally removed:
+
+- Strategy loading, typed Rhai decisions/configuration, Market View access, Strategy Context/State, and indicator binding behavior are covered in `trading-runtime` Rhai strategy tests and strategy example tests.
+- Warmup detection/resolution and live/backtest warmup feeding are covered in `trading-runtime` warmup/market-input tests and runtime-backed `backtester` tests.
+- Anchored/structure-facing behavior lives in `trading-runtime/src/anchored.rs` and related runtime tests; the old `engine/src/anchored.rs` path is gone.
+- Portfolio transitions, long/short realized PnL, risk exits, equity snapshots, and force close behavior are covered by `trading-runtime` portfolio/runtime/risk-exit tests.
+- The old legacy Rhai contract `on_tick(candles, context)` and signal/size map compatibility are intentionally not preserved under ADR 0004 and ADR 0005.
 
 ### `domain/` transitional inventory
 
@@ -135,7 +127,7 @@ Use this inventory when reviewing agent plans or deciding whether code may be ch
 ### `backtester/` inventory
 
 - `backtester/src/lib.rs` runtime-backed path — runner/reporting layer. May be changed to feed/consume `trading-runtime`, compute metrics, and expose reports.
-- `backtester/src/lib.rs` legacy `InMemoryExecutor` / engine-backed runner — transitional regression path. Do not extend with new semantics. Candidate for removal in the post-rename legacy-engine cleanup, because runtime-backed backtests and #64 are complete; before deletion, verify any still-desired old regression coverage is protected in runtime-backed tests.
+- `backtester/src/lib.rs` legacy `InMemoryExecutor` / engine-backed runner — removed in #107. Do not recreate it; runtime-backed backtests should feed `trading-runtime` and derive reports from Runtime Events/snapshots.
 - `backtester/src/plan.rs` — plan/research orchestration. It may orchestrate Runtime-backed backtests but must not create a second candle-by-candle trading semantics engine. Backtest Plan Rhai should use explicit constructors, typed host objects, and fluent methods for host APIs and returned plan results; the #16 raw-map plan shape is transitional smoke-test behavior and should not be extended. Plan scripting must not expose or parse strategy-facing Runtime decisions, portfolio transitions, or execution semantics.
 - `backtester/src/main.rs` — CLI/runner surface only.
 - `backtester/PRD-backtest-plan-engine.md` — historical context, not source of truth where it conflicts with runtime refactor decisions.
@@ -144,7 +136,7 @@ Use this inventory when reviewing agent plans or deciding whether code may be ch
 
 - `trading-daemon/src/live_engine.rs` — current live runtime feeder. This is runner/adapter code and may feed `TradingRuntime`; it must not own Portfolio/Execution semantics.
 - `trading-daemon/src/order_executor.rs` — transitional old paper execution + DB persistence coupling. Do not use as canonical behavior. Persistence seam is owned by #37.
-- `trading-daemon/src/warmup.rs` — transitional old-engine warmup helper. Do not extend for runtime warmup. Candidate for removal in the post-rename legacy-engine cleanup if no productive caller remains; live runtime warmup belongs in `trading-daemon/src/live_engine.rs` feeding `trading-runtime` Warmup Input.
+- `trading-daemon/src/warmup.rs` — removed in #107 after live warmup moved to the runtime-feeding path in `trading-daemon/src/live_engine.rs`. Runtime warmup behavior belongs in `trading-runtime`; runner fetching policy belongs in `trading-daemon`.
 - `trading-daemon/src/config.rs` — runner-owned run configuration parsing. It may build RuntimeConfig, but strategy/runtime semantics remain in `trading-runtime`.
 - `trading-daemon/src/cli.rs`, `trading-daemon/src/main.rs`, `trading-daemon/src/lib.rs` — runner/CLI composition only.
 
@@ -188,7 +180,7 @@ Agents working on this refactor must follow these rules:
 
 These are known gaps, not permission to invent local duplicate behavior:
 
-- #36 — Rename `shared` to `domain` and remove runtime semantics. First implementation slice should be a mechanical crate/directory/import rename, with legacy contents carried only as explicitly transitional code. `domain::Signal` / `domain::TradeDecision` are legacy vocabulary, not the typed Rhai `decision::*` API, and should be excluded from future `domain`; delete them only after donor/transitional consumers (`engine`, legacy backtester executor, daemon paper executor/tests) are removed or migrated.
+- #36 — Rename `shared` to `domain` and remove runtime semantics. First implementation slice should be a mechanical crate/directory/import rename, with legacy contents carried only as explicitly transitional code. `domain::Signal` / `domain::TradeDecision` are legacy vocabulary, not the typed Rhai `decision::*` API, and should be excluded from future `domain`; after #107 the remaining productive transitional consumer is the daemon paper executor/tests, whose persistence-seam cleanup is owned by #37/follow-up.
 - #37 — Separate Runtime Events from DB persistence.
 - #39 — External Account Snapshot / live account reconciliation.
 - #40 — Position Risk Update Intents.

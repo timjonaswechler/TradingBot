@@ -3,7 +3,6 @@ members = [
     "domain",
     "indicators",
     "db-layer",
-    "engine",
     "trading-daemon",
     "trading-ui",
     "backtester",

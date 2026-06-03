@@ -10,7 +10,6 @@ path = "src/main.rs"
 [dependencies]
 domain     = { path = "../domain" }
 db-layer   = { path = "../db-layer" }
-engine     = { path = "../engine" }
 trading-runtime = { path = "../trading-runtime" }
 serde      = { workspace = true }
 serde_json = { workspace = true }

@@ -192,7 +192,6 @@ dependencies = [
  "clap",
  "db-layer",
  "domain",
- "engine",
  "rhai",
  "tracing",
  "tracing-subscriber",
@@ -708,20 +707,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "engine"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "domain",
- "indicators",
- "rhai",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -3248,7 +3233,6 @@ dependencies = [
  "clap",
  "db-layer",
  "domain",
- "engine",
  "reqwest",
  "rhai",
  "serde",
@@ -3280,7 +3264,6 @@ dependencies = [
  "clap",
  "db-layer",
  "domain",
- "engine",
  "rayon",
  "reqwest",
  "serde",

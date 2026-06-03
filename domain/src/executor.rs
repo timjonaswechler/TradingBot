@@ -1,8 +1,9 @@
-//! Side-aware mapping from a strategy `Signal` + current position to the
-//! concrete action an executor should take.
+//! Side-aware mapping from a legacy strategy `Signal` + current position to the
+//! concrete action a transitional executor should take.
 //!
-//! Both `PaperExecutor` (live daemon) and `InMemoryExecutor` (backtester)
-//! call this so the two implementations cannot drift.
+//! This module is transitional/removable under #36. It is still used by the
+//! daemon paper executor while the #37 persistence seam remains open; canonical
+//! execution planning lives in `trading-runtime`.
 use crate::{PositionSide, Signal};
 
 /// Concrete action derived from a strategy signal and the current position.

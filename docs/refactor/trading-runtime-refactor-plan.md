@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-TradingBot2 currently splits trading semantics across several places: Rhai strategy execution lives in the current engine crate, live paper execution and persistence live in the daemon, and backtest execution/portfolio logic live in the backtester. This makes it easy for live trading and backtesting semantics to drift apart.
+TradingBot2 previously split trading semantics across several places: Rhai strategy execution lived in the legacy engine crate, live paper execution and persistence lived in the daemon, and backtest execution/portfolio logic lived in the backtester. This made it easy for live trading and backtesting semantics to drift apart.
 
 The goal is to rebuild the backend architecture around one shared Trading Runtime. Live and backtest runs should differ only in their market data source and runner; strategy evaluation, portfolio transitions, execution semantics, warmup handling, and event flow should be shared.
 
@@ -16,13 +16,13 @@ Create a clean target architecture with these responsibilities:
 
 - `domain`: pure domain/value types such as candles, positions, signals, decisions, and later orders/fills.
 - `indicators`: pure indicator functions with no runtime, Rhai, DB, or IO dependency.
-- `trading-runtime`: the heart of the system. It owns runtime/event flow, Rhai strategy handling, strategy hooks, market state, market view, strategy state, compute/indicator state, portfolio state, execution semantics, and trading events. It should be built as a new runtime module/crate rather than by mechanically renaming the current `engine` crate; existing engine code is a donor for strategy-handling pieces, not the target architecture itself.
+- `trading-runtime`: the heart of the system. It owns runtime/event flow, Rhai strategy handling, strategy hooks, market state, market view, strategy state, compute/indicator state, portfolio state, execution semantics, and trading events. It was built as a new runtime module/crate rather than by mechanically renaming the legacy `engine` crate; old engine code was donor material for strategy-handling pieces, not the target architecture itself.
 - `trading-daemon`: live runner only. It owns CLI/config, timers, provider fetching, DB writes/reads, broker/IO adapters, and calls the Trading Runtime.
 - `backtester`: backtest runner/reporting only. It loads historical data, feeds the Trading Runtime, and computes reports/metrics/research results. It must not own trading semantics.
 - `db-layer`: SpacetimeDB adapter only. It owns generated bindings, queries, reducers, and DB/domain mapping. It must not own trading semantics.
 - `trading-ui`: later GPUI app for charts and results; out of scope for this refactor.
 
-The current engine crate should not remain as a separate legacy strategy-engine crate. A new `trading-runtime` should be built explicitly, and the current engine's Rhai strategy handling should be transferred into it as an internal component when that part of the runtime is reached.
+The legacy engine crate should not remain as a separate strategy-engine crate. `trading-runtime` is the explicit target architecture, and old engine donor behavior should exist only where it has been transferred into runtime-owned components and protected by runtime-backed tests.
 
 ## Key Decisions
 
@@ -65,11 +65,11 @@ The current engine crate should not remain as a separate legacy strategy-engine 
 
 ### Phase 2: Create the new trading-runtime crate
 
-7. Create a new `trading-runtime` crate/module as the explicit target architecture rather than mechanically renaming the current `engine` crate.
+7. Create a new `trading-runtime` crate/module as the explicit target architecture rather than mechanically renaming the legacy `engine` crate.
 8. Add the runtime core, event flow, market input boundary, and runtime-local portfolio skeleton in the new crate first.
-9. Treat the current `engine` crate as a temporary donor for Rhai strategy handling, warmup detection, indicator bindings, anchored runtime, and strategy state behavior.
-10. Transfer engine pieces into `trading-runtime` only when the corresponding runtime module is ready, preserving behavior with tests.
-11. Do not make `trading-runtime` depend permanently on `engine`; the `engine` crate should be removed or fully absorbed once migration is complete.
+9. Treat old `engine` code as donor material for Rhai strategy handling, warmup detection, indicator bindings, anchored runtime, and strategy state behavior only until equivalent runtime-owned behavior is ready.
+10. Transfer donor pieces into `trading-runtime` only when the corresponding runtime module is ready, preserving behavior with tests.
+11. Do not make `trading-runtime` depend on `engine`; the legacy `engine` crate has been removed once desired donor behavior was absorbed or intentionally dropped.
 
 ### Phase 3: Introduce event and runtime core
 
@@ -161,7 +161,7 @@ Test coverage should include:
 - Daemon persistence boundaries using mocked or integration DB behavior.
 - DB-layer mappings and reducer/query behavior.
 
-Prior art already exists in engine tests for Rhai execution/warmup/state, backtester tests for trade/equity outcomes, daemon tests for paper execution, and db-layer integration tests for storage/mapping behavior. These should be migrated toward the new runtime boundaries rather than duplicated indefinitely.
+Prior art existed in legacy engine tests for Rhai execution/warmup/state, backtester tests for trade/equity outcomes, daemon tests for paper execution, and db-layer integration tests for storage/mapping behavior. Desired behavior should be protected at the new runtime boundaries rather than duplicated indefinitely.
 
 ## Out of Scope
 
