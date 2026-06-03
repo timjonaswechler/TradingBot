@@ -1,6 +1,6 @@
 //! Runtime-local portfolio state and snapshots.
 
-use domain::{realized_pnl, Candle, Position, PositionSide};
+use domain::{Candle, Position, PositionSide};
 
 /// Runtime-local portfolio state for one trading session.
 ///
@@ -124,12 +124,7 @@ impl PortfolioState {
             return Err(PortfolioTransitionError::PositionSideMismatch);
         }
 
-        let pnl = realized_pnl(
-            position.side,
-            position.entry_price,
-            exit_price,
-            position.size,
-        );
+        let pnl = realized_pnl_for_close(&position, exit_price);
         self.realized_cash_balance += pnl;
         self.completed_trade_count += 1;
 
@@ -139,6 +134,36 @@ impl PortfolioState {
             exit_time: candle.timestamp,
             realized_pnl: pnl,
         })
+    }
+}
+
+fn realized_pnl_for_close(position: &Position, exit_price: f64) -> f64 {
+    side_aware_pnl(
+        position.side,
+        position.entry_price,
+        exit_price,
+        position.size,
+    )
+}
+
+fn unrealized_pnl_at_mark(position: &Position, mark_price: f64) -> f64 {
+    side_aware_pnl(
+        position.side,
+        position.entry_price,
+        mark_price,
+        position.size,
+    )
+}
+
+fn side_aware_pnl(
+    side: PositionSide,
+    entry_price: f64,
+    mark_or_exit_price: f64,
+    quantity: f64,
+) -> f64 {
+    match side {
+        PositionSide::Long => (mark_or_exit_price - entry_price) * quantity,
+        PositionSide::Short => (entry_price - mark_or_exit_price) * quantity,
     }
 }
 
@@ -171,7 +196,7 @@ impl RuntimePortfolioSnapshot {
         let unrealized_pnl = state
             .open_position
             .as_ref()
-            .map(|position| position.unrealised_pnl(mark_price))
+            .map(|position| unrealized_pnl_at_mark(position, mark_price))
             .unwrap_or(0.0);
 
         Self {
@@ -262,6 +287,23 @@ mod tests {
             Some(PositionSide::Short)
         );
         assert_eq!(snapshot.current_equity, 1_030.0);
+    }
+
+    #[test]
+    fn snapshot_equity_while_open_reflects_adverse_mark_price_by_position_side() {
+        for (side, mark_price, expected_equity) in [
+            (PositionSide::Long, 85.0, 970.0),
+            (PositionSide::Short, 115.0, 970.0),
+        ] {
+            let mut state = PortfolioState::new(1_000.0);
+            state.open_position = Some(position(side));
+
+            let snapshot = state.snapshot(mark_price);
+
+            assert_eq!(snapshot.realized_cash_balance, 1_000.0);
+            assert_eq!(snapshot.open_position.as_ref().map(|p| p.side), Some(side));
+            assert_eq!(snapshot.current_equity, expected_equity, "{side:?}");
+        }
     }
 
     #[test]
