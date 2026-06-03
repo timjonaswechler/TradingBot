@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use shared::Candle;
+use domain::Candle;
 use trading_runtime::{
     MarketInput, PortfolioState, RhaiStrategy, RuntimeConfig, RuntimeEvent, StrategyDecisionIntent,
     TradingRuntime,

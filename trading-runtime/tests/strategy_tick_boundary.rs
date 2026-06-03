@@ -1,4 +1,4 @@
-use shared::{Candle, Timeframe};
+use domain::{Candle, Timeframe};
 use std::{cell::RefCell, rc::Rc};
 use trading_runtime::{
     ExecutionAction, MarketInput, PortfolioState, RuntimeEvent, StrategyDecision, StrategyError,

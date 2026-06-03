@@ -14,7 +14,7 @@ use db_layer::{
     get_candles, get_candles_before, get_open_position, get_trades, insert_candle, insert_trade,
     open_position, SpacetimeClient,
 };
-use shared::{Candle, Timeframe};
+use domain::{Candle, Timeframe};
 
 fn integration_enabled() -> bool {
     std::env::var("SPACETIMEDB_INTEGRATION").as_deref() == Ok("1")
@@ -235,7 +235,7 @@ fn db_candle_converts_to_shared() {
 #[test]
 fn db_position_converts_to_shared() {
     use db_layer::{db_position_to_shared, LivePosition};
-    use shared::PositionSide;
+    use domain::PositionSide;
 
     let db = LivePosition {
         id: 1,

@@ -1,4 +1,4 @@
-use shared::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, Position, PositionSide, Timeframe};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason,

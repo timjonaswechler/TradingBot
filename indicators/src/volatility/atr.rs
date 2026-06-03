@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Average True Range (Wilder smoothing).
 ///

@@ -5,12 +5,12 @@
 //! [`MarketState`](crate::MarketState) history; strategy-facing outputs are read
 //! through Market View bindings, not Strategy Context.
 
+use domain::Candle;
 use indicators::anchored::{
     detectors::{PivotDetector, PivotKind},
     evaluators::{TrendLine, TrendlineEvaluator, TrendlineInvalidator, TrendlineSide},
     AnchorEvent, Invalidator, RollingDetector, SegmentState,
 };
-use shared::Candle;
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},

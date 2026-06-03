@@ -1,5 +1,5 @@
 use crate::{error::EngineError, vm::Engine};
-use shared::Candle;
+use domain::Candle;
 
 /// Feed `warmup_candles` into the engine without calling `on_tick`.
 ///
@@ -68,10 +68,10 @@ fn on_tick(candles, context) {
         let historical: Vec<Candle> = (1..=20).map(|i| make_candle(i as f64, i)).collect();
         warmup(&mut engine, historical).unwrap();
 
-        let ctx = shared::Context::new(10_000.0);
+        let ctx = domain::Context::new(10_000.0);
         let decision = engine.tick(make_candle(21.0, 21), ctx).unwrap();
         assert_eq!(engine.candle_count(), 21);
-        assert_eq!(decision.signal, shared::Signal::Hold);
+        assert_eq!(decision.signal, domain::Signal::Hold);
     }
 
     #[test]
@@ -81,10 +81,10 @@ fn on_tick(candles, context) {
         let historical: Vec<Candle> = (1..=51).map(|i| make_candle(i as f64, i)).collect();
         warmup(&mut engine, historical).unwrap();
 
-        let ctx = shared::Context::new(10_000.0);
+        let ctx = domain::Context::new(10_000.0);
         let decision = engine.tick(make_candle(52.0, 52), ctx).unwrap();
 
-        assert_eq!(decision.signal, shared::Signal::Buy);
+        assert_eq!(decision.signal, domain::Signal::Buy);
     }
 
     #[test]
@@ -94,9 +94,9 @@ fn on_tick(candles, context) {
         let historical: Vec<Candle> = (1..=50).map(|i| make_candle(i as f64, i)).collect();
         warmup(&mut engine, historical).unwrap();
 
-        let ctx = shared::Context::new(10_000.0);
+        let ctx = domain::Context::new(10_000.0);
         let decision = engine.tick(make_candle(51.0, 51), ctx).unwrap();
 
-        assert_eq!(decision.signal, shared::Signal::Hold);
+        assert_eq!(decision.signal, domain::Signal::Hold);
     }
 }

@@ -11,7 +11,7 @@ use tracing::{error, info, warn};
 use db_layer::{
     get_candles_before, module_bindings::CandlesTableAccess, DbConnection, SpacetimeClient,
 };
-use shared::{Candle, Timeframe};
+use domain::{Candle, Timeframe};
 use spacetimedb_sdk::Table;
 use trading_runtime::{
     resolve_warmup_plan, MarketInput, PortfolioState, RhaiStrategy, RuntimeConfig,

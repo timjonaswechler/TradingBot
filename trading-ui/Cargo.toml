@@ -8,7 +8,7 @@ name = "trading-ui"
 path = "src/main.rs"
 
 [dependencies]
-shared     = { path = "../shared" }
+domain     = { path = "../domain" }
 db-layer   = { path = "../db-layer" }
 engine     = { path = "../engine" }
 serde      = { workspace = true }

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
+use domain::{Candle, Context, Signal, TradeDecision};
 use rhai::{Dynamic, Engine as RhaiEngine, Scope, AST};
-use shared::{Candle, Context, Signal, TradeDecision};
 
 use crate::{
     anchored::{AnchoredOutputs, AnchoredRuntime, AnchoredSpec},
@@ -203,7 +203,7 @@ fn parse_trade_decision(result: Dynamic) -> Result<TradeDecision, EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::PositionSide;
+    use domain::PositionSide;
 
     fn make_candle(close: f64, ts: i64) -> Candle {
         Candle {
@@ -412,7 +412,7 @@ fn on_tick(candles, context) {
         assert_eq!(d.signal, Signal::Buy);
 
         let ctx_with_pos = Context {
-            position: Some(shared::Position {
+            position: Some(domain::Position {
                 symbol: "TEST".into(),
                 side: PositionSide::Long,
                 entry_price: 100.0,

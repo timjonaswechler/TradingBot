@@ -8,7 +8,7 @@ use crate::{
     RuntimeEvent, RuntimeInputError, RuntimeStep, SecondaryReadiness, StrategyContext,
     StrategyHandler, StrategyState, StrategyTickInput, StrategyTickResult, WarmupPlan,
 };
-use shared::{Candle, PositionSide, Timeframe};
+use domain::{Candle, PositionSide, Timeframe};
 use std::collections::HashMap;
 
 /// DB-free trading runtime core for one runtime asset.

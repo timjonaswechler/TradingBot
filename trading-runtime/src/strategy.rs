@@ -4,7 +4,7 @@ use crate::{
     secondary_context::secondary_context_unavailable_reason, MarketState, RuntimePortfolioSnapshot,
     SecondaryTimeframeConfig, StrategyDecision,
 };
-use shared::{Candle, Timeframe};
+use domain::{Candle, Timeframe};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, RwLock},

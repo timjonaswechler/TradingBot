@@ -1,7 +1,7 @@
 //! Typed strategy-declared configuration for runtime strategy handling.
 
 use crate::market_input::SecondaryTimeframeConfig;
-use shared::Timeframe;
+use domain::Timeframe;
 use std::{collections::HashSet, fmt};
 
 /// Typed strategy-declared configuration returned by `strategy_config()`.

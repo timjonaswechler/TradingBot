@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Commodity Channel Index.
 ///

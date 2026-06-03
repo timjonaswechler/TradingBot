@@ -1,11 +1,11 @@
-use shared::Timeframe;
+use domain::Timeframe;
 use trading_runtime::{
     BlockedSecondaryContext, ExitKind, RiskExitKind, RuntimeEvent, RuntimeStep,
     SecondaryContextUnavailableReason, StrategyDecision,
 };
 
-fn candle() -> shared::Candle {
-    shared::Candle {
+fn candle() -> domain::Candle {
+    domain::Candle {
         timestamp: 1,
         symbol: "BTC-USD".into(),
         open: 100.0,

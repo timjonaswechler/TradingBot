@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Result of the Stochastic Oscillator.
 #[derive(Debug, Clone, PartialEq)]

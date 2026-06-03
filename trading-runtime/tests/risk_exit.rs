@@ -1,4 +1,4 @@
-use shared::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, Position, PositionSide, Timeframe};
 use trading_runtime::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 
 fn position(side: PositionSide, stop_loss: Option<f64>, take_profit: Option<f64>) -> Position {

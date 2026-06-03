@@ -191,9 +191,9 @@ dependencies = [
  "chrono",
  "clap",
  "db-layer",
+ "domain",
  "engine",
  "rhai",
- "shared",
  "tracing",
  "tracing-subscriber",
  "trading-runtime",
@@ -605,9 +605,9 @@ name = "db-layer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "domain",
  "serde",
  "serde_json",
- "shared",
  "spacetimedb-sdk",
  "thiserror 2.0.18",
  "tokio",
@@ -669,6 +669,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -706,11 +715,11 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "domain",
  "indicators",
  "rhai",
  "serde",
  "serde_json",
- "shared",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -1326,7 +1335,7 @@ dependencies = [
 name = "indicators"
 version = "0.1.0"
 dependencies = [
- "shared",
+ "domain",
  "thiserror 2.0.18",
 ]
 
@@ -2425,15 +2434,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shared"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3247,12 +3247,12 @@ dependencies = [
  "async-trait",
  "clap",
  "db-layer",
+ "domain",
  "engine",
  "reqwest",
  "rhai",
  "serde",
  "serde_json",
- "shared",
  "spacetimedb-sdk",
  "thiserror 2.0.18",
  "tokio",
@@ -3267,9 +3267,9 @@ dependencies = [
 name = "trading-runtime"
 version = "0.1.0"
 dependencies = [
+ "domain",
  "indicators",
  "rhai",
- "shared",
 ]
 
 [[package]]
@@ -3279,12 +3279,12 @@ dependencies = [
  "anyhow",
  "clap",
  "db-layer",
+ "domain",
  "engine",
  "rayon",
  "reqwest",
  "serde",
  "serde_json",
- "shared",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

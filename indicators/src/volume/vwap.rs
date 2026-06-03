@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Volume Weighted Average Price over all supplied candles.
 ///

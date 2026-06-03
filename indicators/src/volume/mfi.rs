@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Money Flow Index — a volume-weighted RSI (0-100).
 ///

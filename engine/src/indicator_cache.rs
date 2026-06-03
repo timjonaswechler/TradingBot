@@ -106,7 +106,7 @@ pub fn rsi_store(
 
 pub fn atr_from_cache(
     cache: &mut IndicatorCache,
-    candles: &[shared::Candle],
+    candles: &[domain::Candle],
     period: usize,
 ) -> Option<f64> {
     let n = candles.len();

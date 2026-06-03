@@ -1,7 +1,7 @@
 //! Runtime-owned market history for one runtime asset.
 
 use crate::RuntimeConfig;
-use shared::{Candle, Timeframe};
+use domain::{Candle, Timeframe};
 use std::collections::HashMap;
 
 /// DB-free market-data history grouped by configured timeframe.

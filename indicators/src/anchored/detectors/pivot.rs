@@ -5,7 +5,7 @@
 //! Confirmation is delayed by `right` bars — the event fires when candle `P+right`
 //! is consumed, but the event's `bar` field is `P` (the actual pivot).
 
-use shared::Candle;
+use domain::Candle;
 use std::collections::VecDeque;
 
 use super::super::{AnchorEvent, RollingDetector};

@@ -1,7 +1,7 @@
 //! Runtime execution action types and pure strategy-decision planning.
 
 use crate::{RiskExitKind, StrategyDecision, StrategyDecisionIntent};
-use shared::PositionSide;
+use domain::PositionSide;
 
 /// Runtime interpretation of a strategy decision or runtime-managed command.
 #[derive(Debug, Clone, PartialEq)]

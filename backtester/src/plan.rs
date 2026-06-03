@@ -2,8 +2,8 @@ use std::{fmt::Write as _, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate};
+use domain::{Candle, Timeframe};
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
-use shared::{Candle, Timeframe};
 use trading_runtime::{
     resolve_warmup_plan, ExitKind, RhaiStrategy, RuntimeConfig, RuntimeEvent, WarmupPlan,
 };

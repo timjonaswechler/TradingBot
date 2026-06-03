@@ -15,6 +15,7 @@ use crate::{
     StrategyTickResult, StructureConfiguration, StructureObjectConfiguration,
     StructureObjectRegistry, StructurePointRegistry, StructurePointSource,
 };
+use domain::{Candle, Position, PositionSide, Timeframe};
 use indicators::{
     anchored::evaluators::TrendLine,
     momentum::{cci::cci, roc::roc, rsi::rsi, williams_r::williams_r},
@@ -24,7 +25,6 @@ use indicators::{
     volume::{mfi::mfi, obv::obv},
 };
 use rhai::{Dynamic, Engine as RhaiEngine, EvalAltResult, Module, Scope, AST, FLOAT, INT};
-use shared::{Candle, Position, PositionSide, Timeframe};
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
@@ -1691,7 +1691,7 @@ mod tests {
         AnchoredEvaluatorSpec, ExecutionAction, IgnoredDecisionReason, MarketInput, PortfolioState,
         RuntimeConfig, RuntimeEvent, StrategyDecisionIntent, TradingRuntime,
     };
-    use shared::{Candle, Timeframe};
+    use domain::{Candle, Timeframe};
 
     const MINIMAL: &str = r#"
 fn strategy_config() {

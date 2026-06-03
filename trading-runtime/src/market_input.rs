@@ -1,7 +1,7 @@
 //! Runtime market-input boundary types.
 
 use crate::strategy_config::{StrategyConfiguration, StrategyConfigurationError};
-use shared::{Candle, Timeframe};
+use domain::{Candle, Timeframe};
 
 /// Whether a configured Secondary Timeframe is required for Strategy Ticks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

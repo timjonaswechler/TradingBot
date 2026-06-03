@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use db_layer::{close_position, get_open_position, insert_trade, open_position, DbConnection};
-use shared::{
+use domain::{
     plan_action, realized_pnl as compute_realized_pnl, Action, Candle, Position, PositionSide,
     TradeDecision,
 };
@@ -305,7 +305,7 @@ impl OrderExecutor for PaperExecutor {
             Action::Nothing => {
                 // HOLD is the common case; only warn on a real mismatch
                 // (e.g. SELL while flat, BUY while already short).
-                if !matches!(decision.signal, shared::Signal::Hold) {
+                if !matches!(decision.signal, domain::Signal::Hold) {
                     warn!(
                         symbol = self.symbol,
                         signal = ?decision.signal,

@@ -4,7 +4,7 @@ use crate::{
     ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RiskExitTriggered,
     RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision, StrategyError,
 };
-use shared::{Candle, Position, Timeframe};
+use domain::{Candle, Position, Timeframe};
 
 /// Why an explicit runner force-close command did not close a position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

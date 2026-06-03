@@ -11,7 +11,7 @@
 //! Cost: `O(K²)` per evaluation, `K` = pivot-buffer capacity (typ. 6).
 //! The evaluation is event-driven (on each new pivot) — not per bar.
 
-use shared::Candle;
+use domain::Candle;
 
 use super::super::{AnchorEvent, Invalidator, SegmentState};
 
@@ -239,7 +239,7 @@ impl Invalidator for TrendlineInvalidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::Candle;
+    use domain::Candle;
 
     fn c(close: f64) -> Candle {
         Candle {

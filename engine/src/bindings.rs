@@ -51,7 +51,7 @@ fn opt(v: Option<f64>) -> Dynamic {
 
 /// Read candles from CandleList, trimmed by `offset` from the end.
 /// Returns a clone of the relevant slice.
-fn candles_slice(cl: &CandleList, offset: usize) -> Vec<shared::Candle> {
+fn candles_slice(cl: &CandleList, offset: usize) -> Vec<domain::Candle> {
     let candles = cl.candles.read().unwrap();
     let n = candles.len();
     let end = n.saturating_sub(offset);

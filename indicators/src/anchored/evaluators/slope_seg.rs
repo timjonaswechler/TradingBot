@@ -1,6 +1,6 @@
 //! `AnchoredEvaluator` wrapper around the free `slope()` function.
 
-use shared::Candle;
+use domain::Candle;
 
 use super::super::{slice_by_bars, AnchoredEvaluator, Segment};
 use crate::slope::slope;
@@ -24,7 +24,7 @@ impl AnchoredEvaluator for SlopeSegEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::Candle;
+    use domain::Candle;
 
     fn c(close: f64) -> Candle {
         Candle {

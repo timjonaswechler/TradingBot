@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// A single bucket in the Volume Profile histogram.
 #[derive(Debug, Clone, PartialEq)]

@@ -1,4 +1,4 @@
-use shared::{Candle, Position, PositionSide};
+use domain::{Candle, Position, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     BlockedSecondaryContext, ClosedPosition, ExecutionAction, ExitKind, MarketInput,

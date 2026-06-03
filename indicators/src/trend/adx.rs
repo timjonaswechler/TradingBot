@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Result of the ADX calculation.
 #[derive(Debug, Clone, PartialEq)]

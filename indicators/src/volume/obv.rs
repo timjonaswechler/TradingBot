@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// On-Balance Volume — cumulative volume with direction based on close-vs-prev-close.
 ///

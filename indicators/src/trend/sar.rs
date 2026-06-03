@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Current trend side of the Parabolic SAR state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

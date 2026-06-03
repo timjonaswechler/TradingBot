@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Output of the Ichimoku Cloud calculation.
 #[derive(Debug, Clone, PartialEq)]

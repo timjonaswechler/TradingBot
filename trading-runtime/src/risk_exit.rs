@@ -1,6 +1,6 @@
 //! Pure risk-exit selection and gap-aware pricing.
 
-use shared::{Candle, Position, PositionSide};
+use domain::{Candle, Position, PositionSide};
 
 /// Runtime-managed hard exit boundary selected from Entry Risk Parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

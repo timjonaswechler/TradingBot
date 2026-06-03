@@ -1,8 +1,8 @@
 //! Warmup detection and planning for Trading Runtime strategy handling.
 
 use crate::{RuntimeConfig, StrategyConfiguration};
+use domain::Timeframe;
 use rhai::{Expr, FnCallExpr, Scope, AST};
-use shared::Timeframe;
 use std::collections::HashMap;
 
 /// Detect the automatic warmup requirement implied by typed Rhai indicator calls.
@@ -217,7 +217,7 @@ mod tests {
         MarketInput, PortfolioState, PredeterminedStrategyHandler, RhaiStrategy, RuntimeConfig,
         RuntimeEvent, SecondaryTimeframeConfig, StrategyDecision, Timeframe, TradingRuntime,
     };
-    use shared::Candle;
+    use domain::Candle;
 
     fn load(source: &str) -> RhaiStrategy {
         RhaiStrategy::load(source).expect("strategy should load")

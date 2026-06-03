@@ -21,7 +21,7 @@ Runtime refactor guardrails:
 
 - Do not add new Portfolio/Execution semantics to `backtester` or `trading-daemon`.
 - Do not add DB details to `trading-runtime`.
-- Do not add new Runtime semantics to `shared` while #36 is unresolved.
+- Do not add new Runtime semantics to `domain` while #36 semantic cleanup is unresolved.
 - Do not extend `engine` as a target architecture; it is donor material only.
 - If a gap is found, cite the issue that owns it or stop and ask for clarification.
 - Delete donor/transitional code only after target behavior exists, tests protect it, and no active issue still depends on the old path.

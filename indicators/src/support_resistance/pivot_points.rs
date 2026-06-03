@@ -1,4 +1,4 @@
-use shared::Candle;
+use domain::Candle;
 
 /// Classic Pivot Point levels (floor pivots).
 #[derive(Debug, Clone, PartialEq)]

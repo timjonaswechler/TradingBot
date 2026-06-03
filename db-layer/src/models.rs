@@ -1,9 +1,9 @@
-/// Conversion helpers between generated `module_bindings` types and `shared::` types.
+/// Conversion helpers between generated `module_bindings` types and `domain::` types.
 ///
 /// The generated `module_bindings::Candle`, `LivePosition`, `LiveTrade` structs
-/// are the canonical DB types.  `shared::Candle` / `shared::Position` are the
+/// are the canonical DB types.  `domain::Candle` / `domain::Position` are the
 /// lightweight in-memory types used by the engine and backtester.
-use shared::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, Position, PositionSide, Timeframe};
 
 use crate::module_bindings::{Candle as DbCandle, LivePosition};
 
@@ -14,7 +14,7 @@ pub fn canonical_id(symbol: &str, timeframe: &str, timestamp_ms: i64) -> String 
     format!("{symbol}_{timeframe}_{timestamp_ms}")
 }
 
-/// Convert a `shared::Candle` + provider into the args needed by the `insert_candle` reducer.
+/// Convert a `domain::Candle` + provider into the args needed by the `insert_candle` reducer.
 /// Returns `(canonical_id, timestamp, symbol, open, high, low, close, volume, timeframe, provider)`.
 pub fn candle_to_reducer_args(
     c: &Candle,
@@ -34,7 +34,7 @@ pub fn candle_to_reducer_args(
     )
 }
 
-/// Convert a DB `Candle` (from generated bindings) to a `shared::Candle`.
+/// Convert a DB `Candle` (from generated bindings) to a `domain::Candle`.
 pub fn db_candle_to_shared(c: DbCandle) -> Candle {
     Candle {
         timestamp: c.timestamp,
@@ -53,7 +53,7 @@ pub fn db_candle_to_shared(c: DbCandle) -> Candle {
 
 // ── LivePosition ──────────────────────────────────────────────────────────────
 
-/// Convert a DB `LivePosition` to `(id, strategy, shared::Position)`.
+/// Convert a DB `LivePosition` to `(id, strategy, domain::Position)`.
 pub fn db_position_to_shared(p: LivePosition) -> (u64, String, Position) {
     let side = if p.side == "long" {
         PositionSide::Long

@@ -1,4 +1,4 @@
-use shared::{Candle, Timeframe};
+use domain::{Candle, Timeframe};
 use std::{hint::black_box, time::Duration, time::Instant};
 use trading_runtime::{MarketInput, PortfolioState, RhaiStrategy, RuntimeConfig, TradingRuntime};
 

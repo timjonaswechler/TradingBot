@@ -20,7 +20,7 @@ use std::sync::Arc;
 use db_layer::{
     count_trades, delete_trades_by_strategy, get_open_position, get_trades, SpacetimeClient,
 };
-use shared::{Candle, Signal, TradeDecision};
+use domain::{Candle, Signal, TradeDecision};
 use trading_daemon::order_executor::{OrderExecutor, PaperExecutor};
 
 fn integration_enabled() -> bool {
@@ -297,7 +297,7 @@ async fn short_cover_cycle_profits_on_price_drop() {
         .expect("SHORT");
 
     let pos = executor.position().cloned().expect("position after SHORT");
-    assert_eq!(pos.side, shared::PositionSide::Short);
+    assert_eq!(pos.side, domain::PositionSide::Short);
     assert!(pos.size > 0.0);
 
     let db_pos = get_open_position(&conn, STRAT, SYMBOL).expect("live_positions row");

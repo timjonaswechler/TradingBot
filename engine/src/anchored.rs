@@ -7,13 +7,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use domain::Candle;
 use indicators::anchored::{
     detectors::{PivotDetector, PivotKind, SessionDetector},
     evaluators::{TrendLine, TrendlineEvaluator, TrendlineInvalidator, TrendlineSide},
     AnchorEvent, AnchoredEvaluator, Invalidator, RollingDetector, Segment, SegmentState, SessionId,
 };
 use rhai::{Dynamic, Map, INT};
-use shared::Candle;
 
 use crate::error::EngineError;
 

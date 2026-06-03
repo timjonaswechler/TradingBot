@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use shared::Timeframe;
+use domain::Timeframe;
 use trading_runtime::{BlockedSecondaryContext, RuntimeEvent, RuntimeStep};
 
 use crate::config::ProtectiveShutdownConfig;
@@ -131,7 +131,7 @@ fn sorted_counters(counters: &HashMap<Timeframe, u32>) -> Vec<ProtectiveShutdown
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::{Candle, Position, PositionSide, Timeframe};
+    use domain::{Candle, Position, PositionSide, Timeframe};
     use trading_runtime::{
         BlockedSecondaryContext, ExitKind, PortfolioState, RuntimeEvent, RuntimePortfolioSnapshot,
         RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness,

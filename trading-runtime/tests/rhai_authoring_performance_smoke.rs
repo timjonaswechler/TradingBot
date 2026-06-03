@@ -1,4 +1,4 @@
-use shared::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, Position, PositionSide, Timeframe};
 use std::{
     hint::black_box,
     time::{Duration, Instant},

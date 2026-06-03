@@ -12,7 +12,7 @@ name = "backtester"
 path = "src/main.rs"
 
 [dependencies]
-shared     = { path = "../shared" }
+domain     = { path = "../domain" }
 engine     = { path = "../engine" }
 db-layer   = { path = "../db-layer" }
 trading-runtime = { path = "../trading-runtime" }

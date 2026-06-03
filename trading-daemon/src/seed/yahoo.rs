@@ -3,8 +3,8 @@
 /// Uses the unofficial Yahoo Finance v8 chart API.  Filters out the last
 /// (incomplete) candle when the current candle period has not yet closed.
 use anyhow::{anyhow, Result};
+use domain::{Candle, Timeframe};
 use serde::Deserialize;
-use shared::{Candle, Timeframe};
 
 /// Yahoo Finance chart API response.
 #[derive(Debug, Deserialize)]

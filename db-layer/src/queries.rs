@@ -6,7 +6,7 @@
 /// No HTTP, no manual JSON — the SDK handles everything.
 use spacetimedb_sdk::Table;
 
-use shared::Candle;
+use domain::Candle;
 
 use crate::{
     error::DbError,

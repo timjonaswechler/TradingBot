@@ -23,11 +23,11 @@ pub mod plan;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, bail, Result};
-use engine::Engine;
-use shared::{
+use domain::{
     plan_action, realized_pnl, Action, Candle, Context, Position, PositionSide, Timeframe,
     TradeDecision,
 };
+use engine::Engine;
 use trading_runtime::{
     resolve_warmup_plan, ExitKind, MarketInput, PortfolioState, RhaiStrategy, RiskExitKind,
     RuntimeConfig, RuntimeEvent, RuntimeStep, TradingRuntime, WarmupPlan,
@@ -179,7 +179,7 @@ pub struct RuntimeBacktestResult {
 // ── InMemoryExecutor ──────────────────────────────────────────────────────────
 
 /// Paper-trading state machine with no I/O.  Same decision logic as
-/// `trading_daemon::order_executor::PaperExecutor` (via `shared::plan_action`),
+/// `trading_daemon::order_executor::PaperExecutor` (via `domain::plan_action`),
 /// but all writes go into `trades` / `equity_curve` rather than SpacetimeDB.
 ///
 /// Public so the UI can drive it one candle at a time.
@@ -911,7 +911,7 @@ pub fn run_backtest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::{Signal, Timeframe, TradeDecision};
+    use domain::{Signal, Timeframe, TradeDecision};
     use trading_runtime::{RuntimeEvent, StrategyDecisionIntent};
 
     fn make_candle(ts: i64, close: f64) -> Candle {

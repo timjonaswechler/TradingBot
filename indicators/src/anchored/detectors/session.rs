@@ -5,7 +5,7 @@
 //! If `start < end`, the window is same-day; otherwise it wraps midnight
 //! (e.g. Asia 22:00-06:00 → `start=1320, end=360`).
 
-use shared::Candle;
+use domain::Candle;
 
 use super::super::{AnchorEvent, RollingDetector, SessionId};
 

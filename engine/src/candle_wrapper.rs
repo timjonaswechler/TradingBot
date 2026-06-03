@@ -1,7 +1,7 @@
 use crate::anchored::{AnchoredOutput, AnchoredOutputs};
 use crate::indicator_cache::IndicatorCache;
+use domain::{Candle, Context, Position, PositionSide};
 use rhai::{Dynamic, Engine, INT};
-use shared::{Candle, Context, Position, PositionSide};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 

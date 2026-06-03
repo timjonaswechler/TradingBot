@@ -6,4 +6,4 @@ edition = "2021"
 [dependencies]
 indicators = { path = "../indicators" }
 rhai       = { workspace = true }
-shared     = { path = "../shared" }
+domain     = { path = "../domain" }

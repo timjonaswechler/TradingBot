@@ -1,7 +1,7 @@
 //! Shared Secondary-Timeframe context availability evaluation.
 
 use crate::{MarketState, SecondaryContextUnavailableReason, SecondaryTimeframeConfig};
-use shared::Candle;
+use domain::Candle;
 
 pub(crate) fn secondary_context_unavailable_reason(
     market_state: &MarketState,
@@ -30,7 +30,7 @@ pub(crate) fn secondary_context_unavailable_reason(
 mod tests {
     use super::*;
     use crate::{RuntimeConfig, SecondaryTimeframeConfig};
-    use shared::{Candle, Timeframe};
+    use domain::{Candle, Timeframe};
 
     fn candle(timestamp: i64, timeframe: Timeframe) -> Candle {
         Candle {

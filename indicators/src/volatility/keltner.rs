@@ -1,6 +1,6 @@
 use crate::trend::ema::ema_series;
 use crate::volatility::atr::atr_series;
-use shared::Candle;
+use domain::Candle;
 
 /// Result of Keltner Channels.
 #[derive(Debug, Clone, PartialEq)]

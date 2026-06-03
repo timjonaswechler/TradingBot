@@ -1,6 +1,6 @@
 //! Runtime-local portfolio state and snapshots.
 
-use shared::{realized_pnl, Candle, Position, PositionSide};
+use domain::{realized_pnl, Candle, Position, PositionSide};
 
 /// Runtime-local portfolio state for one trading session.
 ///
@@ -186,7 +186,7 @@ impl RuntimePortfolioSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::PositionSide;
+    use domain::PositionSide;
 
     fn position(side: PositionSide) -> Position {
         Position {
@@ -200,8 +200,8 @@ mod tests {
         }
     }
 
-    fn candle(timestamp: i64, close: f64) -> shared::Candle {
-        shared::Candle {
+    fn candle(timestamp: i64, close: f64) -> domain::Candle {
+        domain::Candle {
             timestamp,
             symbol: "BTC-USD".into(),
             open: close,
@@ -209,7 +209,7 @@ mod tests {
             low: close,
             close,
             volume: 1_000.0,
-            timeframe: shared::Timeframe::minutes(1),
+            timeframe: domain::Timeframe::minutes(1),
         }
     }
 

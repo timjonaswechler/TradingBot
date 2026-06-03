@@ -4,7 +4,7 @@
 //! indicators only recompute when a `RollingDetector` fires an `AnchorEvent`
 //! — see crate-level docs on the `anchored` module for the architecture.
 
-use shared::Candle;
+use domain::Candle;
 
 pub mod detectors;
 pub mod evaluators;

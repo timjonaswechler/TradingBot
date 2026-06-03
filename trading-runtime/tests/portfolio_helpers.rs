@@ -1,4 +1,4 @@
-use shared::{Candle, PositionSide};
+use domain::{Candle, PositionSide};
 use trading_runtime::{
     MarketInput, PortfolioState, RhaiStrategy, RuntimeEvent, RuntimeStep, StrategyDecision,
     TradingRuntime,

@@ -32,7 +32,7 @@ build-ui:
 test:
     cargo test --workspace
 
-# Run tests for a specific crate  (e.g. `just test-crate shared`)
+# Run tests for a specific crate  (e.g. `just test-crate domain`)
 test-crate crate:
     cargo test -p {{crate}}
 

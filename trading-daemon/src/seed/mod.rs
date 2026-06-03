@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::config::{AssetConfig, Config};
-use shared::Timeframe;
+use domain::Timeframe;
 use trading_runtime::{RhaiStrategy, RuntimeConfig};
 
 /// Parse an ISO 8601 date string ("2020-01-01") to Unix milliseconds.
