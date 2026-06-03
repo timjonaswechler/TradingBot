@@ -272,7 +272,7 @@ if portfolio.completed_trades != 0 { properties_ok = false; }
 if position == () { properties_ok = false; }
 if position.side != "long" { properties_ok = false; }
 if position.entry_price != 100.0 { properties_ok = false; }
-if position.size != 2.0 { properties_ok = false; }
+if position.quantity != 2.0 { properties_ok = false; }
 if position.entry_time != 1 { properties_ok = false; }
 if position.stop_loss != 90.0 { properties_ok = false; }
 if position.take_profit != 120.0 { properties_ok = false; }

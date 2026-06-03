@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Whether the position bets on price going up or down.
+/// Whether an open position has long or short market exposure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PositionSide {
@@ -17,66 +17,70 @@ impl std::fmt::Display for PositionSide {
     }
 }
 
-/// An open trading position (paper or live).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Position {
-    pub symbol: String,
-    pub side: PositionSide,
-    /// Price at which the position was entered.
-    pub entry_price: f64,
-    /// Number of shares / contracts / coin units held.
-    pub size: f64,
-    /// Unix ms timestamp of entry.
-    pub entry_time: i64,
+/// Optional entry risk parameters attached to an opening decision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct EntryRiskParameters {
     pub stop_loss: Option<f64>,
     pub take_profit: Option<f64>,
 }
 
-impl Position {
-    /// Unrealised PnL given a current market price.
-    ///
-    /// - Long:  `(current_price - entry_price) * size`
-    /// - Short: `(entry_price - current_price) * size`
-    pub fn unrealised_pnl(&self, current_price: f64) -> f64 {
-        match self.side {
-            PositionSide::Long => (current_price - self.entry_price) * self.size,
-            PositionSide::Short => (self.entry_price - current_price) * self.size,
-        }
-    }
+/// Passive value describing active market exposure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpenPosition {
+    pub symbol: String,
+    pub side: PositionSide,
+    /// Price at which the position was entered.
+    pub entry_price: f64,
+    /// Asset units / contracts / coin units held.
+    pub quantity: f64,
+    /// Unix ms timestamp of entry.
+    pub entry_time: i64,
+    pub entry_risk: EntryRiskParameters,
+}
+
+/// Passive result value for an open position that has been closed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosedPosition {
+    pub position: OpenPosition,
+    pub exit_price: f64,
+    pub exit_time: i64,
+    pub realized_pnl: f64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn long_pos() -> Position {
-        Position {
+    #[test]
+    fn open_and_closed_positions_are_passive_quantity_values() {
+        let position = OpenPosition {
             symbol: "AAPL".into(),
             side: PositionSide::Long,
             entry_price: 100.0,
-            size: 10.0,
+            quantity: 10.0,
             entry_time: 0,
-            stop_loss: None,
-            take_profit: None,
-        }
-    }
-
-    #[test]
-    fn long_pnl_positive_when_price_rises() {
-        assert_eq!(long_pos().unrealised_pnl(110.0), 100.0);
-    }
-
-    #[test]
-    fn long_pnl_negative_when_price_falls() {
-        assert_eq!(long_pos().unrealised_pnl(90.0), -100.0);
-    }
-
-    #[test]
-    fn short_pnl_positive_when_price_falls() {
-        let pos = Position {
-            side: PositionSide::Short,
-            ..long_pos()
+            entry_risk: EntryRiskParameters {
+                stop_loss: Some(90.0),
+                take_profit: Some(120.0),
+            },
         };
-        assert_eq!(pos.unrealised_pnl(90.0), 100.0);
+
+        let closed = ClosedPosition {
+            position: position.clone(),
+            exit_price: 110.0,
+            exit_time: 60_000,
+            realized_pnl: 100.0,
+        };
+
+        assert_eq!(position.quantity, 10.0);
+        assert_eq!(position.entry_risk.stop_loss, Some(90.0));
+        assert_eq!(closed.position, position);
+        assert_eq!(closed.realized_pnl, 100.0);
+    }
+
+    #[test]
+    fn position_side_formats_as_passive_side_language() {
+        assert_eq!(PositionSide::Long.to_string(), "long");
+        assert_eq!(PositionSide::Short.to_string(), "short");
     }
 }

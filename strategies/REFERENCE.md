@@ -224,7 +224,7 @@ guards in strategy code before passing indicator outputs to crossover helpers.
 | `context.portfolio.realized_cash_balance` | realized cash balance |
 | `context.portfolio.equity` | current equity derived from Portfolio State and mark price |
 | `context.portfolio.completed_trades` | number of completed trades |
-| `context.portfolio.position` | `Position` or `()` |
+| `context.portfolio.position` | `OpenPosition` or `()` |
 | `context.portfolio.is_flat()` | `true` when no position is open |
 | `context.portfolio.has_position()` | `true` when a position is open |
 | `context.portfolio.is_long()` | `true` when the open position is long |
@@ -236,13 +236,13 @@ Portfolio Transitions, and Risk Exits remain runtime-owned; strategy code reads
 snapshots and returns `decision::*` values rather than mutating portfolio or
 execution state.
 
-### `Position`
+### `OpenPosition`
 
 | Expression | Returns |
 | --- | --- |
 | `position.side` | `"long"` or `"short"` |
 | `position.entry_price` | float |
-| `position.size` | float |
+| `position.quantity` | float |
 | `position.entry_time` | integer timestamp |
 | `position.stop_loss` | float or `()` |
 | `position.take_profit` | float or `()` |

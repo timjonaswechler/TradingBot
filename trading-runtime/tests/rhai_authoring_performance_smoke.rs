@@ -1,4 +1,4 @@
-use domain::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
 use std::{
     hint::black_box,
     time::{Duration, Instant},
@@ -271,15 +271,17 @@ fn seed_history<S: trading_runtime::StrategyHandler>(
     }
 }
 
-fn measured_position(side: PositionSide, entry_time: i64) -> Position {
-    Position {
+fn measured_position(side: PositionSide, entry_time: i64) -> OpenPosition {
+    OpenPosition {
         symbol: "BTC-USD".to_string(),
         side,
         entry_price: 100.0,
-        size: 1.0,
+        quantity: 1.0,
         entry_time,
-        stop_loss: Some(50.0),
-        take_profit: Some(250.0),
+        entry_risk: EntryRiskParameters {
+            stop_loss: Some(50.0),
+            take_profit: Some(250.0),
+        },
     }
 }
 

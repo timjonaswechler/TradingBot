@@ -15,7 +15,7 @@ use crate::{
     StrategyTickResult, StructureConfiguration, StructureObjectConfiguration,
     StructureObjectRegistry, StructurePointRegistry, StructurePointSource,
 };
-use domain::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, OpenPosition, PositionSide, Timeframe};
 use indicators::{
     anchored::evaluators::TrendLine,
     momentum::{cci::cci, roc::roc, rsi::rsi, williams_r::williams_r},
@@ -237,11 +237,11 @@ impl RhaiPortfolioSnapshot {
 
 #[derive(Debug, Clone)]
 struct RhaiPosition {
-    position: Position,
+    position: OpenPosition,
 }
 
 impl RhaiPosition {
-    fn new(position: Position) -> Self {
+    fn new(position: OpenPosition) -> Self {
         Self { position }
     }
 }
@@ -808,13 +808,16 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
     engine.register_get("entry_price", |position: &mut RhaiPosition| {
         position.position.entry_price
     });
-    engine.register_get("size", |position: &mut RhaiPosition| position.position.size);
+    engine.register_get("quantity", |position: &mut RhaiPosition| {
+        position.position.quantity
+    });
     engine.register_get("entry_time", |position: &mut RhaiPosition| {
         position.position.entry_time
     });
     engine.register_get("stop_loss", |position: &mut RhaiPosition| -> Dynamic {
         position
             .position
+            .entry_risk
             .stop_loss
             .map(Dynamic::from)
             .unwrap_or(Dynamic::UNIT)
@@ -822,6 +825,7 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
     engine.register_get("take_profit", |position: &mut RhaiPosition| -> Dynamic {
         position
             .position
+            .entry_risk
             .take_profit
             .map(Dynamic::from)
             .unwrap_or(Dynamic::UNIT)
@@ -833,10 +837,10 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
         position.position.side == PositionSide::Short
     });
     engine.register_fn("has_stop_loss", |position: &mut RhaiPosition| {
-        position.position.stop_loss.is_some()
+        position.position.entry_risk.stop_loss.is_some()
     });
     engine.register_fn("has_take_profit", |position: &mut RhaiPosition| {
-        position.position.take_profit.is_some()
+        position.position.entry_risk.take_profit.is_some()
     });
 
     engine.register_fn("get", strategy_state_get_int);
@@ -1802,7 +1806,7 @@ let position = context.portfolio.position;
 if position != ()
         && position.side == "long"
         && position.entry_price == 100.0
-        && position.size == 2.0
+        && position.quantity == 2.0
         && position.entry_time == 1
         && position.stop_loss == 90.0
         && position.take_profit == 120.0 {

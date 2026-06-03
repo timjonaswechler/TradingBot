@@ -1,6 +1,6 @@
 //! Pure risk-exit selection and gap-aware pricing.
 
-use domain::{Candle, Position, PositionSide};
+use domain::{Candle, OpenPosition, PositionSide};
 
 /// Runtime-managed hard exit boundary selected from Entry Risk Parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,15 +23,15 @@ pub struct RiskExitTriggered {
 /// This function is pure: it only reads the open position and candle and never mutates Portfolio
 /// State. Open-gap triggers are evaluated before intrabar high/low touches because the candle open
 /// is the first known tradable price.
-pub fn evaluate_risk_exit(position: &Position, candle: &Candle) -> Option<RiskExitTriggered> {
+pub fn evaluate_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<RiskExitTriggered> {
     match position.side {
         PositionSide::Long => evaluate_long_risk_exit(position, candle),
         PositionSide::Short => evaluate_short_risk_exit(position, candle),
     }
 }
 
-fn evaluate_long_risk_exit(position: &Position, candle: &Candle) -> Option<RiskExitTriggered> {
-    if let Some(stop_loss) = position.stop_loss {
+fn evaluate_long_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<RiskExitTriggered> {
+    if let Some(stop_loss) = position.entry_risk.stop_loss {
         if candle.open <= stop_loss {
             return Some(selected(
                 PositionSide::Long,
@@ -41,7 +41,7 @@ fn evaluate_long_risk_exit(position: &Position, candle: &Candle) -> Option<RiskE
         }
     }
 
-    if let Some(take_profit) = position.take_profit {
+    if let Some(take_profit) = position.entry_risk.take_profit {
         if candle.open >= take_profit {
             return Some(selected(
                 PositionSide::Long,
@@ -52,10 +52,12 @@ fn evaluate_long_risk_exit(position: &Position, candle: &Candle) -> Option<RiskE
     }
 
     let stop_loss_triggered = position
+        .entry_risk
         .stop_loss
         .map(|stop_loss| candle.low <= stop_loss)
         .unwrap_or(false);
     let take_profit_triggered = position
+        .entry_risk
         .take_profit
         .map(|take_profit| candle.high >= take_profit)
         .unwrap_or(false);
@@ -63,14 +65,14 @@ fn evaluate_long_risk_exit(position: &Position, candle: &Candle) -> Option<RiskE
     intrabar_result(
         PositionSide::Long,
         stop_loss_triggered,
-        position.stop_loss,
+        position.entry_risk.stop_loss,
         take_profit_triggered,
-        position.take_profit,
+        position.entry_risk.take_profit,
     )
 }
 
-fn evaluate_short_risk_exit(position: &Position, candle: &Candle) -> Option<RiskExitTriggered> {
-    if let Some(stop_loss) = position.stop_loss {
+fn evaluate_short_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<RiskExitTriggered> {
+    if let Some(stop_loss) = position.entry_risk.stop_loss {
         if candle.open >= stop_loss {
             return Some(selected(
                 PositionSide::Short,
@@ -80,7 +82,7 @@ fn evaluate_short_risk_exit(position: &Position, candle: &Candle) -> Option<Risk
         }
     }
 
-    if let Some(take_profit) = position.take_profit {
+    if let Some(take_profit) = position.entry_risk.take_profit {
         if candle.open <= take_profit {
             return Some(selected(
                 PositionSide::Short,
@@ -91,10 +93,12 @@ fn evaluate_short_risk_exit(position: &Position, candle: &Candle) -> Option<Risk
     }
 
     let stop_loss_triggered = position
+        .entry_risk
         .stop_loss
         .map(|stop_loss| candle.high >= stop_loss)
         .unwrap_or(false);
     let take_profit_triggered = position
+        .entry_risk
         .take_profit
         .map(|take_profit| candle.low <= take_profit)
         .unwrap_or(false);
@@ -102,9 +106,9 @@ fn evaluate_short_risk_exit(position: &Position, candle: &Candle) -> Option<Risk
     intrabar_result(
         PositionSide::Short,
         stop_loss_triggered,
-        position.stop_loss,
+        position.entry_risk.stop_loss,
         take_profit_triggered,
-        position.take_profit,
+        position.entry_risk.take_profit,
     )
 }
 

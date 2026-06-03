@@ -131,7 +131,7 @@ fn sorted_counters(counters: &HashMap<Timeframe, u32>) -> Vec<ProtectiveShutdown
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{Candle, Position, PositionSide, Timeframe};
+    use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
     use trading_runtime::{
         BlockedSecondaryContext, ExitKind, PortfolioState, RuntimeEvent, RuntimePortfolioSnapshot,
         RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness,
@@ -161,7 +161,7 @@ mod tests {
         }
     }
 
-    fn snapshot(open_position: Option<Position>) -> RuntimePortfolioSnapshot {
+    fn snapshot(open_position: Option<OpenPosition>) -> RuntimePortfolioSnapshot {
         let mut portfolio = PortfolioState::new(10_000.0);
         portfolio.open_position = open_position;
         portfolio.snapshot(100.0)
@@ -334,14 +334,16 @@ mod tests {
     fn risk_exit_primary_step_breaks_block_sequence_without_triggering_shutdown() {
         let h1 = Timeframe::hours(1);
         let primary = candle(Timeframe::minutes(1));
-        let position = Position {
+        let position = OpenPosition {
             symbol: "BTC-USD".into(),
             side: PositionSide::Long,
             entry_price: 100.0,
-            size: 1.0,
+            quantity: 1.0,
             entry_time: 1_699_999_940_000,
-            stop_loss: Some(90.0),
-            take_profit: None,
+            entry_risk: EntryRiskParameters {
+                stop_loss: Some(90.0),
+                take_profit: None,
+            },
         };
         let mut policy = policy(2);
         let risk_exit_step = RuntimeStep::new(

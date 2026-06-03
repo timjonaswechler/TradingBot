@@ -1,4 +1,4 @@
-use crate::Position;
+use crate::OpenPosition;
 use serde::{Deserialize, Serialize};
 
 /// Runtime context passed to the Rhai `on_tick` function on every candle.
@@ -14,7 +14,7 @@ pub struct Context {
     pub equity: f64,
 
     /// Currently open position, or `None` if flat.
-    pub position: Option<Position>,
+    pub position: Option<OpenPosition>,
 
     /// Total number of completed trades so far in this session.
     pub trades_count: u32,

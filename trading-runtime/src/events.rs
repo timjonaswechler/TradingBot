@@ -4,7 +4,7 @@ use crate::{
     ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RiskExitTriggered,
     RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision, StrategyError,
 };
-use domain::{Candle, Position, Timeframe};
+use domain::{Candle, OpenPosition, Timeframe};
 
 /// Why an explicit runner force-close command did not close a position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +77,7 @@ pub enum RuntimeEvent {
         risk_exit: RiskExitTriggered,
     },
     PositionOpened {
-        position: Position,
+        position: OpenPosition,
     },
     PositionClosed {
         closed_position: ClosedPosition,

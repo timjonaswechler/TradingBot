@@ -1,4 +1,4 @@
-use domain::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
 use std::{cell::RefCell, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, MarketInput, PortfolioState, RiskExitKind,
@@ -33,15 +33,17 @@ fn position_with_entry_risk(
     entry_price: f64,
     stop_loss: Option<f64>,
     take_profit: Option<f64>,
-) -> Position {
-    Position {
+) -> OpenPosition {
+    OpenPosition {
         symbol: "BTC-USD".into(),
         side,
         entry_price,
-        size: 2.0,
+        quantity: 2.0,
         entry_time: 1,
-        stop_loss,
-        take_profit,
+        entry_risk: EntryRiskParameters {
+            stop_loss,
+            take_profit,
+        },
     }
 }
 
@@ -61,7 +63,7 @@ impl StrategyHandler for CountingStrategyHandler {
 }
 
 fn runtime_with_open_position(
-    open_position: Position,
+    open_position: OpenPosition,
     warmup_requirement: usize,
 ) -> (TradingRuntime<CountingStrategyHandler>, Rc<RefCell<usize>>) {
     let mut portfolio = PortfolioState::new(1_000.0);

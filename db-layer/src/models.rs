@@ -1,9 +1,9 @@
 /// Conversion helpers between generated `module_bindings` types and `domain::` types.
 ///
 /// The generated `module_bindings::Candle`, `LivePosition`, `LiveTrade` structs
-/// are the canonical DB types.  `domain::Candle` / `domain::Position` are the
-/// lightweight in-memory types used by the engine and backtester.
-use domain::{Candle, Position, PositionSide, Timeframe};
+/// are the canonical DB types.  `domain::Candle` / `domain::OpenPosition` are the
+/// lightweight in-memory values used by runners/adapters.
+use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
 
 use crate::module_bindings::{Candle as DbCandle, LivePosition};
 
@@ -53,21 +53,23 @@ pub fn db_candle_to_shared(c: DbCandle) -> Candle {
 
 // ── LivePosition ──────────────────────────────────────────────────────────────
 
-/// Convert a DB `LivePosition` to `(id, strategy, domain::Position)`.
-pub fn db_position_to_shared(p: LivePosition) -> (u64, String, Position) {
+/// Convert a DB `LivePosition` to `(id, strategy, domain::OpenPosition)`.
+pub fn db_position_to_shared(p: LivePosition) -> (u64, String, OpenPosition) {
     let side = if p.side == "long" {
         PositionSide::Long
     } else {
         PositionSide::Short
     };
-    let pos = Position {
+    let pos = OpenPosition {
         symbol: p.symbol,
         side,
         entry_price: p.entry_price,
-        size: p.size,
+        quantity: p.size,
         entry_time: p.entry_time,
-        stop_loss: (p.stop_loss != 0.0).then_some(p.stop_loss),
-        take_profit: (p.take_profit != 0.0).then_some(p.take_profit),
+        entry_risk: EntryRiskParameters {
+            stop_loss: (p.stop_loss != 0.0).then_some(p.stop_loss),
+            take_profit: (p.take_profit != 0.0).then_some(p.take_profit),
+        },
     };
     (p.id, p.strategy, pos)
 }

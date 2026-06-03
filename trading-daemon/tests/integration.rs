@@ -135,7 +135,7 @@ async fn paper_executor_full_buy_sell_cycle() {
     // Position must be set locally.
     let pos = executor.position().cloned().expect("position after BUY");
     assert_eq!(pos.entry_price, 100.0);
-    assert!(pos.size > 0.0);
+    assert!(pos.quantity > 0.0);
 
     // §1.2 proof: live_positions row must be visible in cache.
     let db_pos =
@@ -170,7 +170,7 @@ async fn paper_executor_full_buy_sell_cycle() {
         "live_positions row should be gone after SELL"
     );
 
-    // live_trades must have +1 row with PnL = (110 - 100) * size.
+    // live_trades must have +1 row with PnL = (110 - 100) * quantity.
     let trades_after = count_trades(&conn, STRAT, SYMBOL);
     assert_eq!(
         trades_after,
@@ -183,7 +183,7 @@ async fn paper_executor_full_buy_sell_cycle() {
         .iter()
         .find(|t| t.symbol == SYMBOL)
         .expect("trade for test symbol");
-    let expected_pnl = (110.0 - 100.0) * pos.size;
+    let expected_pnl = (110.0 - 100.0) * pos.quantity;
     assert!(
         (t.pnl - expected_pnl).abs() < 1e-6,
         "pnl mismatch: got {}, expected {expected_pnl}",
@@ -267,7 +267,7 @@ async fn shutdown_liquidation_closes_open_position() {
 }
 
 /// §3.5 proof: SHORT opens a short position, COVER closes it, PnL is
-/// `(entry - exit) * size` (price drop → profit).
+/// `(entry - exit) * quantity` (price drop → profit).
 #[tokio::test(flavor = "current_thread")]
 async fn short_cover_cycle_profits_on_price_drop() {
     if !integration_enabled() {
@@ -298,7 +298,7 @@ async fn short_cover_cycle_profits_on_price_drop() {
 
     let pos = executor.position().cloned().expect("position after SHORT");
     assert_eq!(pos.side, domain::PositionSide::Short);
-    assert!(pos.size > 0.0);
+    assert!(pos.quantity > 0.0);
 
     let db_pos = get_open_position(&conn, STRAT, SYMBOL).expect("live_positions row");
     assert_eq!(db_pos.side, "short");
@@ -329,7 +329,7 @@ async fn short_cover_cycle_profits_on_price_drop() {
         .iter()
         .find(|t| t.symbol == SYMBOL && t.side == "short")
         .expect("short trade row");
-    let expected_pnl = (200.0 - 180.0) * pos.size;
+    let expected_pnl = (200.0 - 180.0) * pos.quantity;
     assert!(
         (t.pnl - expected_pnl).abs() < 1e-6,
         "short pnl mismatch: got {}, expected {expected_pnl}",

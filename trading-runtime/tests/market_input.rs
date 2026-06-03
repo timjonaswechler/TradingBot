@@ -1,4 +1,4 @@
-use domain::{Candle, Position, PositionSide};
+use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     BlockedSecondaryContext, ClosedPosition, ExecutionAction, ExitKind, MarketInput,
@@ -41,15 +41,17 @@ fn position_with_entry_risk(
     entry_price: f64,
     stop_loss: Option<f64>,
     take_profit: Option<f64>,
-) -> Position {
-    Position {
+) -> OpenPosition {
+    OpenPosition {
         symbol: "BTC-USD".into(),
         side,
         entry_price,
-        size: 2.0,
+        quantity: 2.0,
         entry_time: 0,
-        stop_loss,
-        take_profit,
+        entry_risk: EntryRiskParameters {
+            stop_loss,
+            take_profit,
+        },
     }
 }
 
@@ -286,7 +288,7 @@ fn completed_secondary_market_input_is_accepted_without_strategy_or_portfolio_tr
             .portfolio_snapshot
             .open_position
             .as_ref()
-            .map(|position| position.size),
+            .map(|position| position.quantity),
         Some(2.0)
     );
 }

@@ -40,7 +40,7 @@ pub use anchored::{
 pub use decision::{
     validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
 };
-pub use domain::{Timeframe, TimeframeParseError, TimeframeUnit};
+pub use domain::{ClosedPosition, Timeframe, TimeframeParseError, TimeframeUnit};
 pub use events::{
     BlockedSecondaryContext, ExitKind, ForceCloseIgnoredReason, RuntimeEvent,
     SecondaryContextUnavailableReason,
@@ -50,9 +50,7 @@ pub use market_input::{
     MarketInput, RuntimeConfig, RuntimeInputError, SecondaryReadiness, SecondaryTimeframeConfig,
 };
 pub use market_state::MarketState;
-pub use portfolio::{
-    ClosedPosition, PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot,
-};
+pub use portfolio::{PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot};
 pub use rhai_strategy::{RhaiStrategy, RhaiStrategyHooks, RhaiStrategyLoadError};
 pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;

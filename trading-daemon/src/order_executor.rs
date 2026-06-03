@@ -9,8 +9,8 @@ use tracing::{info, warn};
 
 use db_layer::{close_position, get_open_position, insert_trade, open_position, DbConnection};
 use domain::{
-    plan_action, realized_pnl as compute_realized_pnl, Action, Candle, Position, PositionSide,
-    TradeDecision,
+    plan_action, realized_pnl as compute_realized_pnl, Action, Candle, EntryRiskParameters,
+    OpenPosition, PositionSide, TradeDecision,
 };
 
 /// How long to wait for an `open_position` reducer's row to propagate into the
@@ -47,7 +47,7 @@ fn side_str(side: PositionSide) -> &'static str {
 pub trait OrderExecutor: Send + Sync {
     async fn handle(&mut self, candle: &Candle, decision: &TradeDecision) -> Result<()>;
     fn balance(&self) -> f64;
-    fn position(&self) -> Option<&Position>;
+    fn position(&self) -> Option<&OpenPosition>;
 }
 
 // ── PaperExecutor ─────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ pub trait OrderExecutor: Send + Sync {
 /// Persists open positions and completed trades to SpacetimeDB.
 pub struct PaperExecutor {
     balance: f64,
-    position: Option<Position>,
+    position: Option<OpenPosition>,
     position_id: Option<u64>,
     conn: Arc<DbConnection>,
     strategy: String,
@@ -101,7 +101,7 @@ impl PaperExecutor {
             return Ok(());
         }
 
-        let size = self.balance * decision.size / candle.close;
+        let quantity = self.balance * decision.size / candle.close;
         let entry_price = candle.close;
         let stop_loss = decision.stop_loss.unwrap_or(0.0);
         let take_profit = decision.take_profit.unwrap_or(0.0);
@@ -119,7 +119,7 @@ impl PaperExecutor {
                 &symbol,
                 &side_s,
                 entry_price,
-                size,
+                quantity,
                 stop_loss,
                 take_profit,
                 entry_time,
@@ -137,14 +137,16 @@ impl PaperExecutor {
             );
         }
 
-        self.position = Some(Position {
+        self.position = Some(OpenPosition {
             symbol: self.symbol.clone(),
             side,
             entry_price,
-            size,
+            quantity,
             entry_time: candle.timestamp,
-            stop_loss: decision.stop_loss,
-            take_profit: decision.take_profit,
+            entry_risk: EntryRiskParameters {
+                stop_loss: decision.stop_loss,
+                take_profit: decision.take_profit,
+            },
         });
         self.position_id = pos_id;
 
@@ -155,7 +157,7 @@ impl PaperExecutor {
         info!(
             symbol = self.symbol,
             price = entry_price,
-            size,
+            quantity,
             balance = self.balance,
             reason = decision.reason.as_deref().unwrap_or(""),
             "{tag}"
@@ -185,7 +187,7 @@ impl PaperExecutor {
         };
 
         let exit_price = candle.close;
-        let pnl = compute_realized_pnl(pos.side, pos.entry_price, exit_price, pos.size);
+        let pnl = compute_realized_pnl(pos.side, pos.entry_price, exit_price, pos.quantity);
         let exit_time = candle.timestamp;
         let position_id = self.position_id.take();
         let strategy = self.strategy.clone();
@@ -194,7 +196,7 @@ impl PaperExecutor {
         let entry_reason = String::new();
         let exit_reason = reason.to_string();
         let entry_price = pos.entry_price;
-        let size = pos.size;
+        let quantity = pos.quantity;
         let entry_time = pos.entry_time;
         let side_s = side_str(pos.side).to_string();
 
@@ -213,7 +215,7 @@ impl PaperExecutor {
                 &side_s,
                 entry_price,
                 exit_price,
-                size,
+                quantity,
                 pnl,
                 "closed",
                 entry_time,
@@ -250,13 +252,29 @@ impl PaperExecutor {
             None => return Ok(()),
             Some(pos) => match pos.side {
                 PositionSide::Long => {
-                    let hit_sl = pos.stop_loss.map(|sl| candle.low <= sl).unwrap_or(false);
-                    let hit_tp = pos.take_profit.map(|tp| candle.high >= tp).unwrap_or(false);
+                    let hit_sl = pos
+                        .entry_risk
+                        .stop_loss
+                        .map(|sl| candle.low <= sl)
+                        .unwrap_or(false);
+                    let hit_tp = pos
+                        .entry_risk
+                        .take_profit
+                        .map(|tp| candle.high >= tp)
+                        .unwrap_or(false);
                     (hit_sl, hit_tp)
                 }
                 PositionSide::Short => {
-                    let hit_sl = pos.stop_loss.map(|sl| candle.high >= sl).unwrap_or(false);
-                    let hit_tp = pos.take_profit.map(|tp| candle.low <= tp).unwrap_or(false);
+                    let hit_sl = pos
+                        .entry_risk
+                        .stop_loss
+                        .map(|sl| candle.high >= sl)
+                        .unwrap_or(false);
+                    let hit_tp = pos
+                        .entry_risk
+                        .take_profit
+                        .map(|tp| candle.low <= tp)
+                        .unwrap_or(false);
                     (hit_sl, hit_tp)
                 }
             },
@@ -323,7 +341,7 @@ impl OrderExecutor for PaperExecutor {
         self.balance
     }
 
-    fn position(&self) -> Option<&Position> {
+    fn position(&self) -> Option<&OpenPosition> {
         self.position.as_ref()
     }
 }

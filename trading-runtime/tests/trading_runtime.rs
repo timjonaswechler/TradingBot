@@ -1,4 +1,4 @@
-use domain::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason,
@@ -24,8 +24,8 @@ fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Ca
     }
 }
 
-fn position(side: PositionSide, entry_time: i64, entry_price: f64, size: f64) -> Position {
-    position_with_entry_risk(side, entry_time, entry_price, size, None, None)
+fn position(side: PositionSide, entry_time: i64, entry_price: f64, quantity: f64) -> OpenPosition {
+    position_with_entry_risk(side, entry_time, entry_price, quantity, None, None)
 }
 
 fn completed_primary_step<S: StrategyHandler>(
@@ -41,18 +41,20 @@ fn position_with_entry_risk(
     side: PositionSide,
     entry_time: i64,
     entry_price: f64,
-    size: f64,
+    quantity: f64,
     stop_loss: Option<f64>,
     take_profit: Option<f64>,
-) -> Position {
-    Position {
+) -> OpenPosition {
+    OpenPosition {
         symbol: "BTC-USD".into(),
         side,
         entry_price,
-        size,
+        quantity,
         entry_time,
-        stop_loss,
-        take_profit,
+        entry_risk: EntryRiskParameters {
+            stop_loss,
+            take_profit,
+        },
     }
 }
 
@@ -120,7 +122,7 @@ impl StrategyHandler for CountingStrategyHandler {
 }
 
 fn assert_risk_exit_step(
-    open_position: Position,
+    open_position: OpenPosition,
     exit_candle: Candle,
     risk_exit: RiskExitTriggered,
     expected_realized_pnl: f64,

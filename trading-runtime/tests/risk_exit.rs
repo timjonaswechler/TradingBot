@@ -1,15 +1,17 @@
-use domain::{Candle, Position, PositionSide, Timeframe};
+use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
 use trading_runtime::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 
-fn position(side: PositionSide, stop_loss: Option<f64>, take_profit: Option<f64>) -> Position {
-    Position {
+fn position(side: PositionSide, stop_loss: Option<f64>, take_profit: Option<f64>) -> OpenPosition {
+    OpenPosition {
         symbol: "BTC-USD".into(),
         side,
         entry_price: 100.0,
-        size: 2.0,
+        quantity: 2.0,
         entry_time: 1,
-        stop_loss,
-        take_profit,
+        entry_risk: EntryRiskParameters {
+            stop_loss,
+            take_profit,
+        },
     }
 }
 

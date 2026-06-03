@@ -1,6 +1,6 @@
 //! Runtime-local portfolio state and snapshots.
 
-use domain::{Candle, Position, PositionSide};
+use domain::{Candle, ClosedPosition, EntryRiskParameters, OpenPosition, PositionSide};
 
 /// Runtime-local portfolio state for one trading session.
 ///
@@ -10,7 +10,7 @@ use domain::{Candle, Position, PositionSide};
 #[derive(Debug, Clone)]
 pub struct PortfolioState {
     pub realized_cash_balance: f64,
-    pub open_position: Option<Position>,
+    pub open_position: Option<OpenPosition>,
     pub completed_trade_count: usize,
 }
 
@@ -95,14 +95,16 @@ impl PortfolioState {
             return Err(PortfolioTransitionError::PositionAlreadyOpen);
         }
 
-        self.open_position = Some(Position {
+        self.open_position = Some(OpenPosition {
             symbol: candle.symbol.clone(),
             side,
             entry_price: candle.close,
-            size: quantity,
+            quantity,
             entry_time: candle.timestamp,
-            stop_loss,
-            take_profit,
+            entry_risk: EntryRiskParameters {
+                stop_loss,
+                take_profit,
+            },
         });
 
         Ok(())
@@ -137,21 +139,21 @@ impl PortfolioState {
     }
 }
 
-fn realized_pnl_for_close(position: &Position, exit_price: f64) -> f64 {
+fn realized_pnl_for_close(position: &OpenPosition, exit_price: f64) -> f64 {
     side_aware_pnl(
         position.side,
         position.entry_price,
         exit_price,
-        position.size,
+        position.quantity,
     )
 }
 
-fn unrealized_pnl_at_mark(position: &Position, mark_price: f64) -> f64 {
+fn unrealized_pnl_at_mark(position: &OpenPosition, mark_price: f64) -> f64 {
     side_aware_pnl(
         position.side,
         position.entry_price,
         mark_price,
-        position.size,
+        position.quantity,
     )
 }
 
@@ -167,14 +169,6 @@ fn side_aware_pnl(
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ClosedPosition {
-    pub position: Position,
-    pub exit_price: f64,
-    pub exit_time: i64,
-    pub realized_pnl: f64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortfolioTransitionError {
     PositionAlreadyOpen,
@@ -186,7 +180,7 @@ pub enum PortfolioTransitionError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimePortfolioSnapshot {
     pub realized_cash_balance: f64,
-    pub open_position: Option<Position>,
+    pub open_position: Option<OpenPosition>,
     pub completed_trade_count: usize,
     pub current_equity: f64,
 }
@@ -213,15 +207,14 @@ mod tests {
     use super::*;
     use domain::PositionSide;
 
-    fn position(side: PositionSide) -> Position {
-        Position {
+    fn position(side: PositionSide) -> OpenPosition {
+        OpenPosition {
             symbol: "BTC-USD".into(),
             side,
             entry_price: 100.0,
-            size: 2.0,
+            quantity: 2.0,
             entry_time: 1_700_000_000_000,
-            stop_loss: None,
-            take_profit: None,
+            entry_risk: EntryRiskParameters::default(),
         }
     }
 
@@ -321,10 +314,10 @@ mod tests {
         assert_eq!(position.symbol, "BTC-USD");
         assert_eq!(position.side, PositionSide::Long);
         assert_eq!(position.entry_price, 100.0);
-        assert_eq!(position.size, 2.0);
+        assert_eq!(position.quantity, 2.0);
         assert_eq!(position.entry_time, 1);
-        assert_eq!(position.stop_loss, Some(90.0));
-        assert_eq!(position.take_profit, Some(120.0));
+        assert_eq!(position.entry_risk.stop_loss, Some(90.0));
+        assert_eq!(position.entry_risk.take_profit, Some(120.0));
     }
 
     #[test]
@@ -380,9 +373,9 @@ mod tests {
         assert_eq!(state.completed_trade_count, 0);
         assert_eq!(position.side, PositionSide::Short);
         assert_eq!(position.entry_price, 100.0);
-        assert_eq!(position.size, 2.0);
-        assert_eq!(position.stop_loss, Some(110.0));
-        assert_eq!(position.take_profit, Some(80.0));
+        assert_eq!(position.quantity, 2.0);
+        assert_eq!(position.entry_risk.stop_loss, Some(110.0));
+        assert_eq!(position.entry_risk.take_profit, Some(80.0));
     }
 
     #[test]

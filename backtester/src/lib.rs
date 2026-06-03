@@ -519,7 +519,7 @@ impl RuntimeBacktestRecorder {
                     side: closed_position.position.side,
                     entry_price: closed_position.position.entry_price,
                     exit_price: closed_position.exit_price,
-                    size: closed_position.position.size,
+                    size: closed_position.position.quantity,
                     pnl: closed_position.realized_pnl,
                     entry_time: closed_position.position.entry_time,
                     exit_time: closed_position.exit_time,
@@ -727,7 +727,7 @@ fn on_tick(market, context) {
             .portfolio_snapshot
             .open_position
             .as_ref()
-            .is_some_and(|position| position.size == 2.0));
+            .is_some_and(|position| position.quantity == 2.0));
         assert_eq!(backtest.result.equity_curve.len(), 1);
     }
 
