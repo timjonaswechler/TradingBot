@@ -35,7 +35,7 @@ pub fn candle_to_reducer_args(
 }
 
 /// Convert a DB `Candle` (from generated bindings) to a `domain::Candle`.
-pub fn db_candle_to_shared(c: DbCandle) -> Candle {
+pub fn db_candle_to_domain_candle(c: DbCandle) -> Candle {
     Candle {
         timestamp: c.timestamp,
         symbol: c.symbol,

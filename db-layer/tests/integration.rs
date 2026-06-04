@@ -212,8 +212,8 @@ fn canonical_id_is_deterministic() {
 }
 
 #[test]
-fn db_candle_converts_to_shared() {
-    use db_layer::{db_candle_to_shared, DbCandle};
+fn db_candle_converts_to_domain_candle() {
+    use db_layer::{db_candle_to_domain_candle, DbCandle};
     let db = DbCandle {
         id: 1,
         canonical_id: "AAPL_1d_1700000000000".into(),
@@ -227,7 +227,7 @@ fn db_candle_converts_to_shared() {
         timeframe: "1d".parse().unwrap(),
         provider: "yahoo".into(),
     };
-    let shared = db_candle_to_shared(db);
+    let shared = db_candle_to_domain_candle(db);
     assert_eq!(shared.symbol, "AAPL");
     assert!((shared.close - 150.0).abs() < f64::EPSILON);
 }

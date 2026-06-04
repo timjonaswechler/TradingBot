@@ -10,7 +10,7 @@ use domain::Candle;
 
 use crate::{
     error::DbError,
-    models::{candle_to_reducer_args, db_candle_to_shared},
+    models::{candle_to_reducer_args, db_candle_to_domain_candle},
     module_bindings::{
         // Reducer extension traits — must be in scope for .insert_candle(), etc.
         close_position,
@@ -47,7 +47,7 @@ pub fn get_candles(conn: &DbConnection, symbol: &str, timeframe: &str, limit: u3
         .candles()
         .iter()
         .filter(|c| c.symbol == symbol && c.timeframe == timeframe)
-        .map(|c| db_candle_to_shared(c.clone()))
+        .map(|c| db_candle_to_domain_candle(c.clone()))
         .collect();
 
     candles.sort_by_key(|c| c.timestamp);
@@ -81,7 +81,7 @@ pub fn get_candles_in_range(
                 && c.timestamp >= start_ts
                 && c.timestamp < end_ts
         })
-        .map(|c| db_candle_to_shared(c.clone()))
+        .map(|c| db_candle_to_domain_candle(c.clone()))
         .collect();
 
     candles.sort_by_key(|c| c.timestamp);
@@ -108,7 +108,7 @@ pub fn get_candles_before(
         .candles()
         .iter()
         .filter(|c| c.symbol == symbol && c.timeframe == timeframe && c.timestamp < before_ts)
-        .map(|c| db_candle_to_shared(c.clone()))
+        .map(|c| db_candle_to_domain_candle(c.clone()))
         .collect();
 
     candles.sort_by_key(|c| c.timestamp);
