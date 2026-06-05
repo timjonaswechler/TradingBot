@@ -16,9 +16,11 @@ from = "2020-01-01"
 # Primary Timeframe and any Secondary Timeframes used by run/seed.
 
 [[assets]]
-symbol    = "AAPL"
-strategy  = "strategies/sma_cross.rhai"
-balance   = 10000.0
+symbol            = "AAPL"
+strategy          = "strategies/sma_cross.rhai"
+execution_mode    = "paper_trading"
+strategy_identity = "sma-cross-aapl-paper"
+balance           = 10000.0
 
 # Protective Runner Shutdown is live-runner policy for repeated required
 # Secondary-Timeframe context loss. It consumes Trading Runtime
@@ -30,6 +32,8 @@ enabled = true
 required_secondary_failure_threshold = 3
 
 # [[assets]]
-# symbol    = "BTC-USD"
-# strategy  = "strategies/sma_cross.rhai"
-# balance   = 10000.0
+# symbol            = "BTC-USD"
+# strategy          = "strategies/sma_cross.rhai"
+# execution_mode    = "paper_trading" # real_money is a distinct future mode and not yet supported
+# strategy_identity = "sma-cross-btc-paper"
+# balance           = 10000.0

@@ -1,5 +1,6 @@
 /// TOML-based runtime configuration for the trading daemon.
 use serde::{de, Deserialize, Deserializer};
+use std::fmt;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -57,19 +58,42 @@ pub struct AssetConfig {
     #[serde(default)]
     pub strategy: String,
 
+    /// Live execution mode for this Live Runner session.
+    pub execution_mode: LiveExecutionMode,
+
+    /// Operator-owned Strategy Identity used by persistent Paper Trading.
+    #[serde(default)]
+    pub strategy_identity: Option<String>,
+
     /// Starting paper-trading balance in USD (only used by `run` subcommand).
     #[serde(default = "default_balance")]
     pub balance: f64,
 
     /// On graceful shutdown, close any open position at the last observed
-    /// candle close. When `false`, the position is left in `live_positions`
-    /// and restored on next startup.
+    /// candle close. When `false`, a Paper Trading position is left in
+    /// `paper_open_positions` and restored on next startup.
     #[serde(default = "default_liquidate")]
     pub liquidate_on_shutdown: bool,
 
     /// Live-runner safety policy for repeated required Secondary context loss.
     #[serde(default)]
     pub protective_shutdown: ProtectiveShutdownConfig,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveExecutionMode {
+    PaperTrading,
+    RealMoney,
+}
+
+impl fmt::Display for LiveExecutionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LiveExecutionMode::PaperTrading => write!(f, "paper_trading"),
+            LiveExecutionMode::RealMoney => write!(f, "real_money"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +193,8 @@ mod tests {
 [[assets]]
 symbol = "BTC-USD"
 strategy = "strategy.rhai"
+execution_mode = "paper_trading"
+strategy_identity = "btc-paper"
 "#,
         )
         .expect("config should parse");
@@ -193,6 +219,8 @@ strategy = "strategy.rhai"
 [[assets]]
 symbol = "BTC-USD"
 strategy = "strategy.rhai"
+execution_mode = "paper_trading"
+strategy_identity = "btc-paper"
 
 [assets.protective_shutdown]
 enabled = false
@@ -211,6 +239,52 @@ required_secondary_failure_threshold = 5
     }
 
     #[test]
+    fn live_execution_mode_parses_paper_trading_and_real_money_modes() {
+        let config = parse_asset(
+            r#"
+[[assets]]
+symbol = "BTC-USD"
+strategy = "paper.rhai"
+execution_mode = "paper_trading"
+strategy_identity = "btc-paper"
+
+[[assets]]
+symbol = "ETH-USD"
+strategy = "real.rhai"
+execution_mode = "real_money"
+"#,
+        )
+        .expect("execution modes should parse");
+
+        assert_eq!(
+            config.assets[0].execution_mode,
+            LiveExecutionMode::PaperTrading
+        );
+        assert_eq!(
+            config.assets[1].execution_mode,
+            LiveExecutionMode::RealMoney
+        );
+        assert_eq!(
+            config.assets[0].strategy_identity.as_deref(),
+            Some("btc-paper")
+        );
+    }
+
+    #[test]
+    fn asset_execution_mode_is_required_for_live_runner_mode_selection() {
+        let error = parse_asset(
+            r#"
+[[assets]]
+symbol = "BTC-USD"
+strategy = "strategy.rhai"
+"#,
+        )
+        .expect_err("execution mode should be explicit");
+
+        assert!(error.to_string().contains("missing field `execution_mode`"));
+    }
+
+    #[test]
     fn asset_intervals_are_rejected_because_strategy_configuration_owns_timeframes() {
         let error = parse_asset(
             r#"
@@ -218,6 +292,8 @@ required_secondary_failure_threshold = 5
 symbol = "BTC-USD"
 intervals = ["1m"]
 strategy = "strategy.rhai"
+execution_mode = "paper_trading"
+strategy_identity = "btc-paper"
 "#,
         )
         .expect_err("intervals should no longer be accepted");
@@ -232,6 +308,8 @@ strategy = "strategy.rhai"
 [[assets]]
 symbol = "BTC-USD"
 strategy = "strategy.rhai"
+execution_mode = "paper_trading"
+strategy_identity = "btc-paper"
 
 [assets.protective_shutdown]
 required_secondary_failure_threshold = 0
