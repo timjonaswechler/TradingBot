@@ -1,15 +1,17 @@
 /// SpacetimeDB server module for TradingBot2.
 ///
-/// Defines three tables (candles, live_positions, live_trades) and minimal
-/// CRUD reducers.  The module intentionally contains **no trading logic** —
-/// it is a pure, fast data-lake.
+/// Defines market-data tables, transitional live position/trade tables, and
+/// dedicated Paper Trading persistence tables. The module intentionally
+/// contains **no trading logic** — it only enforces storage invariants such as
+/// projection idempotency and one open Paper Trading position per strategy and
+/// runtime asset.
 ///
 /// Compile & deploy via justfile:
 /// ```
 /// just db-generate   # build WASM + generate Rust client bindings
 /// just db-deploy     # publish to local SpacetimeDB server
 /// ```
-use spacetimedb::{reducer, table, ReducerContext, Table};
+use spacetimedb::{reducer, table, ReducerContext, SpacetimeType, Table};
 
 // ── Tables ───────────────────────────────────────────────────────────────────
 
@@ -84,6 +86,64 @@ pub struct LiveTrade {
     pub exit_time: i64,
     pub entry_reason: String,
     pub exit_reason: String,
+}
+
+/// Machine-readable close category for completed Paper Trading positions.
+#[derive(SpacetimeType, Clone, PartialEq, Eq)]
+pub enum PaperExitKind {
+    StrategyExit,
+    RiskExitStopLoss,
+    RiskExitTakeProfit,
+    ForceClose,
+}
+
+/// Currently open Paper Trading position projected from Runtime Portfolio State.
+#[table(accessor = paper_open_positions, public)]
+#[derive(Clone)]
+pub struct PaperOpenPosition {
+    /// Deterministic projection key for this runtime-local open position.
+    #[primary_key]
+    pub projection_key: String,
+
+    /// Operator-owned Strategy Identity.
+    pub strategy_identity: String,
+    /// Canonical Runtime Asset.
+    pub runtime_asset: String,
+    /// `"long"` or `"short"`.
+    pub side: String,
+    pub entry_price: f64,
+    pub quantity: f64,
+    pub entry_time: i64,
+    pub stop_loss: Option<f64>,
+    pub take_profit: Option<f64>,
+    pub entry_metadata: Option<String>,
+}
+
+/// Completed Paper Trading position projected from Runtime Portfolio State.
+#[table(accessor = paper_trades, public)]
+#[derive(Clone)]
+pub struct PaperTrade {
+    /// Deterministic projection key for this completed position.
+    #[primary_key]
+    pub projection_key: String,
+
+    /// Operator-owned Strategy Identity.
+    pub strategy_identity: String,
+    /// Canonical Runtime Asset.
+    pub runtime_asset: String,
+    /// `"long"` or `"short"`.
+    pub side: String,
+    pub entry_price: f64,
+    pub exit_price: f64,
+    pub quantity: f64,
+    pub realized_pnl: f64,
+    pub entry_time: i64,
+    pub exit_time: i64,
+    pub stop_loss: Option<f64>,
+    pub take_profit: Option<f64>,
+    pub exit_kind: PaperExitKind,
+    pub entry_metadata: Option<String>,
+    pub exit_metadata: Option<String>,
 }
 
 // ── Reducers ─────────────────────────────────────────────────────────────────
@@ -224,4 +284,310 @@ pub fn insert_trade(
         entry_reason,
         exit_reason,
     });
+}
+
+/// Project a runtime-opened Paper Trading position into `paper_open_positions`.
+///
+/// The operation is idempotent only for the same projection key and identical
+/// position data. A different existing open position for the same Strategy
+/// Identity × Runtime Asset is a Paper Trading persistence inconsistency.
+#[reducer]
+pub fn open_paper_position(
+    ctx: &ReducerContext,
+    projection_key: String,
+    strategy_identity: String,
+    runtime_asset: String,
+    side: String,
+    entry_price: f64,
+    quantity: f64,
+    entry_time: i64,
+    stop_loss: Option<f64>,
+    take_profit: Option<f64>,
+    entry_metadata: Option<String>,
+) -> Result<(), String> {
+    if let Some(existing) = ctx
+        .db
+        .paper_open_positions()
+        .projection_key()
+        .find(&projection_key)
+    {
+        if paper_open_position_matches(
+            &existing,
+            &projection_key,
+            &strategy_identity,
+            &runtime_asset,
+            &side,
+            entry_price,
+            quantity,
+            entry_time,
+            &stop_loss,
+            &take_profit,
+            &entry_metadata,
+        ) {
+            return Ok(());
+        }
+
+        return Err(format!(
+            "paper persistence inconsistency: open paper position projection key '{projection_key}' already exists with different data"
+        ));
+    }
+
+    if let Some(conflict) = ctx.db.paper_open_positions().iter().find(|position| {
+        position.strategy_identity == strategy_identity && position.runtime_asset == runtime_asset
+    }) {
+        return Err(format!(
+            "paper persistence inconsistency: open paper position already exists for strategy_identity '{strategy_identity}' and runtime_asset '{runtime_asset}' with projection key '{}'",
+            conflict.projection_key
+        ));
+    }
+
+    ctx.db.paper_open_positions().insert(PaperOpenPosition {
+        projection_key,
+        strategy_identity,
+        runtime_asset,
+        side,
+        entry_price,
+        quantity,
+        entry_time,
+        stop_loss,
+        take_profit,
+        entry_metadata,
+    });
+
+    Ok(())
+}
+
+/// Atomically close a projected Paper Trading position.
+///
+/// If the completed trade already exists with identical data, this is a no-op.
+/// Otherwise the reducer requires a matching open position, removes it, and
+/// inserts the completed trade in the same SpacetimeDB transaction.
+#[reducer]
+pub fn record_paper_position_closed(
+    ctx: &ReducerContext,
+    open_projection_key: String,
+    trade_projection_key: String,
+    strategy_identity: String,
+    runtime_asset: String,
+    side: String,
+    entry_price: f64,
+    exit_price: f64,
+    quantity: f64,
+    realized_pnl: f64,
+    entry_time: i64,
+    exit_time: i64,
+    stop_loss: Option<f64>,
+    take_profit: Option<f64>,
+    exit_kind: PaperExitKind,
+    entry_metadata: Option<String>,
+    exit_metadata: Option<String>,
+) -> Result<(), String> {
+    if let Some(existing_trade) = ctx
+        .db
+        .paper_trades()
+        .projection_key()
+        .find(&trade_projection_key)
+    {
+        if paper_trade_matches(
+            &existing_trade,
+            &trade_projection_key,
+            &strategy_identity,
+            &runtime_asset,
+            &side,
+            entry_price,
+            exit_price,
+            quantity,
+            realized_pnl,
+            entry_time,
+            exit_time,
+            &stop_loss,
+            &take_profit,
+            &exit_kind,
+            &entry_metadata,
+            &exit_metadata,
+        ) {
+            if let Some(open_position) = ctx
+                .db
+                .paper_open_positions()
+                .projection_key()
+                .find(&open_projection_key)
+            {
+                if !paper_open_position_matches(
+                    &open_position,
+                    &open_projection_key,
+                    &strategy_identity,
+                    &runtime_asset,
+                    &side,
+                    entry_price,
+                    quantity,
+                    entry_time,
+                    &stop_loss,
+                    &take_profit,
+                    &entry_metadata,
+                ) {
+                    return Err(format!(
+                        "paper persistence inconsistency: open paper position '{open_projection_key}' does not match existing completed paper trade '{trade_projection_key}'"
+                    ));
+                }
+
+                ctx.db
+                    .paper_open_positions()
+                    .projection_key()
+                    .delete(&open_projection_key);
+            }
+
+            return Ok(());
+        }
+
+        return Err(format!(
+            "paper persistence inconsistency: completed paper trade projection key '{trade_projection_key}' already exists with different data"
+        ));
+    }
+
+    let Some(open_position) = ctx
+        .db
+        .paper_open_positions()
+        .projection_key()
+        .find(&open_projection_key)
+    else {
+        return Err(format!(
+            "paper persistence inconsistency: no matching open paper position for open projection key '{open_projection_key}' and no completed paper trade for projection key '{trade_projection_key}'"
+        ));
+    };
+
+    if !paper_open_position_matches(
+        &open_position,
+        &open_projection_key,
+        &strategy_identity,
+        &runtime_asset,
+        &side,
+        entry_price,
+        quantity,
+        entry_time,
+        &stop_loss,
+        &take_profit,
+        &entry_metadata,
+    ) {
+        return Err(format!(
+            "paper persistence inconsistency: open paper position '{open_projection_key}' does not match completed paper trade '{trade_projection_key}'"
+        ));
+    }
+
+    ctx.db
+        .paper_open_positions()
+        .projection_key()
+        .delete(&open_projection_key);
+    ctx.db.paper_trades().insert(PaperTrade {
+        projection_key: trade_projection_key,
+        strategy_identity,
+        runtime_asset,
+        side,
+        entry_price,
+        exit_price,
+        quantity,
+        realized_pnl,
+        entry_time,
+        exit_time,
+        stop_loss,
+        take_profit,
+        exit_kind,
+        entry_metadata,
+        exit_metadata,
+    });
+
+    Ok(())
+}
+
+/// Delete Paper Trading rows for a strategy identity (test/admin cleanup).
+#[reducer]
+pub fn delete_paper_data_by_strategy_identity(ctx: &ReducerContext, strategy_identity: String) {
+    let open_keys: Vec<String> = ctx
+        .db
+        .paper_open_positions()
+        .iter()
+        .filter(|position| position.strategy_identity == strategy_identity)
+        .map(|position| position.projection_key)
+        .collect();
+    for projection_key in open_keys {
+        ctx.db
+            .paper_open_positions()
+            .projection_key()
+            .delete(&projection_key);
+    }
+
+    let trade_keys: Vec<String> = ctx
+        .db
+        .paper_trades()
+        .iter()
+        .filter(|trade| trade.strategy_identity == strategy_identity)
+        .map(|trade| trade.projection_key)
+        .collect();
+    for projection_key in trade_keys {
+        ctx.db
+            .paper_trades()
+            .projection_key()
+            .delete(&projection_key);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paper_open_position_matches(
+    position: &PaperOpenPosition,
+    projection_key: &str,
+    strategy_identity: &str,
+    runtime_asset: &str,
+    side: &str,
+    entry_price: f64,
+    quantity: f64,
+    entry_time: i64,
+    stop_loss: &Option<f64>,
+    take_profit: &Option<f64>,
+    entry_metadata: &Option<String>,
+) -> bool {
+    position.projection_key == projection_key
+        && position.strategy_identity == strategy_identity
+        && position.runtime_asset == runtime_asset
+        && position.side == side
+        && position.entry_price == entry_price
+        && position.quantity == quantity
+        && position.entry_time == entry_time
+        && &position.stop_loss == stop_loss
+        && &position.take_profit == take_profit
+        && &position.entry_metadata == entry_metadata
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paper_trade_matches(
+    trade: &PaperTrade,
+    projection_key: &str,
+    strategy_identity: &str,
+    runtime_asset: &str,
+    side: &str,
+    entry_price: f64,
+    exit_price: f64,
+    quantity: f64,
+    realized_pnl: f64,
+    entry_time: i64,
+    exit_time: i64,
+    stop_loss: &Option<f64>,
+    take_profit: &Option<f64>,
+    exit_kind: &PaperExitKind,
+    entry_metadata: &Option<String>,
+    exit_metadata: &Option<String>,
+) -> bool {
+    trade.projection_key == projection_key
+        && trade.strategy_identity == strategy_identity
+        && trade.runtime_asset == runtime_asset
+        && trade.side == side
+        && trade.entry_price == entry_price
+        && trade.exit_price == exit_price
+        && trade.quantity == quantity
+        && trade.realized_pnl == realized_pnl
+        && trade.entry_time == entry_time
+        && trade.exit_time == exit_time
+        && &trade.stop_loss == stop_loss
+        && &trade.take_profit == take_profit
+        && &trade.exit_kind == exit_kind
+        && &trade.entry_metadata == entry_metadata
+        && &trade.exit_metadata == exit_metadata
 }

@@ -4,6 +4,8 @@
 /// All writes call reducers via the generated bindings (`conn.reducers.<reducer>()`).
 ///
 /// No HTTP, no manual JSON — the SDK handles everything.
+use std::time::Duration;
+
 use spacetimedb_sdk::Table;
 
 use domain::Candle;
@@ -15,19 +17,28 @@ use crate::{
         // Reducer extension traits — must be in scope for .insert_candle(), etc.
         close_position,
         delete_candles_by_symbol,
+        delete_paper_data_by_strategy_identity as delete_paper_data_by_strategy_identity_reducer,
         delete_trades_by_strategy,
         insert_candle,
         insert_trade,
+        open_paper_position as open_paper_position_reducer,
         open_position,
-        // Table access traits — must be in scope for .candles(), .live_positions(), .live_trades()
+        record_paper_position_closed as record_paper_position_closed_reducer,
+        // Table access traits — must be in scope for table handles.
         CandlesTableAccess,
         DbConnection,
         LivePosition,
         LivePositionsTableAccess,
         LiveTrade,
         LiveTradesTableAccess,
+        PaperOpenPosition,
+        PaperOpenPositionsTableAccess,
+        PaperTrade,
+        PaperTradesTableAccess,
     },
 };
+
+const PAPER_REDUCER_TIMEOUT: Duration = Duration::from_secs(2);
 
 // ── Candle queries ────────────────────────────────────────────────────────────
 
@@ -209,7 +220,122 @@ pub fn get_open_position(
         .live_positions()
         .iter()
         .find(|p| p.strategy == strategy && p.symbol == symbol)
-        .map(|p| p.clone())
+}
+
+// ── Paper Trading persistence queries ────────────────────────────────────────
+
+/// Project a runtime-opened Paper Trading position into `paper_open_positions`.
+///
+/// This helper waits for reducer completion so idempotency/conflict errors are
+/// surfaced to the caller instead of being hidden as asynchronous reducer logs.
+pub fn open_paper_position(
+    conn: &DbConnection,
+    position: &PaperOpenPosition,
+) -> Result<(), DbError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    conn.reducers
+        .open_paper_position_then(
+            position.projection_key.clone(),
+            position.strategy_identity.clone(),
+            position.runtime_asset.clone(),
+            position.side.clone(),
+            position.entry_price,
+            position.quantity,
+            position.entry_time,
+            position.stop_loss,
+            position.take_profit,
+            position.entry_metadata.clone(),
+            move |_ctx, result| {
+                let _ = tx.send(result.map_err(|error| format!("{error:?}")));
+            },
+        )
+        .map_err(|e| DbError::ReducerSend(e.to_string()))?;
+
+    wait_for_paper_reducer("open_paper_position", rx)
+}
+
+/// Atomically record a completed Paper Trading position.
+///
+/// The reducer deduplicates existing completed trades and otherwise requires a
+/// matching open paper position to remove before inserting the trade.
+pub fn record_paper_position_closed(
+    conn: &DbConnection,
+    open_projection_key: &str,
+    trade: &PaperTrade,
+) -> Result<(), DbError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    conn.reducers
+        .record_paper_position_closed_then(
+            open_projection_key.to_string(),
+            trade.projection_key.clone(),
+            trade.strategy_identity.clone(),
+            trade.runtime_asset.clone(),
+            trade.side.clone(),
+            trade.entry_price,
+            trade.exit_price,
+            trade.quantity,
+            trade.realized_pnl,
+            trade.entry_time,
+            trade.exit_time,
+            trade.stop_loss,
+            trade.take_profit,
+            trade.exit_kind,
+            trade.entry_metadata.clone(),
+            trade.exit_metadata.clone(),
+            move |_ctx, result| {
+                let _ = tx.send(result.map_err(|error| format!("{error:?}")));
+            },
+        )
+        .map_err(|e| DbError::ReducerSend(e.to_string()))?;
+
+    wait_for_paper_reducer("record_paper_position_closed", rx)
+}
+
+fn wait_for_paper_reducer(
+    reducer_name: &str,
+    rx: std::sync::mpsc::Receiver<Result<Result<(), String>, String>>,
+) -> Result<(), DbError> {
+    match rx.recv_timeout(PAPER_REDUCER_TIMEOUT) {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(message))) => Err(DbError::PaperPersistenceInconsistency(message)),
+        Ok(Err(message)) => Err(DbError::ReducerSend(format!(
+            "{reducer_name} reducer callback failed: {message}"
+        ))),
+        Err(error) => Err(DbError::ReducerSend(format!(
+            "{reducer_name} reducer did not confirm within {:?}: {error}",
+            PAPER_REDUCER_TIMEOUT
+        ))),
+    }
+}
+
+/// Fetch the open Paper Trading position for a Strategy Identity × Runtime Asset.
+pub fn get_paper_open_position(
+    conn: &DbConnection,
+    strategy_identity: &str,
+    runtime_asset: &str,
+) -> Option<PaperOpenPosition> {
+    conn.db.paper_open_positions().iter().find(|position| {
+        position.strategy_identity == strategy_identity && position.runtime_asset == runtime_asset
+    })
+}
+
+/// Fetch completed Paper Trading positions for a Strategy Identity × Runtime Asset.
+pub fn get_paper_trades(
+    conn: &DbConnection,
+    strategy_identity: &str,
+    runtime_asset: &str,
+) -> Vec<PaperTrade> {
+    let mut trades: Vec<PaperTrade> = conn
+        .db
+        .paper_trades()
+        .iter()
+        .filter(|trade| {
+            trade.strategy_identity == strategy_identity && trade.runtime_asset == runtime_asset
+        })
+        .collect();
+
+    trades.sort_by_key(|trade| trade.exit_time);
+    trades
 }
 
 // ── Trade queries ─────────────────────────────────────────────────────────────
@@ -265,7 +391,6 @@ pub fn get_trades(conn: &DbConnection, strategy: &str, limit: u32) -> Vec<LiveTr
         .live_trades()
         .iter()
         .filter(|t| t.strategy == strategy)
-        .map(|t| t.clone())
         .collect();
 
     trades.sort_by(|a, b| b.exit_time.cmp(&a.exit_time));
@@ -292,5 +417,16 @@ pub fn delete_candles_by_symbol(
 pub fn delete_trades_by_strategy(conn: &DbConnection, strategy: &str) -> Result<(), DbError> {
     conn.reducers
         .delete_trades_by_strategy(strategy.to_string())
+        .map_err(|e| DbError::ReducerSend(e.to_string()))
+}
+
+/// Delete all Paper Trading rows for a strategy identity via reducer.
+/// Used in integration test teardown.
+pub fn delete_paper_data_by_strategy_identity(
+    conn: &DbConnection,
+    strategy_identity: &str,
+) -> Result<(), DbError> {
+    conn.reducers
+        .delete_paper_data_by_strategy_identity(strategy_identity.to_string())
         .map_err(|e| DbError::ReducerSend(e.to_string()))
 }

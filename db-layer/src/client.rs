@@ -1,9 +1,9 @@
 /// SpacetimeDB SDK client wrapper.
 ///
 /// Connects to the `trading-bot` module via WebSocket using the official
-/// `spacetimedb-sdk`.  On connect, immediately subscribes to all three tables
-/// (`candles`, `live_positions`, `live_trades`) and blocks until the local
-/// cache is populated (`on_applied`).
+/// `spacetimedb-sdk`. On connect, immediately subscribes to all public tables
+/// used by the adapter and blocks until the local cache is populated
+/// (`on_applied`).
 ///
 /// After `SpacetimeClient::connect()` returns, the cache is guaranteed to be
 /// warm — all existing rows are available via `conn.db.candles().iter()` etc.
@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use crate::module_bindings::{
     candlesQueryTableAccess, live_positionsQueryTableAccess, live_tradesQueryTableAccess,
-    DbConnection, ErrorContext,
+    paper_open_positionsQueryTableAccess, paper_tradesQueryTableAccess, DbConnection, ErrorContext,
 };
 
 /// A connected SpacetimeDB client with a warm local cache.
@@ -63,6 +63,8 @@ impl SpacetimeClient {
                     .add_query(|q| q.from.candles())
                     .add_query(|q| q.from.live_positions())
                     .add_query(|q| q.from.live_trades())
+                    .add_query(|q| q.from.paper_open_positions())
+                    .add_query(|q| q.from.paper_trades())
                     .subscribe();
             })
             .on_connect_error(|_ctx: &ErrorContext, err| {

@@ -10,6 +10,7 @@ pub mod candle_type;
 pub mod candles_table;
 pub mod close_position_reducer;
 pub mod delete_candles_by_symbol_reducer;
+pub mod delete_paper_data_by_strategy_identity_reducer;
 pub mod delete_trades_by_strategy_reducer;
 pub mod insert_candle_reducer;
 pub mod insert_trade_reducer;
@@ -17,12 +18,20 @@ pub mod live_position_type;
 pub mod live_positions_table;
 pub mod live_trade_type;
 pub mod live_trades_table;
+pub mod open_paper_position_reducer;
 pub mod open_position_reducer;
+pub mod paper_exit_kind_type;
+pub mod paper_open_position_type;
+pub mod paper_open_positions_table;
+pub mod paper_trade_type;
+pub mod paper_trades_table;
+pub mod record_paper_position_closed_reducer;
 
 pub use candle_type::Candle;
 pub use candles_table::*;
 pub use close_position_reducer::close_position;
 pub use delete_candles_by_symbol_reducer::delete_candles_by_symbol;
+pub use delete_paper_data_by_strategy_identity_reducer::delete_paper_data_by_strategy_identity;
 pub use delete_trades_by_strategy_reducer::delete_trades_by_strategy;
 pub use insert_candle_reducer::insert_candle;
 pub use insert_trade_reducer::insert_trade;
@@ -30,7 +39,14 @@ pub use live_position_type::LivePosition;
 pub use live_positions_table::*;
 pub use live_trade_type::LiveTrade;
 pub use live_trades_table::*;
+pub use open_paper_position_reducer::open_paper_position;
 pub use open_position_reducer::open_position;
+pub use paper_exit_kind_type::PaperExitKind;
+pub use paper_open_position_type::PaperOpenPosition;
+pub use paper_open_positions_table::*;
+pub use paper_trade_type::PaperTrade;
+pub use paper_trades_table::*;
+pub use record_paper_position_closed_reducer::record_paper_position_closed;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -46,6 +62,9 @@ pub enum Reducer {
     DeleteCandlesBySymbol {
         symbol: String,
         provider: String,
+    },
+    DeletePaperDataByStrategyIdentity {
+        strategy_identity: String,
     },
     DeleteTradesByStrategy {
         strategy: String,
@@ -76,6 +95,18 @@ pub enum Reducer {
         entry_reason: String,
         exit_reason: String,
     },
+    OpenPaperPosition {
+        projection_key: String,
+        strategy_identity: String,
+        runtime_asset: String,
+        side: String,
+        entry_price: f64,
+        quantity: f64,
+        entry_time: i64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+        entry_metadata: Option<String>,
+    },
     OpenPosition {
         strategy: String,
         symbol: String,
@@ -86,6 +117,24 @@ pub enum Reducer {
         take_profit: f64,
         entry_time: i64,
         entry_reason: String,
+    },
+    RecordPaperPositionClosed {
+        open_projection_key: String,
+        trade_projection_key: String,
+        strategy_identity: String,
+        runtime_asset: String,
+        side: String,
+        entry_price: f64,
+        exit_price: f64,
+        quantity: f64,
+        realized_pnl: f64,
+        entry_time: i64,
+        exit_time: i64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+        exit_kind: PaperExitKind,
+        entry_metadata: Option<String>,
+        exit_metadata: Option<String>,
     },
 }
 
@@ -98,33 +147,44 @@ impl __sdk::Reducer for Reducer {
         match self {
             Reducer::ClosePosition { .. } => "close_position",
             Reducer::DeleteCandlesBySymbol { .. } => "delete_candles_by_symbol",
+            Reducer::DeletePaperDataByStrategyIdentity { .. } => {
+                "delete_paper_data_by_strategy_identity"
+            }
             Reducer::DeleteTradesByStrategy { .. } => "delete_trades_by_strategy",
             Reducer::InsertCandle { .. } => "insert_candle",
             Reducer::InsertTrade { .. } => "insert_trade",
+            Reducer::OpenPaperPosition { .. } => "open_paper_position",
             Reducer::OpenPosition { .. } => "open_position",
+            Reducer::RecordPaperPositionClosed { .. } => "record_paper_position_closed",
             _ => unreachable!(),
         }
     }
     #[allow(clippy::clone_on_copy)]
     fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
         match self {
-            Reducer::ClosePosition { position_id } => {
-                __sats::bsatn::to_vec(&close_position_reducer::ClosePositionArgs {
-                    position_id: position_id.clone(),
-                })
-            }
-            Reducer::DeleteCandlesBySymbol { symbol, provider } => __sats::bsatn::to_vec(
-                &delete_candles_by_symbol_reducer::DeleteCandlesBySymbolArgs {
-                    symbol: symbol.clone(),
-                    provider: provider.clone(),
-                },
-            ),
-            Reducer::DeleteTradesByStrategy { strategy } => __sats::bsatn::to_vec(
-                &delete_trades_by_strategy_reducer::DeleteTradesByStrategyArgs {
-                    strategy: strategy.clone(),
-                },
-            ),
-            Reducer::InsertCandle {
+                        Reducer::ClosePosition{
+                position_id,
+}             => __sats::bsatn::to_vec(&close_position_reducer::ClosePositionArgs {
+                position_id: position_id.clone(),
+}),
+            Reducer::DeleteCandlesBySymbol{
+                symbol,
+                provider,
+}             => __sats::bsatn::to_vec(&delete_candles_by_symbol_reducer::DeleteCandlesBySymbolArgs {
+                symbol: symbol.clone(),
+                provider: provider.clone(),
+}),
+            Reducer::DeletePaperDataByStrategyIdentity{
+                strategy_identity,
+}             => __sats::bsatn::to_vec(&delete_paper_data_by_strategy_identity_reducer::DeletePaperDataByStrategyIdentityArgs {
+                strategy_identity: strategy_identity.clone(),
+}),
+            Reducer::DeleteTradesByStrategy{
+                strategy,
+}             => __sats::bsatn::to_vec(&delete_trades_by_strategy_reducer::DeleteTradesByStrategyArgs {
+                strategy: strategy.clone(),
+}),
+            Reducer::InsertCandle{
                 canonical_id,
                 timestamp,
                 symbol,
@@ -135,7 +195,7 @@ impl __sdk::Reducer for Reducer {
                 volume,
                 timeframe,
                 provider,
-            } => __sats::bsatn::to_vec(&insert_candle_reducer::InsertCandleArgs {
+}             => __sats::bsatn::to_vec(&insert_candle_reducer::InsertCandleArgs {
                 canonical_id: canonical_id.clone(),
                 timestamp: timestamp.clone(),
                 symbol: symbol.clone(),
@@ -146,8 +206,8 @@ impl __sdk::Reducer for Reducer {
                 volume: volume.clone(),
                 timeframe: timeframe.clone(),
                 provider: provider.clone(),
-            }),
-            Reducer::InsertTrade {
+}),
+            Reducer::InsertTrade{
                 strategy,
                 symbol,
                 side,
@@ -160,7 +220,7 @@ impl __sdk::Reducer for Reducer {
                 exit_time,
                 entry_reason,
                 exit_reason,
-            } => __sats::bsatn::to_vec(&insert_trade_reducer::InsertTradeArgs {
+}             => __sats::bsatn::to_vec(&insert_trade_reducer::InsertTradeArgs {
                 strategy: strategy.clone(),
                 symbol: symbol.clone(),
                 side: side.clone(),
@@ -173,8 +233,31 @@ impl __sdk::Reducer for Reducer {
                 exit_time: exit_time.clone(),
                 entry_reason: entry_reason.clone(),
                 exit_reason: exit_reason.clone(),
-            }),
-            Reducer::OpenPosition {
+}),
+            Reducer::OpenPaperPosition{
+                projection_key,
+                strategy_identity,
+                runtime_asset,
+                side,
+                entry_price,
+                quantity,
+                entry_time,
+                stop_loss,
+                take_profit,
+                entry_metadata,
+}             => __sats::bsatn::to_vec(&open_paper_position_reducer::OpenPaperPositionArgs {
+                projection_key: projection_key.clone(),
+                strategy_identity: strategy_identity.clone(),
+                runtime_asset: runtime_asset.clone(),
+                side: side.clone(),
+                entry_price: entry_price.clone(),
+                quantity: quantity.clone(),
+                entry_time: entry_time.clone(),
+                stop_loss: stop_loss.clone(),
+                take_profit: take_profit.clone(),
+                entry_metadata: entry_metadata.clone(),
+}),
+            Reducer::OpenPosition{
                 strategy,
                 symbol,
                 side,
@@ -184,7 +267,7 @@ impl __sdk::Reducer for Reducer {
                 take_profit,
                 entry_time,
                 entry_reason,
-            } => __sats::bsatn::to_vec(&open_position_reducer::OpenPositionArgs {
+}             => __sats::bsatn::to_vec(&open_position_reducer::OpenPositionArgs {
                 strategy: strategy.clone(),
                 symbol: symbol.clone(),
                 side: side.clone(),
@@ -194,9 +277,44 @@ impl __sdk::Reducer for Reducer {
                 take_profit: take_profit.clone(),
                 entry_time: entry_time.clone(),
                 entry_reason: entry_reason.clone(),
-            }),
+}),
+            Reducer::RecordPaperPositionClosed{
+                open_projection_key,
+                trade_projection_key,
+                strategy_identity,
+                runtime_asset,
+                side,
+                entry_price,
+                exit_price,
+                quantity,
+                realized_pnl,
+                entry_time,
+                exit_time,
+                stop_loss,
+                take_profit,
+                exit_kind,
+                entry_metadata,
+                exit_metadata,
+}             => __sats::bsatn::to_vec(&record_paper_position_closed_reducer::RecordPaperPositionClosedArgs {
+                open_projection_key: open_projection_key.clone(),
+                trade_projection_key: trade_projection_key.clone(),
+                strategy_identity: strategy_identity.clone(),
+                runtime_asset: runtime_asset.clone(),
+                side: side.clone(),
+                entry_price: entry_price.clone(),
+                exit_price: exit_price.clone(),
+                quantity: quantity.clone(),
+                realized_pnl: realized_pnl.clone(),
+                entry_time: entry_time.clone(),
+                exit_time: exit_time.clone(),
+                stop_loss: stop_loss.clone(),
+                take_profit: take_profit.clone(),
+                exit_kind: exit_kind.clone(),
+                entry_metadata: entry_metadata.clone(),
+                exit_metadata: exit_metadata.clone(),
+}),
             _ => unreachable!(),
-        }
+}
     }
 }
 
@@ -207,6 +325,8 @@ pub struct DbUpdate {
     candles: __sdk::TableUpdate<Candle>,
     live_positions: __sdk::TableUpdate<LivePosition>,
     live_trades: __sdk::TableUpdate<LiveTrade>,
+    paper_open_positions: __sdk::TableUpdate<PaperOpenPosition>,
+    paper_trades: __sdk::TableUpdate<PaperTrade>,
 }
 
 impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
@@ -224,6 +344,12 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "live_trades" => db_update
                     .live_trades
                     .append(live_trades_table::parse_table_update(table_update)?),
+                "paper_open_positions" => db_update.paper_open_positions.append(
+                    paper_open_positions_table::parse_table_update(table_update)?,
+                ),
+                "paper_trades" => db_update
+                    .paper_trades
+                    .append(paper_trades_table::parse_table_update(table_update)?),
 
                 unknown => {
                     return Err(__sdk::InternalError::unknown_name(
@@ -259,6 +385,15 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.live_trades = cache
             .apply_diff_to_table::<LiveTrade>("live_trades", &self.live_trades)
             .with_updates_by_pk(|row| &row.id);
+        diff.paper_open_positions = cache
+            .apply_diff_to_table::<PaperOpenPosition>(
+                "paper_open_positions",
+                &self.paper_open_positions,
+            )
+            .with_updates_by_pk(|row| &row.projection_key);
+        diff.paper_trades = cache
+            .apply_diff_to_table::<PaperTrade>("paper_trades", &self.paper_trades)
+            .with_updates_by_pk(|row| &row.projection_key);
 
         diff
     }
@@ -274,6 +409,12 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "live_trades" => db_update
                     .live_trades
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "paper_open_positions" => db_update
+                    .paper_open_positions
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "paper_trades" => db_update
+                    .paper_trades
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => {
                     return Err(
@@ -297,6 +438,12 @@ impl __sdk::DbUpdate for DbUpdate {
                 "live_trades" => db_update
                     .live_trades
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "paper_open_positions" => db_update
+                    .paper_open_positions
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "paper_trades" => db_update
+                    .paper_trades
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => {
                     return Err(
                         __sdk::InternalError::unknown_name("table", unknown, "QueryRows").into(),
@@ -315,6 +462,8 @@ pub struct AppliedDiff<'r> {
     candles: __sdk::TableAppliedDiff<'r, Candle>,
     live_positions: __sdk::TableAppliedDiff<'r, LivePosition>,
     live_trades: __sdk::TableAppliedDiff<'r, LiveTrade>,
+    paper_open_positions: __sdk::TableAppliedDiff<'r, PaperOpenPosition>,
+    paper_trades: __sdk::TableAppliedDiff<'r, PaperTrade>,
     __unused: std::marker::PhantomData<&'r ()>,
 }
 
@@ -335,6 +484,16 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
             event,
         );
         callbacks.invoke_table_row_callbacks::<LiveTrade>("live_trades", &self.live_trades, event);
+        callbacks.invoke_table_row_callbacks::<PaperOpenPosition>(
+            "paper_open_positions",
+            &self.paper_open_positions,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<PaperTrade>(
+            "paper_trades",
+            &self.paper_trades,
+            event,
+        );
     }
 }
 
@@ -998,6 +1157,14 @@ impl __sdk::SpacetimeModule for RemoteModule {
         candles_table::register_table(client_cache);
         live_positions_table::register_table(client_cache);
         live_trades_table::register_table(client_cache);
+        paper_open_positions_table::register_table(client_cache);
+        paper_trades_table::register_table(client_cache);
     }
-    const ALL_TABLE_NAMES: &'static [&'static str] = &["candles", "live_positions", "live_trades"];
+    const ALL_TABLE_NAMES: &'static [&'static str] = &[
+        "candles",
+        "live_positions",
+        "live_trades",
+        "paper_open_positions",
+        "paper_trades",
+    ];
 }

@@ -8,6 +8,9 @@ pub enum DbError {
     #[error("Failed to send reducer request: {0}")]
     ReducerSend(String),
 
+    #[error("{0}")]
+    PaperPersistenceInconsistency(String),
+
     #[error("Not connected or subscription not yet applied")]
     NotReady,
 }

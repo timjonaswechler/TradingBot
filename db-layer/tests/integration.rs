@@ -10,9 +10,11 @@
 /// SPACETIMEDB_INTEGRATION=1 cargo test -p db-layer --test integration -- --nocapture
 /// ```
 use db_layer::{
-    close_position, count_candles, delete_candles_by_symbol, delete_trades_by_strategy,
-    get_candles, get_candles_before, get_open_position, get_trades, insert_candle, insert_trade,
-    open_position, SpacetimeClient,
+    close_position, count_candles, delete_candles_by_symbol,
+    delete_paper_data_by_strategy_identity, delete_trades_by_strategy, get_candles,
+    get_candles_before, get_open_position, get_paper_open_position, get_paper_trades, get_trades,
+    insert_candle, insert_trade, open_paper_position, open_position, record_paper_position_closed,
+    PaperExitKind, PaperOpenPosition, PaperTrade, SpacetimeClient,
 };
 use domain::{Candle, Timeframe};
 
@@ -156,6 +158,123 @@ fn test_position_lifecycle() {
         get_open_position(conn, STRAT, symbol).is_none(),
         "position should be gone after close"
     );
+}
+
+// ── Paper Trading persistence tests ──────────────────────────────────────────
+
+fn paper_open_position(projection_key: &str) -> PaperOpenPosition {
+    PaperOpenPosition {
+        projection_key: projection_key.into(),
+        strategy_identity: STRAT.into(),
+        runtime_asset: "__TEST_PAPER_ASSET__".into(),
+        side: "long".into(),
+        entry_price: 100.0,
+        quantity: 2.0,
+        entry_time: 1_700_000_000_000,
+        stop_loss: Some(95.0),
+        take_profit: None,
+        entry_metadata: Some("paper entry".into()),
+    }
+}
+
+fn paper_trade(projection_key: &str) -> PaperTrade {
+    PaperTrade {
+        projection_key: projection_key.into(),
+        strategy_identity: STRAT.into(),
+        runtime_asset: "__TEST_PAPER_ASSET__".into(),
+        side: "long".into(),
+        entry_price: 100.0,
+        exit_price: 110.0,
+        quantity: 2.0,
+        realized_pnl: 20.0,
+        entry_time: 1_700_000_000_000,
+        exit_time: 1_700_086_400_000,
+        stop_loss: Some(95.0),
+        take_profit: None,
+        exit_kind: PaperExitKind::StrategyExit,
+        entry_metadata: Some("paper entry".into()),
+        exit_metadata: Some("paper exit".into()),
+    }
+}
+
+#[test]
+fn test_paper_position_open_is_idempotent_and_rejects_conflict() {
+    if !integration_enabled() {
+        return;
+    }
+
+    let client = connect();
+    let conn = &*client.conn;
+    let position = paper_open_position("paper-open-idempotent");
+
+    delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    open_paper_position(conn, &position).unwrap();
+    open_paper_position(conn, &position).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let restored = get_paper_open_position(conn, STRAT, &position.runtime_asset)
+        .expect("paper open position should exist");
+    assert_eq!(restored.projection_key, position.projection_key);
+    assert_eq!(restored.stop_loss, Some(95.0));
+    assert_eq!(restored.take_profit, None);
+
+    let mut conflicting_same_key = position.clone();
+    conflicting_same_key.quantity = 3.0;
+    let error = open_paper_position(conn, &conflicting_same_key)
+        .expect_err("same projection key with different data should be inconsistent");
+    assert!(error
+        .to_string()
+        .contains("paper persistence inconsistency"));
+
+    let mut conflicting_open = position.clone();
+    conflicting_open.projection_key = "paper-open-conflicting".into();
+    let error = open_paper_position(conn, &conflicting_open)
+        .expect_err("different open position for same strategy/runtime asset should conflict");
+    assert!(error.to_string().contains("already exists"));
+
+    delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+}
+
+#[test]
+fn test_paper_close_is_atomic_idempotent_and_requires_matching_open() {
+    if !integration_enabled() {
+        return;
+    }
+
+    let client = connect();
+    let conn = &*client.conn;
+    let position = paper_open_position("paper-open-close");
+    let trade = paper_trade("paper-trade-close");
+
+    delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let missing_error = record_paper_position_closed(conn, &position.projection_key, &trade)
+        .expect_err("closing without matching open or existing trade should be inconsistent");
+    assert!(missing_error
+        .to_string()
+        .contains("no matching open paper position"));
+
+    open_paper_position(conn, &position).unwrap();
+    record_paper_position_closed(conn, &position.projection_key, &trade).unwrap();
+    record_paper_position_closed(conn, &position.projection_key, &trade).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    assert!(
+        get_paper_open_position(conn, STRAT, &position.runtime_asset).is_none(),
+        "close should remove matching open paper position"
+    );
+    let trades = get_paper_trades(conn, STRAT, &position.runtime_asset);
+    assert_eq!(trades.len(), 1);
+    assert_eq!(trades[0].projection_key, trade.projection_key);
+    assert_eq!(trades[0].exit_kind, PaperExitKind::StrategyExit);
+    assert_eq!(trades[0].take_profit, None);
+
+    delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
 // ── Trade tests ───────────────────────────────────────────────────────────────

@@ -1,8 +1,9 @@
 /// Conversion helpers between generated `module_bindings` types and `domain::` types.
 ///
-/// The generated `module_bindings::Candle`, `LivePosition`, `LiveTrade` structs
-/// are the canonical DB types.  `domain::Candle` / `domain::OpenPosition` are the
-/// lightweight in-memory values used by runners/adapters.
+/// The generated `module_bindings::Candle`, `LivePosition`, `LiveTrade`,
+/// `PaperOpenPosition`, and `PaperTrade` structs are the canonical DB types.
+/// `domain::Candle` / `domain::OpenPosition` are the lightweight in-memory
+/// values used by runners/adapters.
 use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
 
 use crate::module_bindings::{Candle as DbCandle, LivePosition};
@@ -74,5 +75,7 @@ pub fn db_position_to_shared(p: LivePosition) -> (u64, String, OpenPosition) {
     (p.id, p.strategy, pos)
 }
 
-// ── LiveTrade (re-exported for convenience) ────────────────────────────────────
-pub use crate::module_bindings::LiveTrade as DbTrade;
+// ── Generated DB records (re-exported for convenience) ────────────────────────
+pub use crate::module_bindings::{
+    LiveTrade as DbTrade, PaperExitKind, PaperOpenPosition, PaperTrade,
+};
