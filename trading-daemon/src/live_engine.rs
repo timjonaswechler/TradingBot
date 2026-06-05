@@ -529,7 +529,7 @@ mod tests {
             paper_trade_from_runtime, PaperTradingPersistenceError,
         },
     };
-    use db_layer::{PaperOpenPosition, PaperTrade};
+    use db_layer::{PaperExitKind, PaperOpenPosition, PaperTrade};
     use domain::{ClosedPosition, EntryRiskParameters, OpenPosition, PositionSide};
     use trading_runtime::{ExitKind, RuntimeEvent, StrategyDecisionIntent};
 
@@ -752,6 +752,48 @@ fn on_tick(market, context) {
 "#
     }
 
+    fn open_hold_close_long_strategy() -> &'static str {
+        r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn on_tick(market, context) {
+    let seen = context.state.int("seen", 0);
+    context.state.set_int("seen", seen + 1);
+
+    if seen == 0 {
+        decision::open_long(2.0).with_reason("entry")
+    } else if seen == 1 {
+        decision::hold().with_reason("hold")
+    } else {
+        decision::close_long().with_reason("exit")
+    }
+}
+"#
+    }
+
+    fn open_short_ignore_long_close_then_close_short_strategy() -> &'static str {
+        r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn on_tick(market, context) {
+    let seen = context.state.int("seen", 0);
+    context.state.set_int("seen", seen + 1);
+
+    if seen == 0 {
+        decision::open_short(2.0).with_reason("short entry")
+    } else if seen == 1 {
+        decision::close_long().with_reason("wrong side")
+    } else {
+        decision::close_short().with_reason("cover")
+    }
+}
+"#
+    }
+
     fn trigger() -> ProtectiveShutdownTrigger {
         ProtectiveShutdownTrigger {
             runtime_asset: RUNTIME_ASSET.into(),
@@ -921,6 +963,113 @@ fn on_tick(market, context) {
             .on_completed_candle(candle("1m", 120_000, 101.0))
             .expect("next candle is accepted only after prior projection returned");
         assert!(store.open_position.borrow().is_some());
+    }
+
+    #[test]
+    fn paper_live_session_projects_strategy_open_hold_close_cycle() {
+        let store = FakePaperStore::default();
+        let mut session = PaperLiveRuntimeSession::from_strategy_source(
+            asset(),
+            open_hold_close_long_strategy(),
+            &store,
+        )
+        .expect("paper live session should build");
+
+        let open_step = session
+            .on_completed_candle(candle("1m", 60_000, 100.0))
+            .expect("entry should be projected");
+        assert!(open_step
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::PositionOpened { .. })));
+        assert!(store.open_position.borrow().is_some());
+        assert!(store.trades.borrow().is_empty());
+
+        let hold_step = session
+            .on_completed_candle(candle("1m", 120_000, 105.0))
+            .expect("hold should not create a persistence transition");
+        assert!(hold_step.events.iter().all(|event| !matches!(
+            event,
+            RuntimeEvent::PositionOpened { .. } | RuntimeEvent::PositionClosed { .. }
+        )));
+        assert!(store.open_position.borrow().is_some());
+        assert!(store.trades.borrow().is_empty());
+        assert!(matches!(
+            store.writes.borrow().as_slice(),
+            [PaperWrite::Open { .. }]
+        ));
+
+        let close_step = session
+            .on_completed_candle(candle("1m", 180_000, 110.0))
+            .expect("strategy exit should be projected");
+        assert!(close_step.events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::PositionClosed {
+                exit_kind: ExitKind::StrategyExit,
+                ..
+            }
+        )));
+        assert!(store.open_position.borrow().is_none());
+        let trades = store.trades.borrow();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].side, "long");
+        assert_eq!(trades[0].exit_kind, PaperExitKind::StrategyExit);
+        assert_eq!(trades[0].entry_price, 100.0);
+        assert_eq!(trades[0].exit_price, 110.0);
+        assert_eq!(trades[0].quantity, 2.0);
+        assert_eq!(trades[0].realized_pnl, 20.0);
+        assert!(matches!(
+            store.writes.borrow().as_slice(),
+            [PaperWrite::Open { .. }, PaperWrite::Close { .. }]
+        ));
+    }
+
+    #[test]
+    fn paper_live_session_projects_short_cover_and_ignores_wrong_side_close() {
+        let store = FakePaperStore::default();
+        let mut session = PaperLiveRuntimeSession::from_strategy_source(
+            asset(),
+            open_short_ignore_long_close_then_close_short_strategy(),
+            &store,
+        )
+        .expect("paper live session should build");
+
+        session
+            .on_completed_candle(candle("1m", 60_000, 200.0))
+            .expect("short entry should be projected");
+        let ignored_step = session
+            .on_completed_candle(candle("1m", 120_000, 190.0))
+            .expect("wrong-side close should be ignored by runtime planning");
+        assert!(ignored_step
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::StrategyDecisionIgnored { .. })));
+        assert!(store.open_position.borrow().is_some());
+        assert!(store.trades.borrow().is_empty());
+
+        let close_step = session
+            .on_completed_candle(candle("1m", 180_000, 180.0))
+            .expect("short cover should be projected");
+        assert!(close_step.events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::PositionClosed {
+                exit_kind: ExitKind::StrategyExit,
+                ..
+            }
+        )));
+        assert!(store.open_position.borrow().is_none());
+        let trades = store.trades.borrow();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].side, "short");
+        assert_eq!(trades[0].exit_kind, PaperExitKind::StrategyExit);
+        assert_eq!(trades[0].entry_price, 200.0);
+        assert_eq!(trades[0].exit_price, 180.0);
+        assert_eq!(trades[0].quantity, 2.0);
+        assert_eq!(trades[0].realized_pnl, 40.0);
+        assert!(matches!(
+            store.writes.borrow().as_slice(),
+            [PaperWrite::Open { .. }, PaperWrite::Close { .. }]
+        ));
     }
 
     #[test]

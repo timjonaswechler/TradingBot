@@ -19,5 +19,5 @@ The Trading Runtime itself must not know whether a runner is backtest, paper, or
 
 - `trading-runtime` remains DB-free and mode-free.
 - Paper Trading can safely restore runtime-local Portfolio State from paper persistence records.
-- Existing `live_positions` / `live_trades` stay transitional legacy storage for old PaperExecutor paths until replacement/deletion criteria are met.
+- Existing `live_positions` / `live_trades` stay transitional legacy storage. #118 removed the old PaperExecutor code path after the runtime-backed Paper Trading replacement and tests were in place.
 - Real-Money Live account reconciliation remains owned by #39 / later broker-execution decisions, not by #37 Paper Trading persistence.

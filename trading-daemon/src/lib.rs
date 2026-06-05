@@ -6,7 +6,6 @@
 pub mod cli;
 pub mod config;
 pub mod live_engine;
-pub mod order_executor;
 pub mod paper_trading_persistence;
 pub mod protective_shutdown;
 pub mod seed;

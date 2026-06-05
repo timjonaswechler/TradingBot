@@ -45,7 +45,10 @@ pub struct Candle {
     pub provider: String,
 }
 
-/// An open (paper or live) trading position managed by the daemon.
+/// A transitional legacy open-position row.
+///
+/// Runtime-backed Paper Trading uses `paper_open_positions`; this table remains
+/// only for legacy storage/admin compatibility while old data paths are retired.
 #[table(accessor = live_positions, public)]
 #[derive(Clone)]
 pub struct LivePosition {
@@ -65,7 +68,10 @@ pub struct LivePosition {
     pub entry_reason: String,
 }
 
-/// A completed (closed) trade recorded by the daemon.
+/// A transitional legacy completed-trade row.
+///
+/// Runtime-backed Paper Trading uses `paper_trades`; this table remains only
+/// for legacy storage/admin compatibility while old data paths are retired.
 #[table(accessor = live_trades, public)]
 #[derive(Clone)]
 pub struct LiveTrade {
@@ -188,7 +194,7 @@ pub fn insert_candle(
     });
 }
 
-/// Open a new position.
+/// Open a transitional legacy `live_positions` row.
 #[reducer]
 pub fn open_position(
     ctx: &ReducerContext,
@@ -216,7 +222,7 @@ pub fn open_position(
     });
 }
 
-/// Close (delete) an open position by its surrogate `id`.
+/// Close (delete) a transitional legacy `live_positions` row by surrogate `id`.
 #[reducer]
 pub fn close_position(ctx: &ReducerContext, position_id: u64) {
     ctx.db.live_positions().id().delete(&position_id);
@@ -252,7 +258,7 @@ pub fn delete_trades_by_strategy(ctx: &ReducerContext, strategy: String) {
     }
 }
 
-/// Record a completed trade.
+/// Record a transitional legacy `live_trades` row.
 #[reducer]
 pub fn insert_trade(
     ctx: &ReducerContext,

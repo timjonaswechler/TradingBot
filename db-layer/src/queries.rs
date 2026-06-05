@@ -172,9 +172,13 @@ pub fn get_latest_candle_timestamp(
         .max()
 }
 
-// ── Position queries ──────────────────────────────────────────────────────────
+// ── Transitional legacy live position queries ────────────────────────────────
+//
+// These helpers operate on the old `live_positions` table. They are retained
+// for legacy storage/admin coverage only and are not the target Paper Trading
+// persistence path; runtime-backed Paper Trading uses the paper_* helpers below.
 
-/// Open a new position in `live_positions`.
+/// Open a new transitional legacy position in `live_positions`.
 #[allow(clippy::too_many_arguments)]
 pub fn open_position(
     conn: &DbConnection,
@@ -338,9 +342,13 @@ pub fn get_paper_trades(
     trades
 }
 
-// ── Trade queries ─────────────────────────────────────────────────────────────
+// ── Transitional legacy live trade queries ───────────────────────────────────
+//
+// These helpers operate on the old `live_trades` table. They are retained for
+// legacy storage/admin coverage only and are not the target Paper Trading
+// persistence path.
 
-/// Record a completed trade in `live_trades`.
+/// Record a completed transitional legacy trade in `live_trades`.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_trade(
     conn: &DbConnection,

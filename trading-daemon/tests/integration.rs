@@ -1,12 +1,10 @@
-//! End-to-end integration test for the trading daemon's paper executor.
+//! End-to-end integration tests for runtime-backed Paper Trading persistence.
 //!
-//! Drives a `PaperExecutor` against a real SpacetimeDB instance through a
-//! BUY → (hold) → SELL sequence, then asserts:
-//!
-//! 1. After BUY: a `live_positions` row is visible and the executor captured
-//!    its `id` (proves §1.2 `wait_for_open_position` works, no orphan row).
-//! 2. After SELL: a `live_trades` row exists with the expected PnL and the
-//!    `live_positions` row is gone (proves §1.2 close path + §1.3 balance update).
+//! These tests drive `trading-runtime` with deterministic Strategy Decisions and
+//! project the resulting RuntimeSteps through the daemon Paper Trading
+//! Persistence Adapter into the dedicated `paper_open_positions` and
+//! `paper_trades` tables. They intentionally avoid the retired legacy
+//! `PaperExecutor` / `live_positions` / `live_trades` path.
 //!
 //! Requires a running SpacetimeDB with the `trading-bot` module deployed.
 //! Skipped automatically unless `SPACETIMEDB_INTEGRATION=1`.
@@ -18,368 +16,257 @@
 use std::sync::Arc;
 
 use db_layer::{
-    count_trades, delete_trades_by_strategy, get_open_position, get_trades, SpacetimeClient,
+    delete_paper_data_by_strategy_identity, get_paper_open_position, get_paper_trades,
+    DbConnection, PaperExitKind, SpacetimeClient,
 };
-use domain::{Candle, Signal, TradeDecision};
-use trading_daemon::order_executor::{OrderExecutor, PaperExecutor};
+use domain::{Candle, Timeframe};
+use trading_daemon::paper_trading_persistence::PaperTradingPersistenceAdapter;
+use trading_runtime::{
+    MarketInput, PortfolioState, PredeterminedStrategyHandler, RuntimeConfig, RuntimeEvent,
+    RuntimeStep, StrategyDecision, TradingRuntime,
+};
 
 fn integration_enabled() -> bool {
     std::env::var("SPACETIMEDB_INTEGRATION").as_deref() == Ok("1")
 }
 
-const STRAT: &str = "__daemon_it_strat__";
-const SYMBOL: &str = "__DAEMON_IT__";
+fn connect() -> SpacetimeClient {
+    SpacetimeClient::connect("http://127.0.0.1:3000", "trading-bot")
+        .expect("Failed to connect to SpacetimeDB")
+}
+
+const RUNTIME_ASSET: &str = "__DAEMON_PAPER_RUNTIME_ASSET__";
+const TIMEFRAME: &str = "1d";
+const LONG_STRATEGY_IDENTITY: &str = "__daemon_paper_long_it__";
+const FORCE_CLOSE_STRATEGY_IDENTITY: &str = "__daemon_paper_force_close_it__";
+const SHORT_STRATEGY_IDENTITY: &str = "__daemon_paper_short_it__";
 
 fn make_candle(ts: i64, close: f64) -> Candle {
     Candle {
         timestamp: ts,
-        symbol: SYMBOL.into(),
+        symbol: RUNTIME_ASSET.into(),
         open: close - 0.5,
         high: close + 1.0,
         low: close - 1.0,
         close,
         volume: 1000.0,
-        timeframe: "1d".parse().unwrap(),
+        timeframe: TIMEFRAME.parse::<Timeframe>().unwrap(),
     }
 }
 
-fn buy(reason: &str) -> TradeDecision {
-    TradeDecision {
-        signal: Signal::Buy,
-        size: 1.0,
-        stop_loss: None,
-        take_profit: None,
-        reason: Some(reason.into()),
-    }
+fn runtime(
+    balance: f64,
+    decisions: impl IntoIterator<Item = StrategyDecision>,
+) -> TradingRuntime<PredeterminedStrategyHandler> {
+    TradingRuntime::with_config(
+        RuntimeConfig::single_timeframe(RUNTIME_ASSET, TIMEFRAME.parse::<Timeframe>().unwrap()),
+        PortfolioState::new(balance),
+        0,
+        PredeterminedStrategyHandler::from_decisions(decisions),
+    )
 }
 
-fn sell(reason: &str) -> TradeDecision {
-    TradeDecision {
-        signal: Signal::Sell,
-        size: 0.0,
-        stop_loss: None,
-        take_profit: None,
-        reason: Some(reason.into()),
-    }
+fn adapter(
+    conn: Arc<DbConnection>,
+    strategy_identity: &str,
+) -> PaperTradingPersistenceAdapter<Arc<DbConnection>> {
+    PaperTradingPersistenceAdapter::new(conn, strategy_identity, RUNTIME_ASSET)
 }
 
-fn short(reason: &str) -> TradeDecision {
-    TradeDecision {
-        signal: Signal::Short,
-        size: 1.0,
-        stop_loss: None,
-        take_profit: None,
-        reason: Some(reason.into()),
-    }
+fn project_completed_candle(
+    runtime: &mut TradingRuntime<PredeterminedStrategyHandler>,
+    adapter: &PaperTradingPersistenceAdapter<Arc<DbConnection>>,
+    candle: Candle,
+) -> RuntimeStep {
+    let step = runtime
+        .on_market_input(MarketInput::CompletedCandle(candle))
+        .expect("runtime should accept configured completed candle");
+    adapter
+        .project_step(&step)
+        .expect("paper projection should be confirmed");
+    step
 }
 
-fn cover(reason: &str) -> TradeDecision {
-    TradeDecision {
-        signal: Signal::Cover,
-        size: 0.0,
-        stop_loss: None,
-        take_profit: None,
-        reason: Some(reason.into()),
-    }
-}
-
-fn hold() -> TradeDecision {
-    TradeDecision::hold()
-}
-
-/// Teardown: nuke any leftover state for our test strategy/symbol.
-fn teardown(conn: &db_layer::DbConnection) {
-    if let Some(p) = get_open_position(conn, STRAT, SYMBOL) {
-        let _ = db_layer::close_position(conn, p.id);
-    }
-    let _ = delete_trades_by_strategy(conn, STRAT);
+fn teardown(conn: &DbConnection, strategy_identity: &str) {
+    let _ = delete_paper_data_by_strategy_identity(conn, strategy_identity);
     std::thread::sleep(std::time::Duration::from_millis(200));
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn paper_executor_full_buy_sell_cycle() {
+#[test]
+fn runtime_backed_paper_trading_projects_open_hold_close_cycle() {
     if !integration_enabled() {
         eprintln!("skipping (set SPACETIMEDB_INTEGRATION=1)");
         return;
     }
 
-    let client = SpacetimeClient::connect("http://127.0.0.1:3000", "trading-bot")
-        .expect("Failed to connect to SpacetimeDB");
-    let conn: Arc<db_layer::DbConnection> = client.conn.clone();
-
-    // Clean slate.
-    teardown(&conn);
-    let trades_before = count_trades(&conn, STRAT, SYMBOL);
-
-    // ── Executor under test ───────────────────────────────────────────────────
-    let mut executor = PaperExecutor::new(
-        conn.clone(),
-        STRAT.to_string(),
-        SYMBOL.to_string(),
+    let client = connect();
+    let conn = client.conn.clone();
+    teardown(&conn, LONG_STRATEGY_IDENTITY);
+    let adapter = adapter(conn.clone(), LONG_STRATEGY_IDENTITY);
+    let mut runtime = runtime(
         10_000.0,
+        [
+            StrategyDecision::open_long(2.0).with_reason("open"),
+            StrategyDecision::hold().with_reason("hold"),
+            StrategyDecision::close_long().with_reason("close"),
+        ],
     );
 
-    assert!(
-        executor.position().is_none(),
-        "fresh executor should be flat"
+    let open_step = project_completed_candle(
+        &mut runtime,
+        &adapter,
+        make_candle(1_700_000_000_000, 100.0),
     );
-    let start_balance = executor.balance();
-
-    // ── Candle 1: BUY @ 100 ───────────────────────────────────────────────────
-    let c1 = make_candle(1_700_000_000_000, 100.0);
-    executor
-        .handle(&c1, &buy("open"))
-        .await
-        .expect("BUY failed");
-
-    // Position must be set locally.
-    let pos = executor.position().cloned().expect("position after BUY");
-    assert_eq!(pos.entry_price, 100.0);
-    assert!(pos.quantity > 0.0);
-
-    // §1.2 proof: live_positions row must be visible in cache.
-    let db_pos =
-        get_open_position(&conn, STRAT, SYMBOL).expect("live_positions row should exist after BUY");
-    assert_eq!(db_pos.side, "long");
-    assert!((db_pos.entry_price - 100.0).abs() < f64::EPSILON);
-
-    // ── Candle 2: HOLD @ 105 (no-op) ──────────────────────────────────────────
-    let c2 = make_candle(1_700_086_400_000, 105.0);
-    executor.handle(&c2, &hold()).await.expect("HOLD failed");
-    assert!(
-        executor.position().is_some(),
-        "position should survive HOLD"
-    );
-
-    // ── Candle 3: SELL @ 110 ──────────────────────────────────────────────────
-    let c3 = make_candle(1_700_172_800_000, 110.0);
-    executor
-        .handle(&c3, &sell("close"))
-        .await
-        .expect("SELL failed");
-
-    assert!(
-        executor.position().is_none(),
-        "position should be cleared after SELL"
-    );
-
-    // live_positions must be empty — proves §1.2 close path did its job.
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(
-        get_open_position(&conn, STRAT, SYMBOL).is_none(),
-        "live_positions row should be gone after SELL"
-    );
-
-    // live_trades must have +1 row with PnL = (110 - 100) * quantity.
-    let trades_after = count_trades(&conn, STRAT, SYMBOL);
-    assert_eq!(
-        trades_after,
-        trades_before + 1,
-        "expected exactly one new trade row"
-    );
-
-    let trades = get_trades(&conn, STRAT, 10);
-    let t = trades
+    assert!(open_step
+        .events
         .iter()
-        .find(|t| t.symbol == SYMBOL)
-        .expect("trade for test symbol");
-    let expected_pnl = (110.0 - 100.0) * pos.quantity;
-    assert!(
-        (t.pnl - expected_pnl).abs() < 1e-6,
-        "pnl mismatch: got {}, expected {expected_pnl}",
-        t.pnl,
-    );
-    assert_eq!(t.exit_price, 110.0);
-    assert_eq!(t.entry_price, 100.0);
-
-    // §1.3 proof: balance must reflect realized PnL.
-    let expected_balance = start_balance + expected_pnl;
-    assert!(
-        (executor.balance() - expected_balance).abs() < 1e-6,
-        "balance not updated: got {}, expected {expected_balance}",
-        executor.balance(),
-    );
-
-    teardown(&conn);
-}
-
-/// §3.8 proof: `PaperExecutor::liquidate` force-closes the open position at
-/// the supplied mark price and records a single `live_trades` row.
-#[tokio::test(flavor = "current_thread")]
-async fn shutdown_liquidation_closes_open_position() {
-    if !integration_enabled() {
-        return;
-    }
-
-    let client = SpacetimeClient::connect("http://127.0.0.1:3000", "trading-bot")
-        .expect("Failed to connect to SpacetimeDB");
-    let conn: Arc<db_layer::DbConnection> = client.conn.clone();
-
-    teardown(&conn);
-    let trades_before = count_trades(&conn, STRAT, SYMBOL);
-
-    let mut executor =
-        PaperExecutor::new(conn.clone(), STRAT.to_string(), SYMBOL.to_string(), 5_000.0);
-
-    // Open a position, then liquidate at a different price (simulating shutdown).
-    let entry = make_candle(1_700_000_000_000, 80.0);
-    executor
-        .handle(&entry, &buy("pre-shutdown"))
-        .await
-        .expect("BUY");
-    assert!(executor.position().is_some());
-
-    let mark = make_candle(1_700_086_400_000, 88.0);
-    executor
-        .liquidate(&mark, "shutdown liquidation")
-        .await
-        .expect("liquidate");
-
-    assert!(
-        executor.position().is_none(),
-        "position must be flat after liquidate"
-    );
-
+        .any(|event| matches!(event, RuntimeEvent::PositionOpened { .. })));
     std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(
-        get_open_position(&conn, STRAT, SYMBOL).is_none(),
-        "live_positions row must be gone after liquidation",
+
+    let open = get_paper_open_position(&conn, LONG_STRATEGY_IDENTITY, RUNTIME_ASSET)
+        .expect("paper_open_positions row should exist after runtime PositionOpened");
+    assert_eq!(open.side, "long");
+    assert_eq!(open.entry_price, 100.0);
+    assert_eq!(open.quantity, 2.0);
+    assert_eq!(open.stop_loss, None);
+    assert_eq!(open.take_profit, None);
+    assert!(get_paper_trades(&conn, LONG_STRATEGY_IDENTITY, RUNTIME_ASSET).is_empty());
+
+    let hold_step = project_completed_candle(
+        &mut runtime,
+        &adapter,
+        make_candle(1_700_086_400_000, 105.0),
     );
-    assert_eq!(
-        count_trades(&conn, STRAT, SYMBOL),
-        trades_before + 1,
-        "liquidation should record exactly one trade",
+    assert!(hold_step.events.iter().all(|event| !matches!(
+        event,
+        RuntimeEvent::PositionOpened { .. } | RuntimeEvent::PositionClosed { .. }
+    )));
+    assert!(get_paper_trades(&conn, LONG_STRATEGY_IDENTITY, RUNTIME_ASSET).is_empty());
+
+    let close_step = project_completed_candle(
+        &mut runtime,
+        &adapter,
+        make_candle(1_700_172_800_000, 110.0),
     );
-
-    // Idempotency: calling liquidate again on a flat executor is a no-op.
-    executor
-        .liquidate(&mark, "second call")
-        .await
-        .expect("noop liquidate");
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    assert_eq!(
-        count_trades(&conn, STRAT, SYMBOL),
-        trades_before + 1,
-        "second liquidate must not insert another trade",
-    );
-
-    teardown(&conn);
-}
-
-/// §3.5 proof: SHORT opens a short position, COVER closes it, PnL is
-/// `(entry - exit) * quantity` (price drop → profit).
-#[tokio::test(flavor = "current_thread")]
-async fn short_cover_cycle_profits_on_price_drop() {
-    if !integration_enabled() {
-        return;
-    }
-
-    let client = SpacetimeClient::connect("http://127.0.0.1:3000", "trading-bot")
-        .expect("Failed to connect to SpacetimeDB");
-    let conn: Arc<db_layer::DbConnection> = client.conn.clone();
-
-    teardown(&conn);
-    let trades_before = count_trades(&conn, STRAT, SYMBOL);
-    let start_balance = 4_000.0;
-
-    let mut executor = PaperExecutor::new(
-        conn.clone(),
-        STRAT.to_string(),
-        SYMBOL.to_string(),
-        start_balance,
-    );
-
-    // Enter short at 200, cover at 180 → profit.
-    let entry = make_candle(1_700_000_000_000, 200.0);
-    executor
-        .handle(&entry, &short("short entry"))
-        .await
-        .expect("SHORT");
-
-    let pos = executor.position().cloned().expect("position after SHORT");
-    assert_eq!(pos.side, domain::PositionSide::Short);
-    assert!(pos.quantity > 0.0);
-
-    let db_pos = get_open_position(&conn, STRAT, SYMBOL).expect("live_positions row");
-    assert_eq!(db_pos.side, "short");
-
-    // A stray SELL while short must be a no-op.
-    let mid = make_candle(1_700_086_400_000, 190.0);
-    executor
-        .handle(&mid, &sell("stray sell"))
-        .await
-        .expect("SELL no-op");
-    assert!(
-        executor.position().is_some(),
-        "SELL must not close a short position"
-    );
-
-    let exit = make_candle(1_700_172_800_000, 180.0);
-    executor
-        .handle(&exit, &cover("cover"))
-        .await
-        .expect("COVER");
-    assert!(executor.position().is_none(), "COVER must flatten");
-
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(get_open_position(&conn, STRAT, SYMBOL).is_none());
-
-    let trades = get_trades(&conn, STRAT, 10);
-    let t = trades
+    assert!(close_step
+        .events
         .iter()
-        .find(|t| t.symbol == SYMBOL && t.side == "short")
-        .expect("short trade row");
-    let expected_pnl = (200.0 - 180.0) * pos.quantity;
-    assert!(
-        (t.pnl - expected_pnl).abs() < 1e-6,
-        "short pnl mismatch: got {}, expected {expected_pnl}",
-        t.pnl,
-    );
-    assert_eq!(count_trades(&conn, STRAT, SYMBOL), trades_before + 1,);
-    assert!(
-        (executor.balance() - (start_balance + expected_pnl)).abs() < 1e-6,
-        "balance not updated on cover",
-    );
+        .any(|event| matches!(event, RuntimeEvent::PositionClosed { .. })));
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
-    teardown(&conn);
+    assert!(get_paper_open_position(&conn, LONG_STRATEGY_IDENTITY, RUNTIME_ASSET).is_none());
+    let trades = get_paper_trades(&conn, LONG_STRATEGY_IDENTITY, RUNTIME_ASSET);
+    assert_eq!(trades.len(), 1);
+    assert_eq!(trades[0].side, "long");
+    assert_eq!(trades[0].entry_price, 100.0);
+    assert_eq!(trades[0].exit_price, 110.0);
+    assert_eq!(trades[0].quantity, 2.0);
+    assert_eq!(trades[0].realized_pnl, 20.0);
+    assert_eq!(trades[0].exit_kind, PaperExitKind::StrategyExit);
+
+    let restored = adapter
+        .restore_portfolio_state(10_000.0)
+        .expect("paper restore should use projected trade PnL");
+    assert_eq!(restored.realized_cash_balance, 10_020.0);
+    assert_eq!(restored.completed_trade_count, 1);
+    assert!(restored.open_position.is_none());
+
+    teardown(&conn, LONG_STRATEGY_IDENTITY);
 }
 
-/// §1.2 narrow test: immediately after `open_position` the executor must have
-/// captured a non-`None` position id (via `wait_for_open_position` polling).
-#[tokio::test(flavor = "current_thread")]
-async fn open_position_id_is_captured_before_close() {
+#[test]
+fn runtime_backed_force_close_projects_one_paper_trade() {
     if !integration_enabled() {
         return;
     }
 
-    let client = SpacetimeClient::connect("http://127.0.0.1:3000", "trading-bot")
-        .expect("Failed to connect to SpacetimeDB");
-    let conn: Arc<db_layer::DbConnection> = client.conn.clone();
-
-    teardown(&conn);
-
-    let mut executor =
-        PaperExecutor::new(conn.clone(), STRAT.to_string(), SYMBOL.to_string(), 1_000.0);
-
-    let c = make_candle(1_700_000_000_000, 50.0);
-    executor.handle(&c, &buy("race probe")).await.expect("BUY");
-
-    // If the race in §1.2 regressed, the row-id poll would time out and the
-    // subsequent close would leave an orphaned live_positions row.
-    let pos = get_open_position(&conn, STRAT, SYMBOL);
-    assert!(pos.is_some(), "live_positions row must be visible");
-
-    // Close it and confirm no orphan.
-    let c2 = make_candle(1_700_086_400_000, 55.0);
-    executor
-        .handle(&c2, &sell("race probe close"))
-        .await
-        .expect("SELL");
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(
-        get_open_position(&conn, STRAT, SYMBOL).is_none(),
-        "orphan live_positions row after SELL — §1.2 regression",
+    let client = connect();
+    let conn = client.conn.clone();
+    teardown(&conn, FORCE_CLOSE_STRATEGY_IDENTITY);
+    let adapter = adapter(conn.clone(), FORCE_CLOSE_STRATEGY_IDENTITY);
+    let mut runtime = runtime(
+        5_000.0,
+        [StrategyDecision::open_long(1.0).with_reason("pre-shutdown")],
     );
 
-    teardown(&conn);
+    project_completed_candle(&mut runtime, &adapter, make_candle(1_700_000_000_000, 80.0));
+
+    let force_close_step =
+        runtime.force_close(make_candle(1_700_086_400_000, 88.0), "shutdown liquidation");
+    adapter
+        .project_step(&force_close_step)
+        .expect("force-close projection should be confirmed");
+
+    let second_force_close =
+        runtime.force_close(make_candle(1_700_086_400_000, 88.0), "second call");
+    adapter
+        .project_step(&second_force_close)
+        .expect("flat force-close step should be a persistence no-op");
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    assert!(get_paper_open_position(&conn, FORCE_CLOSE_STRATEGY_IDENTITY, RUNTIME_ASSET).is_none());
+    let trades = get_paper_trades(&conn, FORCE_CLOSE_STRATEGY_IDENTITY, RUNTIME_ASSET);
+    assert_eq!(trades.len(), 1);
+    assert_eq!(trades[0].exit_kind, PaperExitKind::ForceClose);
+    assert_eq!(trades[0].entry_price, 80.0);
+    assert_eq!(trades[0].exit_price, 88.0);
+    assert_eq!(trades[0].quantity, 1.0);
+    assert_eq!(trades[0].realized_pnl, 8.0);
+
+    teardown(&conn, FORCE_CLOSE_STRATEGY_IDENTITY);
+}
+
+#[test]
+fn runtime_backed_short_cover_projects_profit_on_price_drop() {
+    if !integration_enabled() {
+        return;
+    }
+
+    let client = connect();
+    let conn = client.conn.clone();
+    teardown(&conn, SHORT_STRATEGY_IDENTITY);
+    let adapter = adapter(conn.clone(), SHORT_STRATEGY_IDENTITY);
+    let mut runtime = runtime(
+        4_000.0,
+        [
+            StrategyDecision::open_short(2.0).with_reason("short entry"),
+            StrategyDecision::close_long().with_reason("wrong side"),
+            StrategyDecision::close_short().with_reason("cover"),
+        ],
+    );
+
+    project_completed_candle(
+        &mut runtime,
+        &adapter,
+        make_candle(1_700_000_000_000, 200.0),
+    );
+    let ignored_step = project_completed_candle(
+        &mut runtime,
+        &adapter,
+        make_candle(1_700_086_400_000, 190.0),
+    );
+    assert!(ignored_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyDecisionIgnored { .. })));
+    assert!(get_paper_trades(&conn, SHORT_STRATEGY_IDENTITY, RUNTIME_ASSET).is_empty());
+
+    project_completed_candle(
+        &mut runtime,
+        &adapter,
+        make_candle(1_700_172_800_000, 180.0),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    assert!(get_paper_open_position(&conn, SHORT_STRATEGY_IDENTITY, RUNTIME_ASSET).is_none());
+    let trades = get_paper_trades(&conn, SHORT_STRATEGY_IDENTITY, RUNTIME_ASSET);
+    assert_eq!(trades.len(), 1);
+    assert_eq!(trades[0].side, "short");
+    assert_eq!(trades[0].entry_price, 200.0);
+    assert_eq!(trades[0].exit_price, 180.0);
+    assert_eq!(trades[0].quantity, 2.0);
+    assert_eq!(trades[0].realized_pnl, 40.0);
+    assert_eq!(trades[0].exit_kind, PaperExitKind::StrategyExit);
+
+    teardown(&conn, SHORT_STRATEGY_IDENTITY);
 }

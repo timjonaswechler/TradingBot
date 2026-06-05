@@ -2,8 +2,8 @@
 ///
 /// A headless, stateful Tokio service that:
 /// - Reacts to new candles in SpacetimeDB via on_insert callbacks
-/// - Ticks Rhai strategies with O(1) indicator updates
-/// - Executes paper trades and persists them to SpacetimeDB
+/// - Feeds live candles into the shared Trading Runtime
+/// - Projects Paper Trading portfolio transitions to SpacetimeDB
 ///
 /// Usage:
 ///   trading-daemon run  --config trading-bot.toml

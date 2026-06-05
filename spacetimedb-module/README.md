@@ -2,8 +2,9 @@
 
 SpacetimeDB server-side WASM module für TradingBot2.
 
-Definiert drei Tabellen (`candles`, `live_positions`, `live_trades`) und minimale
-CRUD-Reducer. **Keine** Trading-Logik — reiner Data-Lake.
+Definiert Marktdaten, dedizierte Paper-Trading-Persistenz (`paper_open_positions`,
+`paper_trades`) und transitional legacy `live_positions` / `live_trades` Tabellen.
+**Keine** Trading-Logik — reiner Storage-Adapter.
 
 ---
 
@@ -112,7 +113,11 @@ export SPACETIMEDB_MODULE=trading-bot
 | `timeframe` | `String` | z.B. `"1m"`, `"1h"`, `"1d"` |
 | `provider` | `String` | z.B. `"yahoo"`, `"binance"` |
 
-### `live_positions`
+### `live_positions` (transitional legacy)
+
+Runtime-backed Paper Trading nutzt `paper_open_positions`; `live_positions` bleibt
+nur als Legacy-/Admin-Speicher erhalten.
+
 | Feld | Typ | Beschreibung |
 |---|---|---|
 | `id` | `u64` | Auto-increment PK |
@@ -124,7 +129,11 @@ export SPACETIMEDB_MODULE=trading-bot
 | `entry_time` | `i64` | Unix ms |
 | `entry_reason` | `String` | Log-Nachricht |
 
-### `live_trades`
+### `live_trades` (transitional legacy)
+
+Runtime-backed Paper Trading nutzt `paper_trades`; `live_trades` bleibt nur als
+Legacy-/Admin-Speicher erhalten.
+
 | Feld | Typ | Beschreibung |
 |---|---|---|
 | `id` | `u64` | Auto-increment PK |
@@ -134,3 +143,24 @@ export SPACETIMEDB_MODULE=trading-bot
 | `status` | `String` | `"open"` oder `"closed"` |
 | `entry_time/exit_time` | `i64` | Unix ms |
 | `entry_reason/exit_reason` | `String` | Log-Nachrichten |
+
+### `paper_open_positions`
+| Feld | Typ | Beschreibung |
+|---|---|---|
+| `projection_key` | `String` | Deterministischer PK für die Runtime-Position |
+| `strategy_identity/runtime_asset/side` | `String` | Paper-Trading-Projektionsgrenze |
+| `entry_price/quantity` | `f64` | Runtime-Portfolio-Daten |
+| `entry_time` | `i64` | Unix ms |
+| `stop_loss/take_profit` | `Option<f64>` | Optionale Entry Risk Parameters, keine Sentinel-Werte |
+| `entry_metadata` | `Option<String>` | Optionale Adapter-Metadaten |
+
+### `paper_trades`
+| Feld | Typ | Beschreibung |
+|---|---|---|
+| `projection_key` | `String` | Deterministischer PK für den abgeschlossenen Runtime-Trade |
+| `strategy_identity/runtime_asset/side` | `String` | Paper-Trading-Projektionsgrenze |
+| `entry_price/exit_price/quantity/realized_pnl` | `f64` | Runtime-Portfolio-Daten |
+| `entry_time/exit_time` | `i64` | Unix ms |
+| `stop_loss/take_profit` | `Option<f64>` | Persistierte Entry Risk Parameters |
+| `exit_kind` | `PaperExitKind` | `StrategyExit`, `RiskExitStopLoss`, `RiskExitTakeProfit`, `ForceClose` |
+| `entry_metadata/exit_metadata` | `Option<String>` | Optionale Adapter-Metadaten |
