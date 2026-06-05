@@ -9,7 +9,7 @@
 //!     --strategy strategies/sma_cross.rhai \
 //!     --symbol   AAPL
 //! ```
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use tracing::info;
 
@@ -123,6 +123,9 @@ fn run_plan_mode(cli: &Cli, strategy_src: &str, plan_path: &str) -> Result<()> {
                     before_ms,
                     requested.min(cli.max_candles),
                 )
+                .with_context(|| {
+                    format!("failed to load warmup candles from DB for {symbol}/{interval}")
+                })?
             }
             DatasetCandleRequest::Range { start_ms, end_ms } => get_candles_in_range(
                 &client.conn,
@@ -131,7 +134,10 @@ fn run_plan_mode(cli: &Cli, strategy_src: &str, plan_path: &str) -> Result<()> {
                 start_ms,
                 end_ms,
                 cli.max_candles,
-            ),
+            )
+            .with_context(|| {
+                format!("failed to load ranged candles from DB for {symbol}/{interval}")
+            })?,
         };
         if !candles.is_empty() {
             info!(
@@ -163,7 +169,10 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
         RuntimeBacktestConfig::new(symbol.to_string(), cli.balance),
         |symbol, timeframe| {
             let interval = timeframe.to_string();
-            let candles = get_candles(&client.conn, symbol, &interval, cli.max_candles);
+            let candles = get_candles(&client.conn, symbol, &interval, cli.max_candles)
+                .with_context(|| {
+                    format!("failed to load candles from DB for {symbol}/{interval}")
+                })?;
             if !candles.is_empty() {
                 info!(symbol, interval, count = candles.len(), "Candles loaded");
             }

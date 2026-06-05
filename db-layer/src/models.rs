@@ -6,7 +6,10 @@
 /// values used by runners/adapters.
 use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
 
-use crate::module_bindings::{Candle as DbCandle, LivePosition};
+use crate::{
+    error::DbError,
+    module_bindings::{Candle as DbCandle, LivePosition},
+};
 
 // ── Candle ────────────────────────────────────────────────────────────────────
 
@@ -35,21 +38,37 @@ pub fn candle_to_reducer_args(
     )
 }
 
-/// Convert a DB `Candle` (from generated bindings) to a `domain::Candle`.
-pub fn db_candle_to_domain_candle(c: DbCandle) -> Candle {
-    Candle {
-        timestamp: c.timestamp,
-        symbol: c.symbol,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume,
-        timeframe: c
-            .timeframe
-            .parse::<Timeframe>()
-            .expect("DB candle timeframe should be canonical"),
+impl TryFrom<DbCandle> for Candle {
+    type Error = DbError;
+
+    fn try_from(c: DbCandle) -> Result<Self, Self::Error> {
+        let timeframe =
+            c.timeframe
+                .parse::<Timeframe>()
+                .map_err(|source| DbError::InvalidCandleTimeframe {
+                    timeframe: c.timeframe.clone(),
+                    canonical_id: c.canonical_id.clone(),
+                    symbol: c.symbol.clone(),
+                    timestamp: c.timestamp,
+                    source,
+                })?;
+
+        Ok(Candle {
+            timestamp: c.timestamp,
+            symbol: c.symbol,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+            timeframe,
+        })
     }
+}
+
+/// Fallibly convert a DB `Candle` (from generated bindings) to a `domain::Candle`.
+pub fn db_candle_to_domain_candle(c: DbCandle) -> Result<Candle, DbError> {
+    c.try_into()
 }
 
 // ── LivePosition ──────────────────────────────────────────────────────────────

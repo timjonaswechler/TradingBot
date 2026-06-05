@@ -2,14 +2,15 @@
 /// callbacks, feeds one Trading Runtime for a Runtime Asset, and logs runtime
 /// events. Portfolio transitions and execution semantics are owned by
 /// `trading-runtime`; this module only bridges live IO into runtime input.
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use db_layer::{
-    get_candles_before, module_bindings::CandlesTableAccess, DbConnection, SpacetimeClient,
+    db_candle_to_domain_candle, get_candles_before, module_bindings::CandlesTableAccess,
+    DbConnection, SpacetimeClient,
 };
 use domain::{Candle, Timeframe};
 use spacetimedb_sdk::Table;
@@ -286,8 +287,8 @@ pub async fn run(
             return;
         }
 
-        let timeframe = match db_candle.timeframe.parse::<Timeframe>() {
-            Ok(timeframe) => timeframe,
+        let candle = match db_candle_to_domain_candle(db_candle.clone()) {
+            Ok(candle) => candle,
             Err(error) => {
                 warn!(timeframe = db_candle.timeframe, error = %error, "Dropped candle with invalid timeframe");
                 return;
@@ -295,22 +296,11 @@ pub async fn run(
         };
 
         // Drop any candle the runtime already saw during warmup.
-        if let Some(hw) = warmup_high_water.get(&timeframe) {
-            if db_candle.timestamp <= *hw {
+        if let Some(hw) = warmup_high_water.get(&candle.timeframe) {
+            if candle.timestamp <= *hw {
                 return;
             }
         }
-
-        let candle = Candle {
-            timestamp: db_candle.timestamp,
-            symbol: db_candle.symbol.clone(),
-            open: db_candle.open,
-            high: db_candle.high,
-            low: db_candle.low,
-            close: db_candle.close,
-            volume: db_candle.volume,
-            timeframe,
-        };
         if let Err(e) = tx.try_send(candle) {
             warn!(error = %e, "Dropped candle — runtime channel full");
         }
@@ -358,7 +348,7 @@ pub async fn run(
                                 &symbol,
                                 primary_timeframe,
                                 last_primary_candle.clone(),
-                            );
+                            )?;
                             if let Some(force_close_step) = complete_protective_shutdown(
                                 &mut runtime_session,
                                 &step.portfolio_snapshot,
@@ -389,7 +379,7 @@ pub async fn run(
                         &symbol,
                         primary_timeframe,
                         last_primary_candle.clone(),
-                    );
+                    )?;
 
                     if let Some(candle) = mark {
                         let step = runtime_session.force_close(candle, "shutdown liquidation")?;
@@ -411,12 +401,17 @@ fn latest_primary_mark_candle(
     symbol: &str,
     primary_timeframe: Timeframe,
     last_primary_candle: Option<Candle>,
-) -> Option<Candle> {
-    last_primary_candle.or_else(|| {
-        get_candles_before(conn, symbol, &primary_timeframe.to_string(), i64::MAX, 1)
-            .into_iter()
-            .next_back()
-    })
+) -> Result<Option<Candle>> {
+    if last_primary_candle.is_some() {
+        return Ok(last_primary_candle);
+    }
+
+    let timeframe = primary_timeframe.to_string();
+    let candles = get_candles_before(conn, symbol, &timeframe, i64::MAX, 1).with_context(|| {
+        format!("failed to load latest Primary mark candle from DB for {symbol}/{timeframe}")
+    })?;
+
+    Ok(candles.into_iter().next_back())
 }
 
 fn complete_protective_shutdown<S: PaperTradingPersistenceStore>(
@@ -468,7 +463,10 @@ fn warmup_runtime_asset<S: PaperTradingPersistenceStore>(
             &timeframe_string,
             i64::MAX,
             warmup_requirement as u32,
-        );
+        )
+        .with_context(|| {
+            format!("failed to load warmup candles from DB for {symbol}/{timeframe_string}")
+        })?;
         let loaded = candles.len();
 
         if loaded == 0 {

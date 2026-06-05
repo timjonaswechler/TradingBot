@@ -75,7 +75,7 @@ fn test_insert_and_fetch_candles() {
     let count = count_candles(conn, SYM, TF);
     assert!(count >= 5, "expected ≥5 candles, got {count}");
 
-    let candles = get_candles(conn, SYM, TF, 3);
+    let candles = get_candles(conn, SYM, TF, 3).unwrap();
     assert_eq!(candles.len(), 3);
     assert!(
         candles[0].timestamp <= candles[1].timestamp,
@@ -105,7 +105,7 @@ fn test_get_candles_before() {
     }
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    let candles = get_candles_before(conn, SYM, TF, cutoff, 10);
+    let candles = get_candles_before(conn, SYM, TF, cutoff, 10).unwrap();
     for c in &candles {
         assert!(c.timestamp < cutoff, "ts {} ≥ cutoff {cutoff}", c.timestamp);
     }
@@ -116,6 +116,60 @@ fn test_get_candles_before() {
     // ── teardown ──
     delete_candles_by_symbol(conn, SYM, PROV).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(100));
+}
+
+#[test]
+fn test_get_candles_returns_error_for_invalid_db_timeframe() {
+    if !integration_enabled() {
+        return;
+    }
+
+    use db_layer::{module_bindings::insert_candle as _, DbError};
+
+    let client = connect();
+    let conn = &*client.conn;
+    let symbol = "__TEST_BAD_TIMEFRAME__";
+    let timeframe = "bad";
+    let ts = 1_700_000_000_000_i64;
+    let canonical_id = format!("{symbol}_{timeframe}_{ts}");
+
+    conn.reducers
+        .insert_candle(
+            canonical_id.clone(),
+            ts,
+            symbol.into(),
+            99.5,
+            101.0,
+            99.0,
+            100.0,
+            1_000.0,
+            timeframe.into(),
+            PROV.into(),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let result = get_candles(conn, symbol, timeframe, 10);
+
+    delete_candles_by_symbol(conn, symbol, PROV).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let error = result.expect_err("invalid stored timeframe should propagate from get_candles");
+    match error {
+        DbError::InvalidCandleTimeframe {
+            timeframe,
+            canonical_id: error_canonical_id,
+            symbol: error_symbol,
+            timestamp,
+            ..
+        } => {
+            assert_eq!(timeframe, "bad");
+            assert_eq!(error_canonical_id, canonical_id);
+            assert_eq!(error_symbol, symbol);
+            assert_eq!(timestamp, ts);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }
 
 // ── Position tests ────────────────────────────────────────────────────────────
@@ -346,9 +400,47 @@ fn db_candle_converts_to_domain_candle() {
         timeframe: "1d".parse().unwrap(),
         provider: "yahoo".into(),
     };
-    let shared = db_candle_to_domain_candle(db);
+    let shared = db_candle_to_domain_candle(db).expect("valid DB candle should convert");
     assert_eq!(shared.symbol, "AAPL");
     assert!((shared.close - 150.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn db_candle_conversion_rejects_invalid_timeframe() {
+    use db_layer::{db_candle_to_domain_candle, DbCandle, DbError};
+
+    let db = DbCandle {
+        id: 1,
+        canonical_id: "AAPL_bad_1700000000000".into(),
+        timestamp: 1_700_000_000_000,
+        symbol: "AAPL".into(),
+        open: 149.5,
+        high: 151.0,
+        low: 149.0,
+        close: 150.0,
+        volume: 1_000_000.0,
+        timeframe: "bad".into(),
+        provider: "yahoo".into(),
+    };
+
+    let error = db_candle_to_domain_candle(db)
+        .expect_err("invalid DB timeframe should return a conversion error");
+
+    match error {
+        DbError::InvalidCandleTimeframe {
+            timeframe,
+            canonical_id,
+            symbol,
+            timestamp,
+            ..
+        } => {
+            assert_eq!(timeframe, "bad");
+            assert_eq!(canonical_id, "AAPL_bad_1700000000000");
+            assert_eq!(symbol, "AAPL");
+            assert_eq!(timestamp, 1_700_000_000_000);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }
 
 #[test]

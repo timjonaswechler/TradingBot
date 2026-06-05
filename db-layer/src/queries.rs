@@ -25,6 +25,7 @@ use crate::{
         open_position,
         record_paper_position_closed as record_paper_position_closed_reducer,
         // Table access traits — must be in scope for table handles.
+        Candle as DbCandle,
         CandlesTableAccess,
         DbConnection,
         LivePosition,
@@ -52,23 +53,19 @@ pub fn insert_candle(conn: &DbConnection, candle: &Candle, provider: &str) -> Re
 
 /// Fetch up to `limit` candles for `symbol` / `timeframe` in chronological order.
 /// Reads from the local cache — no network call.
-pub fn get_candles(conn: &DbConnection, symbol: &str, timeframe: &str, limit: u32) -> Vec<Candle> {
-    let mut candles: Vec<Candle> = conn
-        .db
-        .candles()
-        .iter()
-        .filter(|c| c.symbol == symbol && c.timeframe == timeframe)
-        .map(|c| db_candle_to_domain_candle(c.clone()))
-        .collect();
-
-    candles.sort_by_key(|c| c.timestamp);
-
-    let limit = limit as usize;
-    if candles.len() > limit {
-        candles = candles.into_iter().rev().take(limit).collect();
-        candles.reverse();
-    }
-    candles
+pub fn get_candles(
+    conn: &DbConnection,
+    symbol: &str,
+    timeframe: &str,
+    limit: u32,
+) -> Result<Vec<Candle>, DbError> {
+    domain_candles_from_query_rows(
+        conn.db
+            .candles()
+            .iter()
+            .filter(|c| c.symbol == symbol && c.timeframe == timeframe),
+        limit,
+    )
 }
 
 /// Fetch up to `limit` candles for `symbol` / `timeframe` with half-open
@@ -81,46 +78,44 @@ pub fn get_candles_in_range(
     start_ts: i64,
     end_ts: i64,
     limit: u32,
-) -> Vec<Candle> {
-    let mut candles: Vec<Candle> = conn
-        .db
-        .candles()
-        .iter()
-        .filter(|c| {
+) -> Result<Vec<Candle>, DbError> {
+    domain_candles_from_query_rows(
+        conn.db.candles().iter().filter(|c| {
             c.symbol == symbol
                 && c.timeframe == timeframe
                 && c.timestamp >= start_ts
                 && c.timestamp < end_ts
-        })
-        .map(|c| db_candle_to_domain_candle(c.clone()))
-        .collect();
-
-    candles.sort_by_key(|c| c.timestamp);
-
-    let limit = limit as usize;
-    if candles.len() > limit {
-        candles = candles.into_iter().rev().take(limit).collect();
-        candles.reverse();
-    }
-    candles
+        }),
+        limit,
+    )
 }
 
 /// Fetch up to `limit` candles **before** `before_ts` (exclusive) in chronological order.
-/// Used for engine warmup on daemon startup. Reads from the local cache.
+/// Used for runtime warmup on daemon startup. Reads from the local cache.
 pub fn get_candles_before(
     conn: &DbConnection,
     symbol: &str,
     timeframe: &str,
     before_ts: i64,
     limit: u32,
-) -> Vec<Candle> {
-    let mut candles: Vec<Candle> = conn
-        .db
-        .candles()
-        .iter()
-        .filter(|c| c.symbol == symbol && c.timeframe == timeframe && c.timestamp < before_ts)
-        .map(|c| db_candle_to_domain_candle(c.clone()))
-        .collect();
+) -> Result<Vec<Candle>, DbError> {
+    domain_candles_from_query_rows(
+        conn.db
+            .candles()
+            .iter()
+            .filter(|c| c.symbol == symbol && c.timeframe == timeframe && c.timestamp < before_ts),
+        limit,
+    )
+}
+
+fn domain_candles_from_query_rows(
+    db_candles: impl IntoIterator<Item = DbCandle>,
+    limit: u32,
+) -> Result<Vec<Candle>, DbError> {
+    let mut candles: Vec<Candle> = db_candles
+        .into_iter()
+        .map(db_candle_to_domain_candle)
+        .collect::<Result<Vec<_>, _>>()?;
 
     candles.sort_by_key(|c| c.timestamp);
 
@@ -129,7 +124,8 @@ pub fn get_candles_before(
         candles = candles.into_iter().rev().take(limit).collect();
         candles.reverse();
     }
-    candles
+
+    Ok(candles)
 }
 
 /// Count candles for a symbol/timeframe from the local cache.
@@ -437,4 +433,66 @@ pub fn delete_paper_data_by_strategy_identity(
     conn.reducers
         .delete_paper_data_by_strategy_identity(strategy_identity.to_string())
         .map_err(|e| DbError::ReducerSend(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domain::Timeframe;
+
+    fn db_candle(timeframe: &str, timestamp: i64, close: f64) -> DbCandle {
+        DbCandle {
+            id: timestamp as u64,
+            canonical_id: format!("AAPL_{timeframe}_{timestamp}"),
+            timestamp,
+            symbol: "AAPL".into(),
+            open: close - 0.5,
+            high: close + 1.0,
+            low: close - 1.0,
+            close,
+            volume: 1_000.0,
+            timeframe: timeframe.into(),
+            provider: "test".into(),
+        }
+    }
+
+    #[test]
+    fn query_candle_conversion_preserves_valid_limit_and_chronological_order() {
+        let candles = domain_candles_from_query_rows(
+            vec![
+                db_candle("1d", 3_000, 103.0),
+                db_candle("1d", 1_000, 101.0),
+                db_candle("1d", 2_000, 102.0),
+            ],
+            2,
+        )
+        .expect("valid DB candles should convert");
+
+        assert_eq!(candles.len(), 2);
+        assert_eq!(candles[0].timestamp, 2_000);
+        assert_eq!(candles[1].timestamp, 3_000);
+        assert_eq!(candles[0].timeframe, Timeframe::days(1));
+    }
+
+    #[test]
+    fn query_candle_conversion_propagates_invalid_timeframe_error() {
+        let error = domain_candles_from_query_rows(vec![db_candle("bad", 1_000, 101.0)], 10)
+            .expect_err("invalid DB timeframe should be propagated by query conversion");
+
+        match error {
+            DbError::InvalidCandleTimeframe {
+                timeframe,
+                canonical_id,
+                symbol,
+                timestamp,
+                ..
+            } => {
+                assert_eq!(timeframe, "bad");
+                assert_eq!(canonical_id, "AAPL_bad_1000");
+                assert_eq!(symbol, "AAPL");
+                assert_eq!(timestamp, 1_000);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }
