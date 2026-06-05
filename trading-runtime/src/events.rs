@@ -35,6 +35,12 @@ pub struct BlockedSecondaryContext {
 }
 
 /// A runner-neutral occurrence emitted by the trading runtime.
+///
+/// Portfolio-transition events such as [`RuntimeEvent::PositionOpened`] and
+/// [`RuntimeEvent::PositionClosed`] describe runtime-local Portfolio State
+/// changes. They are not broker order acknowledgements, broker fills, or DB
+/// persistence records; runners/adapters may project them into those external
+/// concerns when that execution mode owns the corresponding truth.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEvent {
     MarketInputAccepted {
@@ -76,9 +82,19 @@ pub enum RuntimeEvent {
     RiskExitTriggered {
         risk_exit: RiskExitTriggered,
     },
+    /// Runtime-local Portfolio Transition that created an Open Position.
+    ///
+    /// This is not a broker fill confirmation. Paper Trading and backtests may
+    /// treat it as the simulated execution result; real-money live runners must
+    /// reconcile broker/provider truth separately.
     PositionOpened {
         position: OpenPosition,
     },
+    /// Runtime-local Portfolio Transition that produced a Closed Position.
+    ///
+    /// This is not a broker fill confirmation. Paper Trading and backtests may
+    /// treat it as the simulated execution result; real-money live runners must
+    /// reconcile broker/provider truth separately.
     PositionClosed {
         closed_position: ClosedPosition,
         exit_kind: ExitKind,

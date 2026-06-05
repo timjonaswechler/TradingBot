@@ -1,0 +1,124 @@
+version: 1
+name: paper-trading-persistence
+
+repo:
+  github: timjonaswechler/TradingBot
+  cwd: /Users/tim-jonaswechler/GitHub-Projekte/TradingBot2
+
+issues:
+  sequence: [115, 116, 117, 118]
+  alreadyDone: []
+  blockedBy:
+    116: [115]
+    117: [116]
+    118: [117]
+
+references:
+  githubIssues:
+    - 31
+    - 32
+    - 33
+    - 37
+    - 39
+    - 43
+    - 115
+    - 116
+    - 117
+    - 118
+  githubPRs: []
+  files:
+    - CONTEXT.md
+    - docs/refactor/runtime-migration-control.md
+    - docs/refactor/trading-runtime-refactor-plan.md
+    - docs/adr/0002-build-trading-runtime-as-new-crate.md
+    - docs/adr/0003-runtime-managed-risk-exits-are-opt-in-hard-exits.md
+    - docs/adr/0004-runtime-refactor-does-not-preserve-legacy-compatibility.md
+    - docs/adr/0010-paper-trading-persistence-projects-runtime-portfolio-transitions.md
+    - trading-runtime/src/events.rs
+    - trading-runtime/src/portfolio.rs
+    - trading-runtime/src/runtime.rs
+    - trading-daemon/src/live_engine.rs
+    - trading-daemon/src/order_executor.rs
+    - db-layer/src/queries.rs
+    - db-layer/src/models.rs
+    - spacetimedb-module/src/lib.rs
+  urls: []
+
+scope:
+  summary: "Implement the #37 Paper Trading persistence seam: dedicated paper persistence tables, daemon-side restore/projection adapter, live runner wiring, and legacy PaperExecutor cleanup."
+  nonGoals:
+    - "Do not persist raw Runtime Events as an event store."
+    - "Do not make trading-runtime depend on DB-layer, SpacetimeDB, trading-daemon, or runner mode flags."
+    - "Do not treat Paper Trading persistence as Real-Money broker truth."
+    - "Do not implement Real-Money broker order/fill execution or account reconciliation."
+    - "Do not add portfolio/equity snapshot persistence for PortfolioUpdated in V1."
+    - "Do not extend existing live_positions/live_trades as the target Paper Trading schema except as transitional legacy cleanup requires."
+    - "Do not add execution-cost, slippage, fee, spread, or dynamic risk-update semantics."
+  futureIssues:
+    - "#39 — External Account Snapshot / broker account reconciliation for Real-Money Live execution."
+    - "#40 — Position Risk Update Intents."
+    - "#42 — Execution cost model for slippage, fees, and spread."
+
+workflow:
+  implementationSkill: tdd
+  oneIssuePerCommit: true
+  sequentialOnly: true
+  requireCleanWorktree: true
+  allowParallelImplementation: false
+  planGate: false
+
+review:
+  beforeCommit: true
+  acceptanceReviewerCommits: true
+  reviewerCanEditSource: false
+  reviewerSkill: review
+  mode: single-neutral
+  fixedPoint: issueStartHead
+  maxFixReviewCycles: 2
+  comparisonSources:
+    - githubIssueAcceptanceCriteria
+    - githubIssueBodyAndComments
+    - githubIssueLinksLabelsAndBlockers
+    - manifestScopeAndNonGoals
+    - manifestFutureIssues
+    - manifestReferences
+    - workerReportAsClaimsOnly
+    - currentUncommittedDiff
+    - testsAndCommandOutput
+  mustRejectIf:
+    - acceptanceCriteriaMissingOrAmbiguous
+    - missingOrUnmetAcceptanceCriterion
+    - scopeCreepOrFutureIssueWork
+    - failingOrInsufficientTests
+    - reviewerWouldNeedToEditSource
+    - impureIssueCommit
+    - productArchitectureOrApiDecisionNeeded
+  blockOn:
+    - acceptanceCriteriaMissing
+    - scopeCreep
+    - failingOrInsufficientTests
+    - regressionRisk
+    - impureIssueCommit
+
+remote:
+  pushAfterCommit: true
+  commentOnIssue: true
+  commentTemplate: default
+
+commit:
+  conventionalCommit: true
+  includeIssueNumber: true
+  requireScopeCheck: true
+
+stopIf:
+  - dirtyWorktree
+  - issueBlocked
+  - testsFailAfterFixAttempt
+  - scopeUnclear
+  - architectureDecisionNeeded
+  - acceptanceReviewBlocked
+
+report:
+  finalTable: true
+  includeTests: true
+  includeRisks: true

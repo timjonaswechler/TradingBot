@@ -125,7 +125,7 @@ The legacy engine crate should not remain as a separate strategy-engine crate. `
 45. Keep daemon responsibility limited to config, timer loop, provider fetch, DB writes, DB reads, broker/IO adapters, logging, and shutdown.
 46. On live startup, restore required Portfolio State from DB through db-layer mapping, then initialize Trading Runtime.
 47. During live ticks, fetch/persist market data outside the runtime, then feed completed candles into the runtime.
-48. Persist runtime-emitted position/trade changes through db-layer.
+48. For Paper Trading / Simulated Execution, project runtime-emitted position/trade changes through db-layer into dedicated paper persistence tables using idempotent projection operations with deterministic keys. The close-position-plus-insert-trade projection should be atomic where the DB adapter can support it. Real-Money Live execution needs separate broker/account reconciliation before DB records can be treated as anything more than cache/audit/metadata.
 49. Remove obsolete daemon paper execution state once runtime-backed integration tests pass.
 
 ### Phase 9: DB layer boundary cleanup

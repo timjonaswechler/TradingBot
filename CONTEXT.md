@@ -25,8 +25,8 @@ A point-in-time view of one Trading Runtime's Portfolio State for a runtime step
 _Avoid_: External Account Snapshot, Account Balance
 
 **External Account Snapshot**:
-A point-in-time view of account resources outside one Trading Runtime, such as available cash, buying power, margin, or external exposure. An External Account Snapshot may inform live strategy execution, but it is not the runtime-local Portfolio State.
-_Avoid_: Portfolio State, Strategy State
+A point-in-time view of account resources outside one Trading Runtime, such as available cash, buying power, margin, broker-visible positions, open orders, or external exposure reported by a broker/trading provider or account adapter. An External Account Snapshot may inform live strategy execution, but it is not the runtime-local Portfolio State.
+_Avoid_: Portfolio State, Strategy State, Provider State
 
 **Strategy Engine**:
 The component that executes a strategy and turns market context into a trading decision. Strategy Engine is a role inside the architecture, not necessarily a separate crate; Rhai strategy execution is one implementation of this role.
@@ -63,6 +63,10 @@ _Avoid_: Callback, magic function
 **Strategy Configuration**:
 Strategy-declared runtime requirements that the Trading Runtime can inspect before Strategy Ticks, including the Primary Timeframe, Secondary-Timeframe requirements, and minimum warmup. Strategy Configuration defines the timeframe contract a strategy expects, but does not choose the Runtime Asset, live/backtest mode, market data source, or Portfolio State.
 _Avoid_: Run Configuration, Strategy State
+
+**Strategy Identity**:
+An operator-owned identifier for a strategy across live or paper sessions, used to associate runtime-local persistence records with the intended strategy. Strategy Identity is distinct from a strategy file path, source-code hash, Strategy Configuration, and Strategy State.
+_Avoid_: Strategy File, Strategy Configuration, Strategy State
 
 **Run Configuration**:
 Operator- or runner-owned configuration for a Trading Runtime, including the Runtime Asset, mode/source choices, initial portfolio inputs, and runner policies. Run Configuration binds a strategy's timeframe contract to a concrete asset/source, but does not independently choose Primary or Secondary Timeframes.
@@ -218,7 +222,11 @@ _Avoid_: Strategy Error, Diagnostic Runtime Event
 
 **Runtime Event**:
 An ordered, runner-neutral occurrence emitted by a Trading Runtime during a trading session. Runtime Events describe market input, tradable-candle handling, strategy decisions, blocked Strategy Ticks, portfolio transitions, and diagnostics without including database or reporting concerns. Event names should distinguish Tradable Candles from Strategy Ticks rather than using "Tradable Tick" ambiguously.
-_Avoid_: DB Event, Backtest Metric
+_Avoid_: DB Event, Backtest Metric, Event Store Record
+
+**Paper Trading Persistence Adapter**:
+A Live Runner adapter that records selected runtime-local Portfolio Transitions from Paper Trading into external storage. It projects Trading Runtime output into persistence records for a simulated live session and is distinct from Real-Money broker/account truth.
+_Avoid_: Runtime Event Store, Trading Runtime Persistence, Real-Money Broker Fill, Portfolio State
 
 **Batch Compute**:
 Offline or research-oriented computation over many candles, symbols, parameters, or synthetic runs. Batch Compute may use CPU parallelism or GPU compute, but it is separate from the live tradable tick path.
