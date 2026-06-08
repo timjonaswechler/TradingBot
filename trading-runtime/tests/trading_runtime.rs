@@ -1,8 +1,11 @@
 use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
-    ClosedPosition, ExecutionAction, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason,
-    MarketInput, PortfolioState, PredeterminedStrategyHandler, RiskExitKind, RiskExitTriggered,
+    AppliedPositionRiskBoundaryChange, ClosedPosition, ExecutionAction, ExitKind,
+    ForceCloseIgnoredReason, IgnoredDecisionReason, MarketInput, PortfolioState,
+    PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
+    PositionRiskBoundaryKind, PositionRiskUpdateResult, PredeterminedStrategyHandler,
+    RejectedPositionRiskBoundaryChange, RiskBoundaryChange, RiskExitKind, RiskExitTriggered,
     RuntimeEvent, RuntimePortfolioSnapshot, StrategyDecision, StrategyDecisionIntent,
     StrategyHandler, TradingRuntime,
 };
@@ -722,6 +725,448 @@ fn tradable_candle_opens_with_one_valid_entry_risk_parameter() {
             ))
         );
     }
+}
+
+#[test]
+fn position_risk_update_applies_valid_boundary_changes_and_updates_snapshot() {
+    let entry_candle = candle(1, 100.0);
+    let update_candle = candle(2, 110.0);
+    let changes = PositionRiskBoundaryChanges::new()
+        .set_stop_loss(100.0)
+        .set_take_profit(130.0);
+    let decision = StrategyDecision::update_position_risk().with_position_risk_changes(changes);
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([
+            StrategyDecision::open_long(2.0).with_entry_risk(Some(90.0), None),
+            decision.clone(),
+        ]),
+    );
+    completed_primary_step(&mut runtime, entry_candle.clone());
+    let expected_position = position_with_risk_boundaries(
+        PositionSide::Long,
+        entry_candle.timestamp,
+        entry_candle.close,
+        2.0,
+        Some(100.0),
+        Some(130.0),
+    );
+    let mut expected_portfolio = PortfolioState::new(1_000.0);
+    expected_portfolio
+        .open_long_from_flat(&entry_candle, 2.0, Some(100.0), Some(130.0))
+        .unwrap();
+    let expected_snapshot = expected_portfolio.snapshot(update_candle.close);
+
+    let step = completed_primary_step(&mut runtime, update_candle.clone());
+
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::StrategyDecisionProduced {
+                decision: decision.clone(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::UpdatePositionRisk { changes },
+            },
+            RuntimeEvent::PositionRiskUpdateEvaluated {
+                requested_changes: changes,
+                result: PositionRiskUpdateResult::Evaluated {
+                    applied: vec![
+                        AppliedPositionRiskBoundaryChange {
+                            boundary: PositionRiskBoundaryKind::StopLoss,
+                            requested_change: RiskBoundaryChange::Set(100.0),
+                            previous: Some(90.0),
+                            current: Some(100.0),
+                            state_changed: true,
+                        },
+                        AppliedPositionRiskBoundaryChange {
+                            boundary: PositionRiskBoundaryKind::TakeProfit,
+                            requested_change: RiskBoundaryChange::Set(130.0),
+                            previous: None,
+                            current: Some(130.0),
+                            state_changed: true,
+                        },
+                    ],
+                    rejected: vec![],
+                },
+            },
+            RuntimeEvent::PortfolioUpdated {
+                snapshot: expected_snapshot.clone(),
+            },
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert_eq!(
+        step.portfolio_snapshot.open_position,
+        Some(expected_position)
+    );
+    assert_eq!(step.portfolio_snapshot.realized_cash_balance, 1_000.0);
+    assert_eq!(step.portfolio_snapshot.completed_trade_count, 0);
+}
+
+#[test]
+fn position_risk_update_while_flat_emits_update_result_without_ignored_decision() {
+    let update_candle = candle(1, 100.0);
+    let changes = PositionRiskBoundaryChanges::new().set_stop_loss(90.0);
+    let decision = StrategyDecision::update_position_risk().with_position_risk_changes(changes);
+    let mut runtime = TradingRuntime::new(
+        PortfolioState::new(1_000.0),
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+    let expected_snapshot = PortfolioState::new(1_000.0).snapshot(update_candle.close);
+
+    let step = completed_primary_step(&mut runtime, update_candle.clone());
+
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::StrategyDecisionProduced {
+                decision: decision.clone(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::UpdatePositionRisk { changes },
+            },
+            RuntimeEvent::PositionRiskUpdateEvaluated {
+                requested_changes: changes,
+                result: PositionRiskUpdateResult::NoOpenPosition,
+            },
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert!(!step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::StrategyDecisionIgnored { .. })));
+}
+
+#[test]
+fn position_risk_update_with_no_requested_boundary_changes_is_not_hold() {
+    let update_candle = candle(2, 105.0);
+    let open_position =
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), Some(120.0));
+    let decision = StrategyDecision::update_position_risk();
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::new(
+        portfolio,
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+    let expected_snapshot = RuntimePortfolioSnapshot {
+        realized_cash_balance: 1_000.0,
+        open_position: Some(open_position),
+        completed_trade_count: 0,
+        current_equity: 1_010.0,
+    };
+
+    let step = completed_primary_step(&mut runtime, update_candle.clone());
+
+    assert_eq!(
+        step.events,
+        vec![
+            RuntimeEvent::MarketInputAccepted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::TradableCandleAccepted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::StrategyTickStarted {
+                candle: update_candle.clone(),
+            },
+            RuntimeEvent::StrategyDecisionProduced {
+                decision: decision.clone(),
+            },
+            RuntimeEvent::ExecutionActionPlanned {
+                action: ExecutionAction::UpdatePositionRisk {
+                    changes: PositionRiskBoundaryChanges::default(),
+                },
+            },
+            RuntimeEvent::PositionRiskUpdateEvaluated {
+                requested_changes: PositionRiskBoundaryChanges::default(),
+                result: PositionRiskUpdateResult::NoRiskBoundaryChange,
+            },
+            RuntimeEvent::StrategyTickCompleted,
+            RuntimeEvent::TradableCandleCompleted,
+        ]
+    );
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert!(!step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::PortfolioUpdated { .. })));
+}
+
+#[test]
+fn position_risk_update_accepts_idempotent_clear_and_existing_set_without_portfolio_update() {
+    let update_candle = candle(2, 100.0);
+    let open_position =
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), None);
+    let changes = PositionRiskBoundaryChanges::new()
+        .set_stop_loss(90.0)
+        .clear_take_profit();
+    let decision = StrategyDecision::update_position_risk().with_position_risk_changes(changes);
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::new(
+        portfolio,
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+    let expected_snapshot = RuntimePortfolioSnapshot {
+        realized_cash_balance: 1_000.0,
+        open_position: Some(open_position),
+        completed_trade_count: 0,
+        current_equity: 1_000.0,
+    };
+
+    let step = completed_primary_step(&mut runtime, update_candle.clone());
+
+    assert!(step
+        .events
+        .contains(&RuntimeEvent::PositionRiskUpdateEvaluated {
+            requested_changes: changes,
+            result: PositionRiskUpdateResult::Evaluated {
+                applied: vec![
+                    AppliedPositionRiskBoundaryChange {
+                        boundary: PositionRiskBoundaryKind::StopLoss,
+                        requested_change: RiskBoundaryChange::Set(90.0),
+                        previous: Some(90.0),
+                        current: Some(90.0),
+                        state_changed: false,
+                    },
+                    AppliedPositionRiskBoundaryChange {
+                        boundary: PositionRiskBoundaryKind::TakeProfit,
+                        requested_change: RiskBoundaryChange::Clear,
+                        previous: None,
+                        current: None,
+                        state_changed: false,
+                    },
+                ],
+                rejected: vec![],
+            },
+        }));
+    assert_eq!(step.portfolio_snapshot, expected_snapshot);
+    assert!(!step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::PortfolioUpdated { .. })));
+}
+
+#[test]
+fn position_risk_update_partially_applies_valid_change_and_reports_invalid_change() {
+    let update_candle = candle(2, 110.0);
+    let open_position =
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, None, None);
+    let changes = PositionRiskBoundaryChanges::new()
+        .set_stop_loss(100.0)
+        .set_take_profit(105.0);
+    let decision = StrategyDecision::update_position_risk().with_position_risk_changes(changes);
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position);
+    let mut runtime = TradingRuntime::new(
+        portfolio,
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+    let expected_position =
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, Some(100.0), None);
+
+    let step = completed_primary_step(&mut runtime, update_candle.clone());
+
+    assert!(step
+        .events
+        .contains(&RuntimeEvent::PositionRiskUpdateEvaluated {
+            requested_changes: changes,
+            result: PositionRiskUpdateResult::Evaluated {
+                applied: vec![AppliedPositionRiskBoundaryChange {
+                    boundary: PositionRiskBoundaryKind::StopLoss,
+                    requested_change: RiskBoundaryChange::Set(100.0),
+                    previous: None,
+                    current: Some(100.0),
+                    state_changed: true,
+                }],
+                rejected: vec![RejectedPositionRiskBoundaryChange {
+                    boundary: PositionRiskBoundaryKind::TakeProfit,
+                    requested_change: RiskBoundaryChange::Set(105.0),
+                    reason: PositionRiskBoundaryChangeRejectionReason::AlreadyCrossed {
+                        mark_price: 110.0,
+                    },
+                }],
+            },
+        }));
+    assert_eq!(
+        step.portfolio_snapshot.open_position,
+        Some(expected_position)
+    );
+    assert_eq!(step.portfolio_snapshot.realized_cash_balance, 1_000.0);
+    assert_eq!(step.portfolio_snapshot.completed_trade_count, 0);
+    assert!(step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::PortfolioUpdated { .. })));
+}
+
+#[test]
+fn position_risk_update_rejects_non_finite_and_non_positive_prices_without_portfolio_update() {
+    let update_candle = candle(2, 100.0);
+    let open_position =
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), Some(120.0));
+    let changes = PositionRiskBoundaryChanges::new()
+        .set_stop_loss(f64::INFINITY)
+        .set_take_profit(0.0);
+    let decision = StrategyDecision::update_position_risk().with_position_risk_changes(changes);
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::new(
+        portfolio,
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+
+    let step = completed_primary_step(&mut runtime, update_candle.clone());
+
+    assert!(step
+        .events
+        .contains(&RuntimeEvent::PositionRiskUpdateEvaluated {
+            requested_changes: changes,
+            result: PositionRiskUpdateResult::Evaluated {
+                applied: vec![],
+                rejected: vec![
+                    RejectedPositionRiskBoundaryChange {
+                        boundary: PositionRiskBoundaryKind::StopLoss,
+                        requested_change: RiskBoundaryChange::Set(f64::INFINITY),
+                        reason: PositionRiskBoundaryChangeRejectionReason::NonFinitePrice,
+                    },
+                    RejectedPositionRiskBoundaryChange {
+                        boundary: PositionRiskBoundaryKind::TakeProfit,
+                        requested_change: RiskBoundaryChange::Set(0.0),
+                        reason: PositionRiskBoundaryChangeRejectionReason::NonPositivePrice,
+                    },
+                ],
+            },
+        }));
+    assert_eq!(step.portfolio_snapshot.open_position, Some(open_position));
+    assert!(!step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::PortfolioUpdated { .. })));
+}
+
+#[test]
+fn position_risk_update_validates_new_boundaries_against_short_mark_price() {
+    let update_candle = candle(2, 100.0);
+    let open_position =
+        position_with_risk_boundaries(PositionSide::Short, 1, 100.0, 2.0, Some(110.0), Some(80.0));
+    let changes = PositionRiskBoundaryChanges::new()
+        .set_stop_loss(95.0)
+        .set_take_profit(105.0);
+    let decision = StrategyDecision::update_position_risk().with_position_risk_changes(changes);
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position.clone());
+    let mut runtime = TradingRuntime::new(
+        portfolio,
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision.clone()]),
+    );
+
+    let step = completed_primary_step(&mut runtime, update_candle.clone());
+
+    assert!(step
+        .events
+        .contains(&RuntimeEvent::PositionRiskUpdateEvaluated {
+            requested_changes: changes,
+            result: PositionRiskUpdateResult::Evaluated {
+                applied: vec![],
+                rejected: vec![
+                    RejectedPositionRiskBoundaryChange {
+                        boundary: PositionRiskBoundaryKind::StopLoss,
+                        requested_change: RiskBoundaryChange::Set(95.0),
+                        reason: PositionRiskBoundaryChangeRejectionReason::AlreadyCrossed {
+                            mark_price: 100.0,
+                        },
+                    },
+                    RejectedPositionRiskBoundaryChange {
+                        boundary: PositionRiskBoundaryKind::TakeProfit,
+                        requested_change: RiskBoundaryChange::Set(105.0),
+                        reason: PositionRiskBoundaryChangeRejectionReason::AlreadyCrossed {
+                            mark_price: 100.0,
+                        },
+                    },
+                ],
+            },
+        }));
+    assert_eq!(step.portfolio_snapshot.open_position, Some(open_position));
+    assert!(!step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::PortfolioUpdated { .. })));
+}
+
+#[test]
+fn newly_accepted_position_risk_boundaries_can_first_trigger_on_next_tradable_candle() {
+    let update_candle = ohlc_candle(2, 110.0, 112.0, 95.0, 105.0);
+    let next_candle = ohlc_candle(3, 105.0, 106.0, 99.0, 104.0);
+    let open_position =
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, None, None);
+    let changes = PositionRiskBoundaryChanges::new().set_stop_loss(100.0);
+    let decision = StrategyDecision::update_position_risk().with_position_risk_changes(changes);
+    let mut portfolio = PortfolioState::new(1_000.0);
+    portfolio.open_position = Some(open_position);
+    let mut runtime = TradingRuntime::new(
+        portfolio,
+        0,
+        PredeterminedStrategyHandler::from_decisions([decision]),
+    );
+
+    let update_step = completed_primary_step(&mut runtime, update_candle.clone());
+    let next_step = completed_primary_step(&mut runtime, next_candle.clone());
+
+    assert_eq!(
+        update_step
+            .portfolio_snapshot
+            .open_position
+            .as_ref()
+            .and_then(|position| position.risk_boundaries.stop_loss),
+        Some(100.0)
+    );
+    assert!(!update_step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::RiskExitTriggered { .. } | RuntimeEvent::PositionClosed { .. }
+    )));
+    assert!(next_step.events.contains(&RuntimeEvent::RiskExitTriggered {
+        risk_exit: RiskExitTriggered {
+            side: PositionSide::Long,
+            selected: RiskExitKind::StopLoss,
+            triggered: vec![RiskExitKind::StopLoss],
+            exit_price: 100.0,
+        },
+    }));
+    assert_eq!(next_step.portfolio_snapshot.open_position, None);
+    assert_eq!(next_step.portfolio_snapshot.completed_trade_count, 1);
 }
 
 #[test]

@@ -1,8 +1,9 @@
 //! Ordered, runner-neutral events emitted by the trading runtime.
 
 use crate::{
-    ClosedPosition, ExecutionAction, IgnoredDecisionReason, RiskExitKind, RiskExitTriggered,
-    RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision, StrategyError,
+    ClosedPosition, ExecutionAction, IgnoredDecisionReason, PositionRiskBoundaryChanges,
+    RiskBoundaryChange, RiskExitKind, RiskExitTriggered, RuntimePortfolioSnapshot,
+    SecondaryReadiness, StrategyDecision, StrategyError,
 };
 use domain::{Candle, OpenPosition, Timeframe};
 
@@ -18,6 +19,50 @@ pub enum ExitKind {
     StrategyExit,
     RiskExit { selected: RiskExitKind },
     ForceClose,
+}
+
+/// The current Position Risk Boundary targeted by a Position Risk Update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionRiskBoundaryKind {
+    StopLoss,
+    TakeProfit,
+}
+
+/// Machine-readable reason why one requested Position Risk Boundary change was rejected.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PositionRiskBoundaryChangeRejectionReason {
+    NonFinitePrice,
+    NonPositivePrice,
+    AlreadyCrossed { mark_price: f64 },
+}
+
+/// One requested Position Risk Boundary change accepted by the runtime.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AppliedPositionRiskBoundaryChange {
+    pub boundary: PositionRiskBoundaryKind,
+    pub requested_change: RiskBoundaryChange,
+    pub previous: Option<f64>,
+    pub current: Option<f64>,
+    pub state_changed: bool,
+}
+
+/// One requested Position Risk Boundary change rejected by the runtime.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RejectedPositionRiskBoundaryChange {
+    pub boundary: PositionRiskBoundaryKind,
+    pub requested_change: RiskBoundaryChange,
+    pub reason: PositionRiskBoundaryChangeRejectionReason,
+}
+
+/// Result of evaluating a Position Risk Update decision.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PositionRiskUpdateResult {
+    NoOpenPosition,
+    NoRiskBoundaryChange,
+    Evaluated {
+        applied: Vec<AppliedPositionRiskBoundaryChange>,
+        rejected: Vec<RejectedPositionRiskBoundaryChange>,
+    },
 }
 
 /// Why Secondary-Timeframe context is unavailable for a Primary Strategy Tick.
@@ -98,6 +143,10 @@ pub enum RuntimeEvent {
     PositionClosed {
         closed_position: ClosedPosition,
         exit_kind: ExitKind,
+    },
+    PositionRiskUpdateEvaluated {
+        requested_changes: PositionRiskBoundaryChanges,
+        result: PositionRiskUpdateResult,
     },
     PortfolioUpdated {
         snapshot: RuntimePortfolioSnapshot,

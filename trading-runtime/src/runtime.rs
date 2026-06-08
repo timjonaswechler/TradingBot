@@ -3,12 +3,15 @@
 use crate::market_input::MarketInputTimeframeRole;
 use crate::secondary_context::secondary_context_unavailable_reason;
 use crate::{
-    evaluate_risk_exit, plan_execution, BlockedSecondaryContext, ExecutionAction, ExitKind,
-    ForceCloseIgnoredReason, MarketInput, MarketState, MarketView, PortfolioState, RuntimeConfig,
-    RuntimeEvent, RuntimeInputError, RuntimeStep, SecondaryReadiness, StrategyContext,
-    StrategyHandler, StrategyState, StrategyTickInput, StrategyTickResult, WarmupPlan,
+    evaluate_risk_exit, plan_execution, AppliedPositionRiskBoundaryChange, BlockedSecondaryContext,
+    ExecutionAction, ExitKind, ForceCloseIgnoredReason, MarketInput, MarketState, MarketView,
+    PortfolioState, PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
+    PositionRiskBoundaryKind, PositionRiskUpdateResult, RejectedPositionRiskBoundaryChange,
+    RiskBoundaryChange, RuntimeConfig, RuntimeEvent, RuntimeInputError, RuntimeStep,
+    SecondaryReadiness, StrategyContext, StrategyHandler, StrategyState, StrategyTickInput,
+    StrategyTickResult, WarmupPlan,
 };
-use domain::{Candle, PositionSide, Timeframe};
+use domain::{Candle, OpenPosition, PositionSide, Timeframe};
 use std::collections::HashMap;
 
 /// DB-free trading runtime core for one runtime asset.
@@ -331,9 +334,21 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                     snapshot: self.portfolio.snapshot(candle.close),
                 });
             }
+            ExecutionAction::UpdatePositionRisk { changes } => {
+                let (result, portfolio_changed) =
+                    self.apply_position_risk_update(changes, candle.close);
+                events.push(RuntimeEvent::PositionRiskUpdateEvaluated {
+                    requested_changes: changes,
+                    result,
+                });
+                if portfolio_changed {
+                    events.push(RuntimeEvent::PortfolioUpdated {
+                        snapshot: self.portfolio.snapshot(candle.close),
+                    });
+                }
+            }
             ExecutionAction::Noop
             | ExecutionAction::RiskExit { .. }
-            | ExecutionAction::UpdatePositionRisk { .. }
             | ExecutionAction::ForceClose => {}
         }
 
@@ -341,6 +356,140 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         events.push(RuntimeEvent::TradableCandleCompleted);
 
         RuntimeStep::new(events, self.portfolio.snapshot(candle.close))
+    }
+
+    fn apply_position_risk_update(
+        &mut self,
+        changes: PositionRiskBoundaryChanges,
+        mark_price: f64,
+    ) -> (PositionRiskUpdateResult, bool) {
+        let Some(position) = self.portfolio.open_position.as_mut() else {
+            return (PositionRiskUpdateResult::NoOpenPosition, false);
+        };
+
+        if matches!(changes.stop_loss, RiskBoundaryChange::Unchanged)
+            && matches!(changes.take_profit, RiskBoundaryChange::Unchanged)
+        {
+            return (PositionRiskUpdateResult::NoRiskBoundaryChange, false);
+        }
+
+        let mut applied = Vec::new();
+        let mut rejected = Vec::new();
+        let mut portfolio_changed = false;
+
+        Self::evaluate_position_risk_boundary_change(
+            position,
+            PositionRiskBoundaryKind::StopLoss,
+            changes.stop_loss,
+            mark_price,
+            &mut applied,
+            &mut rejected,
+            &mut portfolio_changed,
+        );
+        Self::evaluate_position_risk_boundary_change(
+            position,
+            PositionRiskBoundaryKind::TakeProfit,
+            changes.take_profit,
+            mark_price,
+            &mut applied,
+            &mut rejected,
+            &mut portfolio_changed,
+        );
+
+        (
+            PositionRiskUpdateResult::Evaluated { applied, rejected },
+            portfolio_changed,
+        )
+    }
+
+    fn evaluate_position_risk_boundary_change(
+        position: &mut OpenPosition,
+        boundary: PositionRiskBoundaryKind,
+        requested_change: RiskBoundaryChange,
+        mark_price: f64,
+        applied: &mut Vec<AppliedPositionRiskBoundaryChange>,
+        rejected: &mut Vec<RejectedPositionRiskBoundaryChange>,
+        portfolio_changed: &mut bool,
+    ) {
+        let current_boundary = match boundary {
+            PositionRiskBoundaryKind::StopLoss => position.risk_boundaries.stop_loss,
+            PositionRiskBoundaryKind::TakeProfit => position.risk_boundaries.take_profit,
+        };
+
+        let new_boundary = match requested_change {
+            RiskBoundaryChange::Unchanged => return,
+            RiskBoundaryChange::Clear => None,
+            RiskBoundaryChange::Set(price) => {
+                if !price.is_finite() {
+                    rejected.push(RejectedPositionRiskBoundaryChange {
+                        boundary,
+                        requested_change,
+                        reason: PositionRiskBoundaryChangeRejectionReason::NonFinitePrice,
+                    });
+                    return;
+                }
+                if price <= 0.0 {
+                    rejected.push(RejectedPositionRiskBoundaryChange {
+                        boundary,
+                        requested_change,
+                        reason: PositionRiskBoundaryChangeRejectionReason::NonPositivePrice,
+                    });
+                    return;
+                }
+                if Self::position_risk_boundary_is_already_crossed(
+                    position.side,
+                    boundary,
+                    price,
+                    mark_price,
+                ) {
+                    rejected.push(RejectedPositionRiskBoundaryChange {
+                        boundary,
+                        requested_change,
+                        reason: PositionRiskBoundaryChangeRejectionReason::AlreadyCrossed {
+                            mark_price,
+                        },
+                    });
+                    return;
+                }
+
+                Some(price)
+            }
+        };
+
+        let state_changed = current_boundary != new_boundary;
+        if state_changed {
+            match boundary {
+                PositionRiskBoundaryKind::StopLoss => {
+                    position.risk_boundaries.stop_loss = new_boundary
+                }
+                PositionRiskBoundaryKind::TakeProfit => {
+                    position.risk_boundaries.take_profit = new_boundary
+                }
+            }
+            *portfolio_changed = true;
+        }
+
+        applied.push(AppliedPositionRiskBoundaryChange {
+            boundary,
+            requested_change,
+            previous: current_boundary,
+            current: new_boundary,
+            state_changed,
+        });
+    }
+
+    fn position_risk_boundary_is_already_crossed(
+        side: PositionSide,
+        boundary: PositionRiskBoundaryKind,
+        price: f64,
+        mark_price: f64,
+    ) -> bool {
+        match (side, boundary) {
+            (PositionSide::Long, PositionRiskBoundaryKind::StopLoss) => price >= mark_price,
+            (PositionSide::Long, PositionRiskBoundaryKind::TakeProfit) => price <= mark_price,
+            (PositionSide::Short, PositionRiskBoundaryKind::StopLoss) => price <= mark_price,
+            (PositionSide::Short, PositionRiskBoundaryKind::TakeProfit) => price >= mark_price,
+        }
     }
 
     pub fn force_close(&mut self, mark_candle: Candle, reason: impl Into<String>) -> RuntimeStep {

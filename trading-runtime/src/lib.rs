@@ -9,8 +9,8 @@
 //! [`RuntimeStep`] return values.
 //!
 //! This slice intentionally does not include database persistence, live-daemon or
-//! backtester wiring, real broker execution, Position Risk Update application /
-//! Rhai API / persistence projection, or the full live/backtester migration.
+//! backtester wiring, real broker execution, Position Risk Update Rhai API /
+//! persistence projection, or the full live/backtester migration.
 //! The old `engine` crate remains only donor material for strategy-handling
 //! behavior; this crate must stay independent from it.
 
@@ -43,8 +43,9 @@ pub use decision::{
 };
 pub use domain::{ClosedPosition, Timeframe, TimeframeParseError, TimeframeUnit};
 pub use events::{
-    BlockedSecondaryContext, ExitKind, ForceCloseIgnoredReason, RuntimeEvent,
-    SecondaryContextUnavailableReason,
+    AppliedPositionRiskBoundaryChange, BlockedSecondaryContext, ExitKind, ForceCloseIgnoredReason,
+    PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryKind, PositionRiskUpdateResult,
+    RejectedPositionRiskBoundaryChange, RuntimeEvent, SecondaryContextUnavailableReason,
 };
 pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
 pub use market_input::{
