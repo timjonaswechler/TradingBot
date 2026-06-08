@@ -1,4 +1,4 @@
-use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
+use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
 use std::{
     hint::black_box,
     time::{Duration, Instant},
@@ -278,7 +278,7 @@ fn measured_position(side: PositionSide, entry_time: i64) -> OpenPosition {
         entry_price: 100.0,
         quantity: 1.0,
         entry_time,
-        entry_risk: EntryRiskParameters {
+        risk_boundaries: PositionRiskBoundaries {
             stop_loss: Some(50.0),
             take_profit: Some(250.0),
         },
@@ -358,10 +358,10 @@ fn on_tick(market, context) {
     let portfolio_long = context.portfolio.is_long();
     let portfolio_short = context.portfolio.is_short();
     let position = context.portfolio.position;
-    let entry_risk_present = false;
+    let risk_boundaries_present = false;
     let known_position_side = !has_position;
     if position != () {
-        entry_risk_present = position.has_stop_loss() || position.has_take_profit();
+        risk_boundaries_present = position.has_stop_loss() || position.has_take_profit();
         known_position_side = position.is_long() || position.is_short();
     }
 
@@ -405,11 +405,11 @@ fn on_tick(market, context) {
         return decision::open_long(1.0).with_reason("fast crossed above slow");
     }
 
-    if crossed_under && portfolio_long && entry_risk_present && seen < 0 {
+    if crossed_under && portfolio_long && risk_boundaries_present && seen < 0 {
         return decision::close_long().with_reason("fast crossed below slow");
     }
 
-    if portfolio_short && entry_risk_present && seen < 0 {
+    if portfolio_short && risk_boundaries_present && seen < 0 {
         return decision::close_short().with_reason("short protection check");
     }
 

@@ -151,7 +151,7 @@ Legacy-/Admin-Speicher erhalten.
 | `strategy_identity/runtime_asset/side` | `String` | Paper-Trading-Projektionsgrenze |
 | `entry_price/quantity` | `f64` | Runtime-Portfolio-Daten |
 | `entry_time` | `i64` | Unix ms |
-| `stop_loss/take_profit` | `Option<f64>` | Optionale Entry Risk Parameters, keine Sentinel-Werte |
+| `stop_loss/take_profit` | `Option<f64>` | Optionale Position Risk Boundaries, keine Sentinel-Werte |
 | `entry_metadata` | `Option<String>` | Optionale Adapter-Metadaten |
 
 ### `paper_trades`
@@ -161,6 +161,6 @@ Legacy-/Admin-Speicher erhalten.
 | `strategy_identity/runtime_asset/side` | `String` | Paper-Trading-Projektionsgrenze |
 | `entry_price/exit_price/quantity/realized_pnl` | `f64` | Runtime-Portfolio-Daten |
 | `entry_time/exit_time` | `i64` | Unix ms |
-| `stop_loss/take_profit` | `Option<f64>` | Persistierte Entry Risk Parameters |
+| `stop_loss/take_profit` | `Option<f64>` | Persistierte Position Risk Boundaries |
 | `exit_kind` | `PaperExitKind` | `StrategyExit`, `RiskExitStopLoss`, `RiskExitTakeProfit`, `ForceClose` |
 | `entry_metadata/exit_metadata` | `Option<String>` | Optionale Adapter-Metadaten |

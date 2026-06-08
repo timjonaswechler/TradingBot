@@ -131,7 +131,7 @@ fn sorted_counters(counters: &HashMap<Timeframe, u32>) -> Vec<ProtectiveShutdown
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
+    use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
     use trading_runtime::{
         BlockedSecondaryContext, ExitKind, PortfolioState, RuntimeEvent, RuntimePortfolioSnapshot,
         RuntimeStep, SecondaryContextUnavailableReason, SecondaryReadiness,
@@ -340,7 +340,7 @@ mod tests {
             entry_price: 100.0,
             quantity: 1.0,
             entry_time: 1_699_999_940_000,
-            entry_risk: EntryRiskParameters {
+            risk_boundaries: PositionRiskBoundaries {
                 stop_loss: Some(90.0),
                 take_profit: None,
             },

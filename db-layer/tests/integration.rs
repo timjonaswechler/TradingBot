@@ -466,5 +466,5 @@ fn db_position_converts_to_shared() {
     assert_eq!(pos.side, PositionSide::Long);
     assert!((pos.entry_price - 100.0).abs() < f64::EPSILON);
     assert_eq!(pos.quantity, 5.0);
-    assert_eq!(pos.entry_risk.stop_loss, Some(95.0));
+    assert_eq!(pos.risk_boundaries.stop_loss, Some(95.0));
 }

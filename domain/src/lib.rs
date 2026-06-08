@@ -51,5 +51,5 @@ pub mod position;
 pub mod timeframe;
 
 pub use candle::Candle;
-pub use position::{ClosedPosition, EntryRiskParameters, OpenPosition, PositionSide};
+pub use position::{ClosedPosition, OpenPosition, PositionRiskBoundaries, PositionSide};
 pub use timeframe::{Timeframe, TimeframeParseError, TimeframeUnit};

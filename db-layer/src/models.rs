@@ -4,7 +4,7 @@
 /// `PaperOpenPosition`, and `PaperTrade` structs are the canonical DB types.
 /// `domain::Candle` / `domain::OpenPosition` are the lightweight in-memory
 /// values used by runners/adapters.
-use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
+use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
 
 use crate::{
     error::DbError,
@@ -86,7 +86,7 @@ pub fn db_position_to_shared(p: LivePosition) -> (u64, String, OpenPosition) {
         entry_price: p.entry_price,
         quantity: p.size,
         entry_time: p.entry_time,
-        entry_risk: EntryRiskParameters {
+        risk_boundaries: PositionRiskBoundaries {
             stop_loss: (p.stop_loss != 0.0).then_some(p.stop_loss),
             take_profit: (p.take_profit != 0.0).then_some(p.take_profit),
         },

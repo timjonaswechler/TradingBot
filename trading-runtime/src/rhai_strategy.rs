@@ -817,7 +817,7 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
     engine.register_get("stop_loss", |position: &mut RhaiPosition| -> Dynamic {
         position
             .position
-            .entry_risk
+            .risk_boundaries
             .stop_loss
             .map(Dynamic::from)
             .unwrap_or(Dynamic::UNIT)
@@ -825,7 +825,7 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
     engine.register_get("take_profit", |position: &mut RhaiPosition| -> Dynamic {
         position
             .position
-            .entry_risk
+            .risk_boundaries
             .take_profit
             .map(Dynamic::from)
             .unwrap_or(Dynamic::UNIT)
@@ -837,10 +837,10 @@ fn register_strategy_context_api(engine: &mut RhaiEngine) {
         position.position.side == PositionSide::Short
     });
     engine.register_fn("has_stop_loss", |position: &mut RhaiPosition| {
-        position.position.entry_risk.stop_loss.is_some()
+        position.position.risk_boundaries.stop_loss.is_some()
     });
     engine.register_fn("has_take_profit", |position: &mut RhaiPosition| {
-        position.position.entry_risk.take_profit.is_some()
+        position.position.risk_boundaries.take_profit.is_some()
     });
 
     engine.register_fn("get", strategy_state_get_int);
@@ -1799,7 +1799,7 @@ if context.portfolio.equity == 1000.0
     }
 
     #[test]
-    fn grouped_context_exposes_open_position_details() {
+    fn grouped_context_exposes_open_position_risk_boundaries() {
         let source = source_returning(
             r#"
 let position = context.portfolio.position;

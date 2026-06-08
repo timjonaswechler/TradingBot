@@ -17,9 +17,9 @@ impl std::fmt::Display for PositionSide {
     }
 }
 
-/// Optional entry risk parameters attached to an opening decision.
+/// Current runtime-managed risk boundaries attached to an open position.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct EntryRiskParameters {
+pub struct PositionRiskBoundaries {
     pub stop_loss: Option<f64>,
     pub take_profit: Option<f64>,
 }
@@ -35,7 +35,7 @@ pub struct OpenPosition {
     pub quantity: f64,
     /// Unix ms timestamp of entry.
     pub entry_time: i64,
-    pub entry_risk: EntryRiskParameters,
+    pub risk_boundaries: PositionRiskBoundaries,
 }
 
 /// Passive result value for an open position that has been closed.
@@ -59,7 +59,7 @@ mod tests {
             entry_price: 100.0,
             quantity: 10.0,
             entry_time: 0,
-            entry_risk: EntryRiskParameters {
+            risk_boundaries: PositionRiskBoundaries {
                 stop_loss: Some(90.0),
                 take_profit: Some(120.0),
             },
@@ -73,9 +73,29 @@ mod tests {
         };
 
         assert_eq!(position.quantity, 10.0);
-        assert_eq!(position.entry_risk.stop_loss, Some(90.0));
+        assert_eq!(position.risk_boundaries.stop_loss, Some(90.0));
         assert_eq!(closed.position, position);
         assert_eq!(closed.realized_pnl, 100.0);
+    }
+
+    #[test]
+    fn open_position_serializes_current_risk_boundaries_language() {
+        let position = OpenPosition {
+            symbol: "AAPL".into(),
+            side: PositionSide::Long,
+            entry_price: 100.0,
+            quantity: 10.0,
+            entry_time: 0,
+            risk_boundaries: PositionRiskBoundaries {
+                stop_loss: Some(90.0),
+                take_profit: None,
+            },
+        };
+
+        let value = serde_json::to_value(&position).expect("position should serialize");
+
+        assert!(value.get("risk_boundaries").is_some());
+        assert!(value.get("entry_risk").is_none());
     }
 
     #[test]

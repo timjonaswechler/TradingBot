@@ -1,6 +1,6 @@
 //! Runtime-local portfolio state and snapshots.
 
-use domain::{Candle, ClosedPosition, EntryRiskParameters, OpenPosition, PositionSide};
+use domain::{Candle, ClosedPosition, OpenPosition, PositionRiskBoundaries, PositionSide};
 
 /// Runtime-local portfolio state for one trading session.
 ///
@@ -101,7 +101,7 @@ impl PortfolioState {
             entry_price: candle.close,
             quantity,
             entry_time: candle.timestamp,
-            entry_risk: EntryRiskParameters {
+            risk_boundaries: PositionRiskBoundaries {
                 stop_loss,
                 take_profit,
             },
@@ -214,7 +214,7 @@ mod tests {
             entry_price: 100.0,
             quantity: 2.0,
             entry_time: 1_700_000_000_000,
-            entry_risk: EntryRiskParameters::default(),
+            risk_boundaries: PositionRiskBoundaries::default(),
         }
     }
 
@@ -316,8 +316,8 @@ mod tests {
         assert_eq!(position.entry_price, 100.0);
         assert_eq!(position.quantity, 2.0);
         assert_eq!(position.entry_time, 1);
-        assert_eq!(position.entry_risk.stop_loss, Some(90.0));
-        assert_eq!(position.entry_risk.take_profit, Some(120.0));
+        assert_eq!(position.risk_boundaries.stop_loss, Some(90.0));
+        assert_eq!(position.risk_boundaries.take_profit, Some(120.0));
     }
 
     #[test]
@@ -374,8 +374,8 @@ mod tests {
         assert_eq!(position.side, PositionSide::Short);
         assert_eq!(position.entry_price, 100.0);
         assert_eq!(position.quantity, 2.0);
-        assert_eq!(position.entry_risk.stop_loss, Some(110.0));
-        assert_eq!(position.entry_risk.take_profit, Some(80.0));
+        assert_eq!(position.risk_boundaries.stop_loss, Some(110.0));
+        assert_eq!(position.risk_boundaries.take_profit, Some(80.0));
     }
 
     #[test]

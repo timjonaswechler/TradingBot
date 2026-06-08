@@ -12,7 +12,7 @@ use db_layer::{
     get_paper_open_position, get_paper_trades, open_paper_position, record_paper_position_closed,
     DbConnection, DbError, PaperExitKind, PaperOpenPosition, PaperTrade,
 };
-use domain::{ClosedPosition, EntryRiskParameters, OpenPosition, PositionSide};
+use domain::{ClosedPosition, OpenPosition, PositionRiskBoundaries, PositionSide};
 use thiserror::Error;
 use trading_runtime::{ExitKind, PortfolioState, RiskExitKind, RuntimeEvent, RuntimeStep};
 
@@ -346,7 +346,7 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
 
 /// Deterministic key for a runtime-local open Paper Trading position.
 ///
-/// Entry Risk Parameters are intentionally not part of identity; they are
+/// Position Risk Boundaries are intentionally not part of identity; they are
 /// persisted as data and compared by the paper reducer/helper.
 pub fn open_position_projection_key(
     strategy_identity: &str,
@@ -362,8 +362,8 @@ pub fn open_position_projection_key(
 /// Deterministic key for a completed Paper Trading position.
 ///
 /// This extends the open-position identity with exit time, exit price, realized
-/// PnL, and typed exit kind. Entry Risk Parameters remain persisted data, not
-/// primary identity fields.
+/// PnL, and typed exit kind. Position Risk Boundaries remain persisted data,
+/// not primary identity fields.
 pub fn completed_trade_projection_key(
     strategy_identity: &str,
     runtime_asset: &str,
@@ -401,8 +401,8 @@ pub fn paper_open_position_from_runtime(
         entry_price: position.entry_price,
         quantity: position.quantity,
         entry_time: position.entry_time,
-        stop_loss: position.entry_risk.stop_loss,
-        take_profit: position.entry_risk.take_profit,
+        stop_loss: position.risk_boundaries.stop_loss,
+        take_profit: position.risk_boundaries.take_profit,
         entry_metadata: None,
     }
 }
@@ -429,8 +429,8 @@ pub fn paper_trade_from_runtime(
         realized_pnl: closed_position.realized_pnl,
         entry_time: closed_position.position.entry_time,
         exit_time: closed_position.exit_time,
-        stop_loss: closed_position.position.entry_risk.stop_loss,
-        take_profit: closed_position.position.entry_risk.take_profit,
+        stop_loss: closed_position.position.risk_boundaries.stop_loss,
+        take_profit: closed_position.position.risk_boundaries.take_profit,
         exit_kind: paper_exit_kind(exit_kind),
         entry_metadata: None,
         exit_metadata: None,
@@ -446,7 +446,7 @@ fn paper_open_position_to_domain(
         entry_price: position.entry_price,
         quantity: position.quantity,
         entry_time: position.entry_time,
-        entry_risk: EntryRiskParameters {
+        risk_boundaries: PositionRiskBoundaries {
             stop_loss: position.stop_loss,
             take_profit: position.take_profit,
         },
@@ -696,7 +696,7 @@ mod tests {
             entry_price: 100.0,
             quantity: 2.0,
             entry_time: 1_700_000_000_000,
-            entry_risk: EntryRiskParameters {
+            risk_boundaries: PositionRiskBoundaries {
                 stop_loss: Some(95.0),
                 take_profit: Some(120.0),
             },
@@ -780,12 +780,12 @@ mod tests {
         assert_eq!(position.side, PositionSide::Short);
         assert_eq!(position.entry_price, 100.0);
         assert_eq!(position.quantity, 2.0);
-        assert_eq!(position.entry_risk.stop_loss, Some(95.0));
-        assert_eq!(position.entry_risk.take_profit, Some(120.0));
+        assert_eq!(position.risk_boundaries.stop_loss, Some(95.0));
+        assert_eq!(position.risk_boundaries.take_profit, Some(120.0));
     }
 
     #[test]
-    fn projection_keys_are_deterministic_and_exclude_entry_risk_from_identity() {
+    fn projection_keys_are_deterministic_and_exclude_risk_boundaries_from_identity() {
         let position = runtime_position(PositionSide::Long);
 
         let first_key = open_position_projection_key(STRATEGY_IDENTITY, RUNTIME_ASSET, &position);
@@ -793,12 +793,12 @@ mod tests {
         assert_eq!(first_key, second_key);
 
         let mut risk_changed = position.clone();
-        risk_changed.entry_risk.stop_loss = Some(90.0);
-        risk_changed.entry_risk.take_profit = None;
+        risk_changed.risk_boundaries.stop_loss = Some(90.0);
+        risk_changed.risk_boundaries.take_profit = None;
         assert_eq!(
             first_key,
             open_position_projection_key(STRATEGY_IDENTITY, RUNTIME_ASSET, &risk_changed),
-            "Entry Risk Parameters are persisted data, not identity fields"
+            "Position Risk Boundaries are persisted data, not identity fields"
         );
 
         let mut quantity_changed = position.clone();

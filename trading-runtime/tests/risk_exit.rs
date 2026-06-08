@@ -1,4 +1,4 @@
-use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
+use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
 use trading_runtime::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 
 fn position(side: PositionSide, stop_loss: Option<f64>, take_profit: Option<f64>) -> OpenPosition {
@@ -8,7 +8,7 @@ fn position(side: PositionSide, stop_loss: Option<f64>, take_profit: Option<f64>
         entry_price: 100.0,
         quantity: 2.0,
         entry_time: 1,
-        entry_risk: EntryRiskParameters {
+        risk_boundaries: PositionRiskBoundaries {
             stop_loss,
             take_profit,
         },
@@ -43,7 +43,7 @@ fn expected(
 }
 
 #[test]
-fn position_without_entry_risk_never_produces_risk_exit() {
+fn position_without_risk_boundaries_never_produces_risk_exit() {
     let open_position = position(PositionSide::Long, None, None);
 
     let result = evaluate_risk_exit(&open_position, &candle(50.0, 150.0, 40.0, 120.0));

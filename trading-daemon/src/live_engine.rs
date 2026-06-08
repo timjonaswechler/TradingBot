@@ -528,7 +528,7 @@ mod tests {
         },
     };
     use db_layer::{PaperExitKind, PaperOpenPosition, PaperTrade};
-    use domain::{ClosedPosition, EntryRiskParameters, OpenPosition, PositionSide};
+    use domain::{ClosedPosition, OpenPosition, PositionRiskBoundaries, PositionSide};
     use trading_runtime::{ExitKind, RuntimeEvent, StrategyDecisionIntent};
 
     const STRATEGY_IDENTITY: &str = "btc-paper";
@@ -710,7 +710,7 @@ mod tests {
             entry_price: 100.0,
             quantity: 2.0,
             entry_time: 1_700_000_000_000,
-            entry_risk: EntryRiskParameters {
+            risk_boundaries: PositionRiskBoundaries {
                 stop_loss: Some(95.0),
                 take_profit: Some(120.0),
             },

@@ -167,7 +167,7 @@ if portfolio.is_flat() == {expect_flat}
 }
 
 #[test]
-fn position_helpers_reflect_side_and_entry_risk_presence() {
+fn position_helpers_reflect_side_and_risk_boundary_presence() {
     let cases = [
         (
             "long with risk",

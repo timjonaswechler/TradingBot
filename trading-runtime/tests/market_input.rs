@@ -1,4 +1,4 @@
-use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide};
+use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     BlockedSecondaryContext, ClosedPosition, ExecutionAction, ExitKind, MarketInput,
@@ -36,7 +36,7 @@ fn ohlc_candle(
     }
 }
 
-fn position_with_entry_risk(
+fn position_with_risk_boundaries(
     side: PositionSide,
     entry_price: f64,
     stop_loss: Option<f64>,
@@ -48,7 +48,7 @@ fn position_with_entry_risk(
         entry_price,
         quantity: 2.0,
         entry_time: 0,
-        entry_risk: EntryRiskParameters {
+        risk_boundaries: PositionRiskBoundaries {
             stop_loss,
             take_profit,
         },
@@ -384,13 +384,13 @@ fn interleaved_completed_primary_and_secondary_inputs_only_evaluate_primary_inpu
 }
 
 #[test]
-fn completed_secondary_candle_that_crosses_entry_risk_does_not_trigger_risk_exit() {
+fn completed_secondary_candle_that_crosses_risk_boundaries_does_not_trigger_risk_exit() {
     let secondary_crossing_stop = ohlc_candle(1, "1h", 100.0, 101.0, 85.0, 88.0);
     let primary_crossing_stop = ohlc_candle(2, "1m", 100.0, 101.0, 85.0, 88.0);
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
     let open_position =
-        position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), Some(120.0));
+        position_with_risk_boundaries(PositionSide::Long, 100.0, Some(90.0), Some(120.0));
     portfolio.open_position = Some(open_position.clone());
     let mut runtime = TradingRuntime::with_config(
         runtime_config(),
@@ -484,7 +484,7 @@ fn completed_primary_before_all_timeframe_warmups_are_satisfied_is_stored_withou
     let early_completed_primary = ohlc_candle(3, "1m", 100.0, 105.0, 90.0, 99.0);
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
-    portfolio.open_position = Some(position_with_entry_risk(
+    portfolio.open_position = Some(position_with_risk_boundaries(
         PositionSide::Long,
         100.0,
         Some(90.0),
@@ -683,7 +683,7 @@ fn completed_primary_is_stored_even_when_risk_exit_prevents_strategy_tick() {
     let exit_candle = ohlc_candle(2, "1m", 100.0, 105.0, 90.0, 99.0);
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
-    portfolio.open_position = Some(position_with_entry_risk(
+    portfolio.open_position = Some(position_with_risk_boundaries(
         PositionSide::Long,
         100.0,
         Some(90.0),
@@ -859,7 +859,7 @@ fn missing_required_secondaries_are_reported_together_when_strategy_tick_is_bloc
 #[test]
 fn long_risk_exit_closes_before_missing_required_secondary_can_block_strategy_tick() {
     let primary = ohlc_candle(60_000, "1m", 100.0, 105.0, 90.0, 99.0);
-    let open_position = position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), None);
+    let open_position = position_with_risk_boundaries(PositionSide::Long, 100.0, Some(90.0), None);
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
@@ -947,7 +947,7 @@ fn long_risk_exit_closes_before_missing_required_secondary_can_block_strategy_ti
 #[test]
 fn short_risk_exit_closes_before_missing_required_secondary_can_block_strategy_tick() {
     let primary = ohlc_candle(60_000, "1m", 100.0, 105.0, 80.0, 90.0);
-    let open_position = position_with_entry_risk(PositionSide::Short, 100.0, None, Some(80.0));
+    let open_position = position_with_risk_boundaries(PositionSide::Short, 100.0, None, Some(80.0));
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
@@ -1036,7 +1036,7 @@ fn short_risk_exit_closes_before_missing_required_secondary_can_block_strategy_t
 fn long_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick() {
     let stale_secondary = candle(0, "1h", 100.0);
     let primary = ohlc_candle(7_200_000, "1m", 100.0, 105.0, 90.0, 99.0);
-    let open_position = position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), None);
+    let open_position = position_with_risk_boundaries(PositionSide::Long, 100.0, Some(90.0), None);
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
@@ -1088,7 +1088,7 @@ fn long_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick
 fn short_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tick() {
     let stale_secondary = candle(0, "1h", 100.0);
     let primary = ohlc_candle(7_200_000, "1m", 100.0, 105.0, 80.0, 90.0);
-    let open_position = position_with_entry_risk(PositionSide::Short, 100.0, None, Some(80.0));
+    let open_position = position_with_risk_boundaries(PositionSide::Short, 100.0, None, Some(80.0));
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
@@ -1139,7 +1139,7 @@ fn short_risk_exit_closes_before_stale_required_secondary_can_block_strategy_tic
 #[test]
 fn open_position_without_risk_exit_keeps_missing_required_secondary_as_strategy_only_blocker() {
     let primary = ohlc_candle(60_000, "1m", 100.0, 105.0, 95.0, 101.0);
-    let open_position = position_with_entry_risk(PositionSide::Long, 100.0, Some(90.0), None);
+    let open_position = position_with_risk_boundaries(PositionSide::Long, 100.0, Some(90.0), None);
     let calls = Rc::new(RefCell::new(0));
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());

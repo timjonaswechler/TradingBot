@@ -1,4 +1,4 @@
-use domain::{Candle, EntryRiskParameters, OpenPosition, PositionSide, Timeframe};
+use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     ClosedPosition, ExecutionAction, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason,
@@ -25,7 +25,7 @@ fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Ca
 }
 
 fn position(side: PositionSide, entry_time: i64, entry_price: f64, quantity: f64) -> OpenPosition {
-    position_with_entry_risk(side, entry_time, entry_price, quantity, None, None)
+    position_with_risk_boundaries(side, entry_time, entry_price, quantity, None, None)
 }
 
 fn completed_primary_step<S: StrategyHandler>(
@@ -37,7 +37,7 @@ fn completed_primary_step<S: StrategyHandler>(
         .expect("completed primary candle should be accepted")
 }
 
-fn position_with_entry_risk(
+fn position_with_risk_boundaries(
     side: PositionSide,
     entry_time: i64,
     entry_price: f64,
@@ -51,7 +51,7 @@ fn position_with_entry_risk(
         entry_price,
         quantity,
         entry_time,
-        entry_risk: EntryRiskParameters {
+        risk_boundaries: PositionRiskBoundaries {
             stop_loss,
             take_profit,
         },
@@ -200,7 +200,7 @@ fn assert_risk_exit_step(
 #[test]
 fn tradable_candle_with_long_stop_loss_risk_exit_closes_before_strategy_tick() {
     assert_risk_exit_step(
-        position_with_entry_risk(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), None),
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), None),
         ohlc_candle(2, 100.0, 105.0, 90.0, 99.0),
         RiskExitTriggered {
             side: PositionSide::Long,
@@ -216,7 +216,7 @@ fn tradable_candle_with_long_stop_loss_risk_exit_closes_before_strategy_tick() {
 #[test]
 fn tradable_candle_with_long_take_profit_risk_exit_closes_at_selected_price() {
     assert_risk_exit_step(
-        position_with_entry_risk(PositionSide::Long, 1, 100.0, 2.0, None, Some(120.0)),
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, None, Some(120.0)),
         ohlc_candle(2, 100.0, 120.0, 95.0, 110.0),
         RiskExitTriggered {
             side: PositionSide::Long,
@@ -232,7 +232,7 @@ fn tradable_candle_with_long_take_profit_risk_exit_closes_at_selected_price() {
 #[test]
 fn tradable_candle_with_short_stop_loss_risk_exit_closes_at_selected_price() {
     assert_risk_exit_step(
-        position_with_entry_risk(PositionSide::Short, 1, 100.0, 2.0, Some(110.0), None),
+        position_with_risk_boundaries(PositionSide::Short, 1, 100.0, 2.0, Some(110.0), None),
         ohlc_candle(2, 100.0, 110.0, 95.0, 105.0),
         RiskExitTriggered {
             side: PositionSide::Short,
@@ -248,7 +248,7 @@ fn tradable_candle_with_short_stop_loss_risk_exit_closes_at_selected_price() {
 #[test]
 fn tradable_candle_with_short_take_profit_risk_exit_closes_at_selected_price() {
     assert_risk_exit_step(
-        position_with_entry_risk(PositionSide::Short, 1, 100.0, 2.0, None, Some(80.0)),
+        position_with_risk_boundaries(PositionSide::Short, 1, 100.0, 2.0, None, Some(80.0)),
         ohlc_candle(2, 100.0, 105.0, 80.0, 90.0),
         RiskExitTriggered {
             side: PositionSide::Short,
@@ -264,7 +264,7 @@ fn tradable_candle_with_short_take_profit_risk_exit_closes_at_selected_price() {
 #[test]
 fn tradable_candle_with_both_intrabar_boundaries_selects_stop_loss_and_reports_both() {
     assert_risk_exit_step(
-        position_with_entry_risk(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), Some(120.0)),
+        position_with_risk_boundaries(PositionSide::Long, 1, 100.0, 2.0, Some(90.0), Some(120.0)),
         ohlc_candle(2, 100.0, 120.0, 90.0, 110.0),
         RiskExitTriggered {
             side: PositionSide::Long,
@@ -431,7 +431,7 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
 fn warmup_input_crossing_stop_loss_on_initial_open_position_does_not_trade() {
     let warmup = candle(1, 80.0);
     let open_position =
-        position_with_entry_risk(PositionSide::Long, 0, 100.0, 2.0, Some(90.0), None);
+        position_with_risk_boundaries(PositionSide::Long, 0, 100.0, 2.0, Some(90.0), None);
     let mut portfolio = PortfolioState::new(1_000.0);
     portfolio.open_position = Some(open_position.clone());
     let mut runtime = TradingRuntime::new(
@@ -614,7 +614,7 @@ fn tradable_candle_opens_short_from_flat_and_updates_portfolio_snapshot() {
 }
 
 #[test]
-fn tradable_candle_opens_long_with_valid_entry_risk_boundaries() {
+fn tradable_candle_opens_long_with_valid_entry_risk_parameters() {
     let candle = candle(1, 100.0);
     let decision = StrategyDecision::open_long(2.0).with_entry_risk(Some(90.0), Some(120.0));
     let mut runtime = TradingRuntime::new(
@@ -622,7 +622,7 @@ fn tradable_candle_opens_long_with_valid_entry_risk_boundaries() {
         0,
         PredeterminedStrategyHandler::from_decisions([decision.clone()]),
     );
-    let expected_position = position_with_entry_risk(
+    let expected_position = position_with_risk_boundaries(
         PositionSide::Long,
         candle.timestamp,
         candle.close,
@@ -650,7 +650,7 @@ fn tradable_candle_opens_long_with_valid_entry_risk_boundaries() {
 }
 
 #[test]
-fn tradable_candle_opens_short_with_valid_entry_risk_boundaries() {
+fn tradable_candle_opens_short_with_valid_entry_risk_parameters() {
     let candle = candle(1, 100.0);
     let decision = StrategyDecision::open_short(2.0).with_entry_risk(Some(110.0), Some(80.0));
     let mut runtime = TradingRuntime::new(
@@ -658,7 +658,7 @@ fn tradable_candle_opens_short_with_valid_entry_risk_boundaries() {
         0,
         PredeterminedStrategyHandler::from_decisions([decision.clone()]),
     );
-    let expected_position = position_with_entry_risk(
+    let expected_position = position_with_risk_boundaries(
         PositionSide::Short,
         candle.timestamp,
         candle.close,
@@ -686,7 +686,7 @@ fn tradable_candle_opens_short_with_valid_entry_risk_boundaries() {
 }
 
 #[test]
-fn tradable_candle_opens_with_one_valid_entry_risk_boundary() {
+fn tradable_candle_opens_with_one_valid_entry_risk_parameter() {
     for (decision, expected_side, expected_stop_loss, expected_take_profit) in [
         (
             StrategyDecision::open_long(2.0).with_entry_risk(Some(90.0), None),
@@ -712,7 +712,7 @@ fn tradable_candle_opens_with_one_valid_entry_risk_boundary() {
 
         assert_eq!(
             step.portfolio_snapshot.open_position,
-            Some(position_with_entry_risk(
+            Some(position_with_risk_boundaries(
                 expected_side,
                 candle.timestamp,
                 candle.close,

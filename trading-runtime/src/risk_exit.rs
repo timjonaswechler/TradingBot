@@ -2,14 +2,14 @@
 
 use domain::{Candle, OpenPosition, PositionSide};
 
-/// Runtime-managed hard exit boundary selected from Entry Risk Parameters.
+/// Runtime-managed hard exit boundary selected from current Position Risk Boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RiskExitKind {
     StopLoss,
     TakeProfit,
 }
 
-/// Result of evaluating an open position's Entry Risk Parameters against one candle.
+/// Result of evaluating an open position's Position Risk Boundaries against one candle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RiskExitTriggered {
     pub side: PositionSide,
@@ -18,7 +18,7 @@ pub struct RiskExitTriggered {
     pub exit_price: f64,
 }
 
-/// Evaluate whether one already-open position is closed by its configured Entry Risk Parameters.
+/// Evaluate whether one already-open position is closed by its configured Position Risk Boundaries.
 ///
 /// This function is pure: it only reads the open position and candle and never mutates Portfolio
 /// State. Open-gap triggers are evaluated before intrabar high/low touches because the candle open
@@ -31,7 +31,7 @@ pub fn evaluate_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<Ri
 }
 
 fn evaluate_long_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<RiskExitTriggered> {
-    if let Some(stop_loss) = position.entry_risk.stop_loss {
+    if let Some(stop_loss) = position.risk_boundaries.stop_loss {
         if candle.open <= stop_loss {
             return Some(selected(
                 PositionSide::Long,
@@ -41,7 +41,7 @@ fn evaluate_long_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<R
         }
     }
 
-    if let Some(take_profit) = position.entry_risk.take_profit {
+    if let Some(take_profit) = position.risk_boundaries.take_profit {
         if candle.open >= take_profit {
             return Some(selected(
                 PositionSide::Long,
@@ -52,12 +52,12 @@ fn evaluate_long_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<R
     }
 
     let stop_loss_triggered = position
-        .entry_risk
+        .risk_boundaries
         .stop_loss
         .map(|stop_loss| candle.low <= stop_loss)
         .unwrap_or(false);
     let take_profit_triggered = position
-        .entry_risk
+        .risk_boundaries
         .take_profit
         .map(|take_profit| candle.high >= take_profit)
         .unwrap_or(false);
@@ -65,14 +65,14 @@ fn evaluate_long_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<R
     intrabar_result(
         PositionSide::Long,
         stop_loss_triggered,
-        position.entry_risk.stop_loss,
+        position.risk_boundaries.stop_loss,
         take_profit_triggered,
-        position.entry_risk.take_profit,
+        position.risk_boundaries.take_profit,
     )
 }
 
 fn evaluate_short_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<RiskExitTriggered> {
-    if let Some(stop_loss) = position.entry_risk.stop_loss {
+    if let Some(stop_loss) = position.risk_boundaries.stop_loss {
         if candle.open >= stop_loss {
             return Some(selected(
                 PositionSide::Short,
@@ -82,7 +82,7 @@ fn evaluate_short_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<
         }
     }
 
-    if let Some(take_profit) = position.entry_risk.take_profit {
+    if let Some(take_profit) = position.risk_boundaries.take_profit {
         if candle.open <= take_profit {
             return Some(selected(
                 PositionSide::Short,
@@ -93,12 +93,12 @@ fn evaluate_short_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<
     }
 
     let stop_loss_triggered = position
-        .entry_risk
+        .risk_boundaries
         .stop_loss
         .map(|stop_loss| candle.high >= stop_loss)
         .unwrap_or(false);
     let take_profit_triggered = position
-        .entry_risk
+        .risk_boundaries
         .take_profit
         .map(|take_profit| candle.low <= take_profit)
         .unwrap_or(false);
@@ -106,9 +106,9 @@ fn evaluate_short_risk_exit(position: &OpenPosition, candle: &Candle) -> Option<
     intrabar_result(
         PositionSide::Short,
         stop_loss_triggered,
-        position.entry_risk.stop_loss,
+        position.risk_boundaries.stop_loss,
         take_profit_triggered,
-        position.entry_risk.take_profit,
+        position.risk_boundaries.take_profit,
     )
 }
 
