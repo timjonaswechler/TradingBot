@@ -363,6 +363,83 @@ pub fn open_paper_position(
     Ok(())
 }
 
+/// Update current Position Risk Boundaries for a projected Paper Trading position.
+///
+/// The operation is idempotent when the same boundary state is projected again.
+/// A missing or different open position for the Strategy Identity × Runtime
+/// Asset is a Paper Trading persistence inconsistency.
+#[reducer]
+pub fn update_paper_position_risk_boundaries(
+    ctx: &ReducerContext,
+    open_projection_key: String,
+    strategy_identity: String,
+    runtime_asset: String,
+    side: String,
+    entry_price: f64,
+    quantity: f64,
+    entry_time: i64,
+    stop_loss: Option<f64>,
+    take_profit: Option<f64>,
+) -> Result<(), String> {
+    let Some(existing) = ctx
+        .db
+        .paper_open_positions()
+        .projection_key()
+        .find(&open_projection_key)
+    else {
+        if let Some(conflict) = ctx.db.paper_open_positions().iter().find(|position| {
+            position.strategy_identity == strategy_identity && position.runtime_asset == runtime_asset
+        }) {
+            return Err(format!(
+                "paper persistence inconsistency: open paper position for strategy_identity '{strategy_identity}' and runtime_asset '{runtime_asset}' has projection key '{}', expected '{open_projection_key}'",
+                conflict.projection_key
+            ));
+        }
+
+        return Err(format!(
+            "paper persistence inconsistency: no matching open paper position for open projection key '{open_projection_key}'"
+        ));
+    };
+
+    if !paper_open_position_identity_matches(
+        &existing,
+        &open_projection_key,
+        &strategy_identity,
+        &runtime_asset,
+        &side,
+        entry_price,
+        quantity,
+        entry_time,
+    ) {
+        return Err(format!(
+            "paper persistence inconsistency: open paper position '{open_projection_key}' does not match projected Position Risk Update identity"
+        ));
+    }
+
+    if existing.stop_loss == stop_loss && existing.take_profit == take_profit {
+        return Ok(());
+    }
+
+    ctx.db
+        .paper_open_positions()
+        .projection_key()
+        .delete(&open_projection_key);
+    ctx.db.paper_open_positions().insert(PaperOpenPosition {
+        projection_key: existing.projection_key,
+        strategy_identity: existing.strategy_identity,
+        runtime_asset: existing.runtime_asset,
+        side: existing.side,
+        entry_price: existing.entry_price,
+        quantity: existing.quantity,
+        entry_time: existing.entry_time,
+        stop_loss,
+        take_profit,
+        entry_metadata: existing.entry_metadata,
+    });
+
+    Ok(())
+}
+
 /// Atomically close a projected Paper Trading position.
 ///
 /// If the completed trade already exists with identical data, this is a no-op.
@@ -550,6 +627,31 @@ fn paper_open_position_matches(
     take_profit: &Option<f64>,
     entry_metadata: &Option<String>,
 ) -> bool {
+    paper_open_position_identity_matches(
+        position,
+        projection_key,
+        strategy_identity,
+        runtime_asset,
+        side,
+        entry_price,
+        quantity,
+        entry_time,
+    ) && &position.stop_loss == stop_loss
+        && &position.take_profit == take_profit
+        && &position.entry_metadata == entry_metadata
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paper_open_position_identity_matches(
+    position: &PaperOpenPosition,
+    projection_key: &str,
+    strategy_identity: &str,
+    runtime_asset: &str,
+    side: &str,
+    entry_price: f64,
+    quantity: f64,
+    entry_time: i64,
+) -> bool {
     position.projection_key == projection_key
         && position.strategy_identity == strategy_identity
         && position.runtime_asset == runtime_asset
@@ -557,9 +659,6 @@ fn paper_open_position_matches(
         && position.entry_price == entry_price
         && position.quantity == quantity
         && position.entry_time == entry_time
-        && &position.stop_loss == stop_loss
-        && &position.take_profit == take_profit
-        && &position.entry_metadata == entry_metadata
 }
 
 #[allow(clippy::too_many_arguments)]

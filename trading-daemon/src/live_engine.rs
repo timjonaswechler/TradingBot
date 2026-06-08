@@ -539,6 +539,9 @@ mod tests {
         Open {
             projection_key: String,
         },
+        UpdateRiskBoundaries {
+            projection_key: String,
+        },
         Close {
             open_projection_key: String,
             trade_projection_key: String,
@@ -552,6 +555,7 @@ mod tests {
         writes: RefCell<Vec<PaperWrite>>,
         load_calls: Cell<usize>,
         fail_next_open: RefCell<Option<String>>,
+        fail_next_update: RefCell<Option<String>>,
         fail_next_close: RefCell<Option<String>>,
     }
 
@@ -566,6 +570,10 @@ mod tests {
 
         fn fail_next_open(&self, message: impl Into<String>) {
             *self.fail_next_open.borrow_mut() = Some(message.into());
+        }
+
+        fn fail_next_update(&self, message: impl Into<String>) {
+            *self.fail_next_update.borrow_mut() = Some(message.into());
         }
     }
 
@@ -612,6 +620,40 @@ mod tests {
                     Ok(())
                 }
             }
+        }
+
+        fn update_position_risk_boundaries(
+            &self,
+            position: &PaperOpenPosition,
+        ) -> Result<(), PaperTradingPersistenceError> {
+            self.writes
+                .borrow_mut()
+                .push(PaperWrite::UpdateRiskBoundaries {
+                    projection_key: position.projection_key.clone(),
+                });
+
+            if let Some(message) = self.fail_next_update.borrow_mut().take() {
+                return Err(PaperTradingPersistenceError::Store(message));
+            }
+
+            let mut open_position = self.open_position.borrow_mut();
+            let Some(existing) = open_position.as_mut() else {
+                return Err(PaperTradingPersistenceError::Store(format!(
+                    "no matching open paper position for '{}'",
+                    position.projection_key
+                )));
+            };
+
+            if !paper_open_position_identity_matches(existing, position) {
+                return Err(PaperTradingPersistenceError::Store(format!(
+                    "open paper position '{}' does not match '{}'",
+                    existing.projection_key, position.projection_key
+                )));
+            }
+
+            existing.stop_loss = position.stop_loss;
+            existing.take_profit = position.take_profit;
+            Ok(())
         }
 
         fn record_position_closed(
@@ -676,6 +718,19 @@ mod tests {
         {
             *open_position = None;
         }
+    }
+
+    fn paper_open_position_identity_matches(
+        existing: &PaperOpenPosition,
+        expected: &PaperOpenPosition,
+    ) -> bool {
+        existing.projection_key == expected.projection_key
+            && existing.strategy_identity == expected.strategy_identity
+            && existing.runtime_asset == expected.runtime_asset
+            && existing.side == expected.side
+            && existing.entry_price == expected.entry_price
+            && existing.quantity == expected.quantity
+            && existing.entry_time == expected.entry_time
     }
 
     fn asset() -> AssetConfig {
@@ -766,6 +821,33 @@ fn on_tick(market, context) {
         decision::hold().with_reason("hold")
     } else {
         decision::close_long().with_reason("exit")
+    }
+}
+"#
+    }
+
+    fn open_update_risk_hold_strategy() -> &'static str {
+        r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn on_tick(market, context) {
+    let seen = context.state.int("seen", 0);
+    context.state.set_int("seen", seen + 1);
+
+    if seen == 0 {
+        decision::open_long(2.0)
+            .with_stop_loss(95.0)
+            .with_take_profit(120.0)
+            .with_reason("entry")
+    } else if seen == 1 {
+        decision::update_position_risk()
+            .set_stop_loss(100.0)
+            .clear_take_profit()
+            .with_reason("trail")
+    } else {
+        decision::hold().with_reason("hold")
     }
 }
 "#
@@ -961,6 +1043,85 @@ fn on_tick(market, context) {
             .on_completed_candle(candle("1m", 120_000, 101.0))
             .expect("next candle is accepted only after prior projection returned");
         assert!(store.open_position.borrow().is_some());
+    }
+
+    #[test]
+    fn position_risk_update_projection_is_confirmed_before_accepting_next_completed_candle() {
+        let store = FakePaperStore::default();
+        let mut session = PaperLiveRuntimeSession::from_strategy_source(
+            asset(),
+            open_update_risk_hold_strategy(),
+            &store,
+        )
+        .expect("paper live session should build");
+
+        session
+            .on_completed_candle(candle("1m", 60_000, 100.0))
+            .expect("entry should be projected");
+        let update_step = session
+            .on_completed_candle(candle("1m", 120_000, 105.0))
+            .expect("risk update should project synchronously");
+
+        assert!(update_step
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::PositionRiskUpdateEvaluated { .. })));
+        let open = store
+            .open_position
+            .borrow()
+            .clone()
+            .expect("updated paper open position should remain persisted");
+        assert_eq!(open.stop_loss, Some(100.0));
+        assert_eq!(open.take_profit, None);
+        assert!(matches!(
+            store.writes.borrow().as_slice(),
+            [
+                PaperWrite::Open { .. },
+                PaperWrite::UpdateRiskBoundaries { .. }
+            ]
+        ));
+
+        session
+            .on_completed_candle(candle("1m", 180_000, 106.0))
+            .expect("next candle is accepted only after update projection returned");
+        assert_eq!(store.trades.borrow().len(), 0);
+    }
+
+    #[test]
+    fn failed_position_risk_update_projection_stops_session_before_next_candle() {
+        let store = FakePaperStore::default();
+        let mut session = PaperLiveRuntimeSession::from_strategy_source(
+            asset(),
+            open_update_risk_hold_strategy(),
+            &store,
+        )
+        .expect("paper live session should build");
+
+        session
+            .on_completed_candle(candle("1m", 60_000, 100.0))
+            .expect("entry should be projected");
+        store.fail_next_update("unconfirmed risk update projection");
+
+        let update_error = session
+            .on_completed_candle(candle("1m", 120_000, 105.0))
+            .expect_err("unconfirmed risk update projection should stop paper live runner");
+        assert!(update_error
+            .to_string()
+            .contains("unconfirmed risk update projection"));
+
+        let stopped_error = session
+            .on_completed_candle(candle("1m", 180_000, 106.0))
+            .expect_err("stopped runner must not feed another candle");
+        assert!(stopped_error
+            .to_string()
+            .contains("no further Tradable Candles will be processed"));
+        assert!(matches!(
+            store.writes.borrow().as_slice(),
+            [
+                PaperWrite::Open { .. },
+                PaperWrite::UpdateRiskBoundaries { .. }
+            ]
+        ));
     }
 
     #[test]

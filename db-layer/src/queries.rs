@@ -24,6 +24,7 @@ use crate::{
         open_paper_position as open_paper_position_reducer,
         open_position,
         record_paper_position_closed as record_paper_position_closed_reducer,
+        update_paper_position_risk_boundaries as update_paper_position_risk_boundaries_reducer,
         // Table access traits — must be in scope for table handles.
         Candle as DbCandle,
         CandlesTableAccess,
@@ -252,6 +253,37 @@ pub fn open_paper_position(
         .map_err(|e| DbError::ReducerSend(e.to_string()))?;
 
     wait_for_paper_reducer("open_paper_position", rx)
+}
+
+/// Update current Position Risk Boundaries for an open Paper Trading position.
+///
+/// The reducer validates the Strategy Identity × Runtime Asset boundary and the
+/// deterministic open-position projection identity before changing the stored
+/// Stop-Loss / Take-Profit data. It is idempotent when the same boundary state
+/// is projected again.
+pub fn update_paper_position_risk_boundaries(
+    conn: &DbConnection,
+    position: &PaperOpenPosition,
+) -> Result<(), DbError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    conn.reducers
+        .update_paper_position_risk_boundaries_then(
+            position.projection_key.clone(),
+            position.strategy_identity.clone(),
+            position.runtime_asset.clone(),
+            position.side.clone(),
+            position.entry_price,
+            position.quantity,
+            position.entry_time,
+            position.stop_loss,
+            position.take_profit,
+            move |_ctx, result| {
+                let _ = tx.send(result.map_err(|error| format!("{error:?}")));
+            },
+        )
+        .map_err(|e| DbError::ReducerSend(e.to_string()))?;
+
+    wait_for_paper_reducer("update_paper_position_risk_boundaries", rx)
 }
 
 /// Atomically record a completed Paper Trading position.

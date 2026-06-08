@@ -26,6 +26,7 @@ pub mod paper_open_positions_table;
 pub mod paper_trade_type;
 pub mod paper_trades_table;
 pub mod record_paper_position_closed_reducer;
+pub mod update_paper_position_risk_boundaries_reducer;
 
 pub use candle_type::Candle;
 pub use candles_table::*;
@@ -47,6 +48,7 @@ pub use paper_open_positions_table::*;
 pub use paper_trade_type::PaperTrade;
 pub use paper_trades_table::*;
 pub use record_paper_position_closed_reducer::record_paper_position_closed;
+pub use update_paper_position_risk_boundaries_reducer::update_paper_position_risk_boundaries;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -136,6 +138,17 @@ pub enum Reducer {
         entry_metadata: Option<String>,
         exit_metadata: Option<String>,
     },
+    UpdatePaperPositionRiskBoundaries {
+        open_projection_key: String,
+        strategy_identity: String,
+        runtime_asset: String,
+        side: String,
+        entry_price: f64,
+        quantity: f64,
+        entry_time: i64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+    },
 }
 
 impl __sdk::InModule for Reducer {
@@ -156,6 +169,9 @@ impl __sdk::Reducer for Reducer {
             Reducer::OpenPaperPosition { .. } => "open_paper_position",
             Reducer::OpenPosition { .. } => "open_position",
             Reducer::RecordPaperPositionClosed { .. } => "record_paper_position_closed",
+            Reducer::UpdatePaperPositionRiskBoundaries { .. } => {
+                "update_paper_position_risk_boundaries"
+            }
             _ => unreachable!(),
         }
     }
@@ -312,6 +328,27 @@ impl __sdk::Reducer for Reducer {
                 exit_kind: exit_kind.clone(),
                 entry_metadata: entry_metadata.clone(),
                 exit_metadata: exit_metadata.clone(),
+}),
+            Reducer::UpdatePaperPositionRiskBoundaries{
+                open_projection_key,
+                strategy_identity,
+                runtime_asset,
+                side,
+                entry_price,
+                quantity,
+                entry_time,
+                stop_loss,
+                take_profit,
+}             => __sats::bsatn::to_vec(&update_paper_position_risk_boundaries_reducer::UpdatePaperPositionRiskBoundariesArgs {
+                open_projection_key: open_projection_key.clone(),
+                strategy_identity: strategy_identity.clone(),
+                runtime_asset: runtime_asset.clone(),
+                side: side.clone(),
+                entry_price: entry_price.clone(),
+                quantity: quantity.clone(),
+                entry_time: entry_time.clone(),
+                stop_loss: stop_loss.clone(),
+                take_profit: take_profit.clone(),
 }),
             _ => unreachable!(),
 }

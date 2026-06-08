@@ -14,7 +14,8 @@ use db_layer::{
     delete_paper_data_by_strategy_identity, delete_trades_by_strategy, get_candles,
     get_candles_before, get_open_position, get_paper_open_position, get_paper_trades, get_trades,
     insert_candle, insert_trade, open_paper_position, open_position, record_paper_position_closed,
-    PaperExitKind, PaperOpenPosition, PaperTrade, SpacetimeClient,
+    update_paper_position_risk_boundaries, PaperExitKind, PaperOpenPosition, PaperTrade,
+    SpacetimeClient,
 };
 use domain::{Candle, Timeframe};
 
@@ -287,6 +288,60 @@ fn test_paper_position_open_is_idempotent_and_rejects_conflict() {
     let error = open_paper_position(conn, &conflicting_open)
         .expect_err("different open position for same strategy/runtime asset should conflict");
     assert!(error.to_string().contains("already exists"));
+
+    delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+}
+
+#[test]
+fn test_paper_position_risk_update_is_idempotent_and_requires_matching_open() {
+    if !integration_enabled() {
+        return;
+    }
+
+    let client = connect();
+    let conn = &*client.conn;
+    let position = paper_open_position("paper-open-risk-update");
+    let mut updated = position.clone();
+    updated.stop_loss = Some(97.5);
+    updated.take_profit = Some(125.0);
+
+    delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let missing_error = update_paper_position_risk_boundaries(conn, &updated)
+        .expect_err("updating without a matching open position should be inconsistent");
+    assert!(missing_error
+        .to_string()
+        .contains("no matching open paper position"));
+
+    open_paper_position(conn, &position).unwrap();
+    update_paper_position_risk_boundaries(conn, &updated).unwrap();
+    update_paper_position_risk_boundaries(conn, &updated).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let restored = get_paper_open_position(conn, STRAT, &position.runtime_asset)
+        .expect("open paper position should remain after risk update");
+    assert_eq!(restored.projection_key, position.projection_key);
+    assert_eq!(restored.stop_loss, Some(97.5));
+    assert_eq!(restored.take_profit, Some(125.0));
+
+    let mut identity_mismatch = updated.clone();
+    identity_mismatch.quantity = 3.0;
+    let mismatch_error = update_paper_position_risk_boundaries(conn, &identity_mismatch)
+        .expect_err("same projection key with different open identity should be inconsistent");
+    assert!(mismatch_error
+        .to_string()
+        .contains("does not match projected Position Risk Update identity"));
+
+    delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let mut conflicting_open = position.clone();
+    conflicting_open.projection_key = "paper-open-risk-update-conflict".into();
+    open_paper_position(conn, &conflicting_open).unwrap();
+    let conflict_error = update_paper_position_risk_boundaries(conn, &updated)
+        .expect_err("different open position for same strategy/runtime asset should conflict");
+    assert!(conflict_error.to_string().contains("expected"));
 
     delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(100));

@@ -10,11 +10,14 @@ use std::sync::Arc;
 
 use db_layer::{
     get_paper_open_position, get_paper_trades, open_paper_position, record_paper_position_closed,
-    DbConnection, DbError, PaperExitKind, PaperOpenPosition, PaperTrade,
+    update_paper_position_risk_boundaries, DbConnection, DbError, PaperExitKind, PaperOpenPosition,
+    PaperTrade,
 };
 use domain::{ClosedPosition, OpenPosition, PositionRiskBoundaries, PositionSide};
 use thiserror::Error;
-use trading_runtime::{ExitKind, PortfolioState, RiskExitKind, RuntimeEvent, RuntimeStep};
+use trading_runtime::{
+    ExitKind, PortfolioState, PositionRiskUpdateResult, RiskExitKind, RuntimeEvent, RuntimeStep,
+};
 
 const OPEN_POSITION_KEY_PREFIX: &str = "paper-open-v1";
 const COMPLETED_TRADE_KEY_PREFIX: &str = "paper-trade-v1";
@@ -68,6 +71,11 @@ pub trait PaperTradingPersistenceStore {
         position: &PaperOpenPosition,
     ) -> Result<(), PaperTradingPersistenceError>;
 
+    fn update_position_risk_boundaries(
+        &self,
+        position: &PaperOpenPosition,
+    ) -> Result<(), PaperTradingPersistenceError>;
+
     fn record_position_closed(
         &self,
         open_projection_key: &str,
@@ -97,6 +105,13 @@ impl<T: PaperTradingPersistenceStore + ?Sized> PaperTradingPersistenceStore for 
         position: &PaperOpenPosition,
     ) -> Result<(), PaperTradingPersistenceError> {
         (**self).open_position(position)
+    }
+
+    fn update_position_risk_boundaries(
+        &self,
+        position: &PaperOpenPosition,
+    ) -> Result<(), PaperTradingPersistenceError> {
+        (**self).update_position_risk_boundaries(position)
     }
 
     fn record_position_closed(
@@ -130,6 +145,13 @@ impl<T: PaperTradingPersistenceStore + ?Sized> PaperTradingPersistenceStore for 
         position: &PaperOpenPosition,
     ) -> Result<(), PaperTradingPersistenceError> {
         (**self).open_position(position)
+    }
+
+    fn update_position_risk_boundaries(
+        &self,
+        position: &PaperOpenPosition,
+    ) -> Result<(), PaperTradingPersistenceError> {
+        (**self).update_position_risk_boundaries(position)
     }
 
     fn record_position_closed(
@@ -167,6 +189,14 @@ impl PaperTradingPersistenceStore for DbConnection {
         position: &PaperOpenPosition,
     ) -> Result<(), PaperTradingPersistenceError> {
         open_paper_position(self, position).map_err(PaperTradingPersistenceError::from)
+    }
+
+    fn update_position_risk_boundaries(
+        &self,
+        position: &PaperOpenPosition,
+    ) -> Result<(), PaperTradingPersistenceError> {
+        update_paper_position_risk_boundaries(self, position)
+            .map_err(PaperTradingPersistenceError::from)
     }
 
     fn record_position_closed(
@@ -259,9 +289,11 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
         })
     }
 
-    /// Project persistable Runtime Portfolio Transition events in RuntimeStep
-    /// order. Non-transition events, including PortfolioUpdated, are ignored for
-    /// Paper Trading persistence V1.
+    /// Project persistable runtime-local Paper Trading outputs in RuntimeStep
+    /// order. Position open/close transitions are persisted directly, and
+    /// Position Risk Update result events are persisted only when they actually
+    /// changed current Position Risk Boundaries. Non-persistable events,
+    /// including PortfolioUpdated, are ignored.
     pub fn project_step(
         &self,
         step: &RuntimeStep,
@@ -296,6 +328,22 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
                     );
                     self.store
                         .record_position_closed(&open_projection_key, &trade)?;
+                    report.persisted_transition_count += 1;
+                }
+                RuntimeEvent::PositionRiskUpdateEvaluated { result, .. }
+                    if position_risk_update_changed_persisted_boundaries(result) =>
+                {
+                    let updated_position = step.portfolio_snapshot.open_position.as_ref().ok_or_else(|| {
+                        PaperTradingPersistenceError::Store(
+                            "runtime emitted an applied Position Risk Update without an open position in the RuntimeStep portfolio snapshot".into(),
+                        )
+                    })?;
+                    let record = paper_open_position_from_runtime(
+                        &self.strategy_identity,
+                        &self.runtime_asset,
+                        updated_position,
+                    );
+                    self.store.update_position_risk_boundaries(&record)?;
                     report.persisted_transition_count += 1;
                 }
                 _ => {}
@@ -476,6 +524,16 @@ fn paper_exit_kind(exit_kind: ExitKind) -> PaperExitKind {
     }
 }
 
+fn position_risk_update_changed_persisted_boundaries(result: &PositionRiskUpdateResult) -> bool {
+    match result {
+        PositionRiskUpdateResult::Evaluated { applied, .. } => {
+            applied.iter().any(|change| change.state_changed)
+        }
+        PositionRiskUpdateResult::NoOpenPosition
+        | PositionRiskUpdateResult::NoRiskBoundaryChange => false,
+    }
+}
+
 fn append_open_position_identity(
     bytes: &mut Vec<u8>,
     strategy_identity: &str,
@@ -538,7 +596,12 @@ fn stable_hash64(bytes: &[u8]) -> u64 {
 mod tests {
     use std::cell::RefCell;
 
-    use trading_runtime::{RuntimePortfolioSnapshot, StrategyDecision};
+    use trading_runtime::{
+        AppliedPositionRiskBoundaryChange, PositionRiskBoundaryChangeRejectionReason,
+        PositionRiskBoundaryChanges, PositionRiskBoundaryKind, PositionRiskUpdateResult,
+        RejectedPositionRiskBoundaryChange, RiskBoundaryChange, RuntimePortfolioSnapshot,
+        StrategyDecision,
+    };
 
     use super::*;
 
@@ -548,6 +611,9 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     enum StoreCall {
         Open {
+            projection_key: String,
+        },
+        UpdateRiskBoundaries {
             projection_key: String,
         },
         Close {
@@ -562,6 +628,7 @@ mod tests {
         trades: RefCell<Vec<PaperTrade>>,
         calls: RefCell<Vec<StoreCall>>,
         fail_next_open: RefCell<Option<String>>,
+        fail_next_update: RefCell<Option<String>>,
         fail_next_close: RefCell<Option<String>>,
     }
 
@@ -623,6 +690,40 @@ mod tests {
                     Ok(())
                 }
             }
+        }
+
+        fn update_position_risk_boundaries(
+            &self,
+            position: &PaperOpenPosition,
+        ) -> Result<(), PaperTradingPersistenceError> {
+            self.calls
+                .borrow_mut()
+                .push(StoreCall::UpdateRiskBoundaries {
+                    projection_key: position.projection_key.clone(),
+                });
+
+            if let Some(message) = self.fail_next_update.borrow_mut().take() {
+                return Err(PaperTradingPersistenceError::Store(message));
+            }
+
+            let mut open_position = self.open_position.borrow_mut();
+            let Some(existing) = open_position.as_mut() else {
+                return Err(PaperTradingPersistenceError::Store(format!(
+                    "no matching open paper position for '{}'",
+                    position.projection_key
+                )));
+            };
+
+            if !paper_open_position_identity_matches(existing, position) {
+                return Err(PaperTradingPersistenceError::Store(format!(
+                    "open paper position '{}' does not match '{}'",
+                    existing.projection_key, position.projection_key
+                )));
+            }
+
+            existing.stop_loss = position.stop_loss;
+            existing.take_profit = position.take_profit;
+            Ok(())
         }
 
         fn record_position_closed(
@@ -687,6 +788,19 @@ mod tests {
         {
             *open_position = None;
         }
+    }
+
+    fn paper_open_position_identity_matches(
+        existing: &PaperOpenPosition,
+        expected: &PaperOpenPosition,
+    ) -> bool {
+        existing.projection_key == expected.projection_key
+            && existing.strategy_identity == expected.strategy_identity
+            && existing.runtime_asset == expected.runtime_asset
+            && existing.side == expected.side
+            && existing.entry_price == expected.entry_price
+            && existing.quantity == expected.quantity
+            && existing.entry_time == expected.entry_time
     }
 
     fn runtime_position(side: PositionSide) -> OpenPosition {
@@ -916,6 +1030,240 @@ mod tests {
         assert!(store.calls.borrow().is_empty());
         assert!(store.open_position.borrow().is_none());
         assert!(store.trades.borrow().is_empty());
+    }
+
+    #[test]
+    fn project_step_projects_applied_position_risk_update_and_restore_reads_updated_boundaries() {
+        let store = FakePaperStore::with_open_position(paper_open_position_from_runtime(
+            STRATEGY_IDENTITY,
+            RUNTIME_ASSET,
+            &runtime_position(PositionSide::Long),
+        ));
+        let adapter = adapter(&store);
+        let mut updated_position = runtime_position(PositionSide::Long);
+        updated_position.risk_boundaries.stop_loss = Some(100.0);
+        updated_position.risk_boundaries.take_profit = None;
+        let changes = PositionRiskBoundaryChanges::new()
+            .set_stop_loss(100.0)
+            .clear_take_profit();
+
+        let report = adapter
+            .project_step(&RuntimeStep::new(
+                vec![RuntimeEvent::PositionRiskUpdateEvaluated {
+                    requested_changes: changes,
+                    result: PositionRiskUpdateResult::Evaluated {
+                        applied: vec![
+                            AppliedPositionRiskBoundaryChange {
+                                boundary: PositionRiskBoundaryKind::StopLoss,
+                                requested_change: RiskBoundaryChange::Set(100.0),
+                                previous: Some(95.0),
+                                current: Some(100.0),
+                                state_changed: true,
+                            },
+                            AppliedPositionRiskBoundaryChange {
+                                boundary: PositionRiskBoundaryKind::TakeProfit,
+                                requested_change: RiskBoundaryChange::Clear,
+                                previous: Some(120.0),
+                                current: None,
+                                state_changed: true,
+                            },
+                        ],
+                        rejected: vec![],
+                    },
+                }],
+                snapshot(Some(updated_position.clone())),
+            ))
+            .expect("applied risk update projection should succeed");
+
+        let expected_key =
+            open_position_projection_key(STRATEGY_IDENTITY, RUNTIME_ASSET, &updated_position);
+        assert_eq!(
+            report,
+            PaperProjectionReport {
+                persisted_transition_count: 1
+            }
+        );
+        assert_eq!(
+            *store.calls.borrow(),
+            vec![StoreCall::UpdateRiskBoundaries {
+                projection_key: expected_key.clone()
+            }]
+        );
+        let persisted = store
+            .open_position
+            .borrow()
+            .clone()
+            .expect("open position should remain persisted");
+        assert_eq!(persisted.projection_key, expected_key);
+        assert_eq!(persisted.stop_loss, Some(100.0));
+        assert_eq!(persisted.take_profit, None);
+
+        let restored = adapter
+            .restore_portfolio_state(1_000.0)
+            .expect("restore should read updated risk boundaries");
+        let restored_position = restored
+            .open_position
+            .expect("updated open position should restore");
+        assert_eq!(restored_position.risk_boundaries.stop_loss, Some(100.0));
+        assert_eq!(restored_position.risk_boundaries.take_profit, None);
+    }
+
+    #[test]
+    fn project_step_ignores_rejected_and_successful_noop_position_risk_update_outcomes() {
+        let initial_position = runtime_position(PositionSide::Long);
+        let store = FakePaperStore::with_open_position(paper_open_position_from_runtime(
+            STRATEGY_IDENTITY,
+            RUNTIME_ASSET,
+            &initial_position,
+        ));
+        let no_change = PositionRiskBoundaryChanges::new()
+            .set_stop_loss(95.0)
+            .set_take_profit(120.0);
+        let rejected_change = PositionRiskBoundaryChanges::new().set_stop_loss(f64::INFINITY);
+
+        let report = adapter(&store)
+            .project_step(&RuntimeStep::new(
+                vec![
+                    RuntimeEvent::PositionRiskUpdateEvaluated {
+                        requested_changes: PositionRiskBoundaryChanges::default(),
+                        result: PositionRiskUpdateResult::NoRiskBoundaryChange,
+                    },
+                    RuntimeEvent::PositionRiskUpdateEvaluated {
+                        requested_changes: rejected_change,
+                        result: PositionRiskUpdateResult::Evaluated {
+                            applied: vec![],
+                            rejected: vec![RejectedPositionRiskBoundaryChange {
+                                boundary: PositionRiskBoundaryKind::StopLoss,
+                                requested_change: RiskBoundaryChange::Set(f64::INFINITY),
+                                reason: PositionRiskBoundaryChangeRejectionReason::NonFinitePrice,
+                            }],
+                        },
+                    },
+                    RuntimeEvent::PositionRiskUpdateEvaluated {
+                        requested_changes: no_change,
+                        result: PositionRiskUpdateResult::Evaluated {
+                            applied: vec![
+                                AppliedPositionRiskBoundaryChange {
+                                    boundary: PositionRiskBoundaryKind::StopLoss,
+                                    requested_change: RiskBoundaryChange::Set(95.0),
+                                    previous: Some(95.0),
+                                    current: Some(95.0),
+                                    state_changed: false,
+                                },
+                                AppliedPositionRiskBoundaryChange {
+                                    boundary: PositionRiskBoundaryKind::TakeProfit,
+                                    requested_change: RiskBoundaryChange::Set(120.0),
+                                    previous: Some(120.0),
+                                    current: Some(120.0),
+                                    state_changed: false,
+                                },
+                            ],
+                            rejected: vec![],
+                        },
+                    },
+                    RuntimeEvent::PositionRiskUpdateEvaluated {
+                        requested_changes: PositionRiskBoundaryChanges::new().clear_stop_loss(),
+                        result: PositionRiskUpdateResult::NoOpenPosition,
+                    },
+                ],
+                snapshot(Some(initial_position.clone())),
+            ))
+            .expect("non-state-changing risk update outcomes should be persistence no-ops");
+
+        assert_eq!(
+            report,
+            PaperProjectionReport {
+                persisted_transition_count: 0
+            }
+        );
+        assert!(store.calls.borrow().is_empty());
+        let persisted = store.open_position.borrow().clone().unwrap();
+        assert_eq!(persisted.stop_loss, Some(95.0));
+        assert_eq!(persisted.take_profit, Some(120.0));
+    }
+
+    #[test]
+    fn duplicate_position_risk_update_projection_is_idempotent_for_same_boundary_state() {
+        let store = FakePaperStore::with_open_position(paper_open_position_from_runtime(
+            STRATEGY_IDENTITY,
+            RUNTIME_ASSET,
+            &runtime_position(PositionSide::Long),
+        ));
+        let adapter = adapter(&store);
+        let mut updated_position = runtime_position(PositionSide::Long);
+        updated_position.risk_boundaries.stop_loss = Some(100.0);
+        updated_position.risk_boundaries.take_profit = None;
+        let changes = PositionRiskBoundaryChanges::new()
+            .set_stop_loss(100.0)
+            .clear_take_profit();
+        let update_step = RuntimeStep::new(
+            vec![RuntimeEvent::PositionRiskUpdateEvaluated {
+                requested_changes: changes,
+                result: PositionRiskUpdateResult::Evaluated {
+                    applied: vec![AppliedPositionRiskBoundaryChange {
+                        boundary: PositionRiskBoundaryKind::StopLoss,
+                        requested_change: RiskBoundaryChange::Set(100.0),
+                        previous: Some(95.0),
+                        current: Some(100.0),
+                        state_changed: true,
+                    }],
+                    rejected: vec![],
+                },
+            }],
+            snapshot(Some(updated_position)),
+        );
+
+        adapter.project_step(&update_step).unwrap();
+        adapter.project_step(&update_step).unwrap();
+
+        let persisted = store.open_position.borrow().clone().unwrap();
+        assert_eq!(persisted.stop_loss, Some(100.0));
+        assert_eq!(persisted.take_profit, None);
+        assert_eq!(store.calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn position_risk_update_projection_requires_matching_persisted_open_position() {
+        let mut updated_position = runtime_position(PositionSide::Long);
+        updated_position.risk_boundaries.stop_loss = Some(100.0);
+        let changes = PositionRiskBoundaryChanges::new().set_stop_loss(100.0);
+        let update_step = RuntimeStep::new(
+            vec![RuntimeEvent::PositionRiskUpdateEvaluated {
+                requested_changes: changes,
+                result: PositionRiskUpdateResult::Evaluated {
+                    applied: vec![AppliedPositionRiskBoundaryChange {
+                        boundary: PositionRiskBoundaryKind::StopLoss,
+                        requested_change: RiskBoundaryChange::Set(100.0),
+                        previous: Some(95.0),
+                        current: Some(100.0),
+                        state_changed: true,
+                    }],
+                    rejected: vec![],
+                },
+            }],
+            snapshot(Some(updated_position)),
+        );
+
+        let missing_store = FakePaperStore::default();
+        let missing_error = adapter(&missing_store)
+            .project_step(&update_step)
+            .expect_err("missing open position should be a persistence inconsistency");
+        assert!(missing_error
+            .to_string()
+            .contains("no matching open paper position"));
+
+        let mut mismatched_position = runtime_position(PositionSide::Long);
+        mismatched_position.quantity = 3.0;
+        let mismatched_store =
+            FakePaperStore::with_open_position(paper_open_position_from_runtime(
+                STRATEGY_IDENTITY,
+                RUNTIME_ASSET,
+                &mismatched_position,
+            ));
+        let mismatch_error = adapter(&mismatched_store)
+            .project_step(&update_step)
+            .expect_err("different persisted open identity should be a persistence inconsistency");
+        assert!(mismatch_error.to_string().contains("does not match"));
     }
 
     #[test]

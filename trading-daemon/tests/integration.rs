@@ -22,8 +22,8 @@ use db_layer::{
 use domain::{Candle, Timeframe};
 use trading_daemon::paper_trading_persistence::PaperTradingPersistenceAdapter;
 use trading_runtime::{
-    MarketInput, PortfolioState, PredeterminedStrategyHandler, RuntimeConfig, RuntimeEvent,
-    RuntimeStep, StrategyDecision, TradingRuntime,
+    MarketInput, PortfolioState, PositionRiskBoundaryChanges, PredeterminedStrategyHandler,
+    RuntimeConfig, RuntimeEvent, RuntimeStep, StrategyDecision, TradingRuntime,
 };
 
 fn integration_enabled() -> bool {
@@ -40,6 +40,7 @@ const TIMEFRAME: &str = "1d";
 const LONG_STRATEGY_IDENTITY: &str = "__daemon_paper_long_it__";
 const FORCE_CLOSE_STRATEGY_IDENTITY: &str = "__daemon_paper_force_close_it__";
 const SHORT_STRATEGY_IDENTITY: &str = "__daemon_paper_short_it__";
+const RISK_UPDATE_STRATEGY_IDENTITY: &str = "__daemon_paper_risk_update_it__";
 
 fn make_candle(ts: i64, close: f64) -> Candle {
     Candle {
@@ -172,6 +173,70 @@ fn runtime_backed_paper_trading_projects_open_hold_close_cycle() {
     assert!(restored.open_position.is_none());
 
     teardown(&conn, LONG_STRATEGY_IDENTITY);
+}
+
+#[test]
+fn runtime_backed_paper_trading_projects_position_risk_update_and_restore_uses_updated_boundaries()
+{
+    if !integration_enabled() {
+        return;
+    }
+
+    let client = connect();
+    let conn = client.conn.clone();
+    teardown(&conn, RISK_UPDATE_STRATEGY_IDENTITY);
+    let adapter = adapter(conn.clone(), RISK_UPDATE_STRATEGY_IDENTITY);
+    let mut runtime = runtime(
+        10_000.0,
+        [
+            StrategyDecision::open_long(2.0)
+                .with_entry_risk(Some(95.0), Some(120.0))
+                .with_reason("open"),
+            StrategyDecision::update_position_risk()
+                .with_position_risk_changes(
+                    PositionRiskBoundaryChanges::new()
+                        .set_stop_loss(100.0)
+                        .clear_take_profit(),
+                )
+                .with_reason("trail"),
+        ],
+    );
+
+    project_completed_candle(
+        &mut runtime,
+        &adapter,
+        make_candle(1_700_000_000_000, 100.0),
+    );
+    let update_step = project_completed_candle(
+        &mut runtime,
+        &adapter,
+        make_candle(1_700_086_400_000, 105.0),
+    );
+    assert!(update_step
+        .events
+        .iter()
+        .any(|event| matches!(event, RuntimeEvent::PositionRiskUpdateEvaluated { .. })));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let open = get_paper_open_position(&conn, RISK_UPDATE_STRATEGY_IDENTITY, RUNTIME_ASSET)
+        .expect("paper_open_positions row should remain after risk update");
+    assert_eq!(open.side, "long");
+    assert_eq!(open.entry_price, 100.0);
+    assert_eq!(open.quantity, 2.0);
+    assert_eq!(open.stop_loss, Some(100.0));
+    assert_eq!(open.take_profit, None);
+
+    let restored = adapter
+        .restore_portfolio_state(10_000.0)
+        .expect("paper restore should use projected risk boundaries");
+    let restored_position = restored
+        .open_position
+        .expect("updated open position should restore");
+    assert_eq!(restored_position.risk_boundaries.stop_loss, Some(100.0));
+    assert_eq!(restored_position.risk_boundaries.take_profit, None);
+    assert!(get_paper_trades(&conn, RISK_UPDATE_STRATEGY_IDENTITY, RUNTIME_ASSET).is_empty());
+
+    teardown(&conn, RISK_UPDATE_STRATEGY_IDENTITY);
 }
 
 #[test]

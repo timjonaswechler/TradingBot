@@ -22,4 +22,5 @@ pub use queries::{
     get_candles, get_candles_before, get_candles_in_range, get_latest_candle_timestamp,
     get_open_position, get_paper_open_position, get_paper_trades, get_trades, insert_candle,
     insert_trade, open_paper_position, open_position, record_paper_position_closed,
+    update_paper_position_risk_boundaries,
 };
