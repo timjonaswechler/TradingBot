@@ -124,6 +124,7 @@ fn fake_strategy_error_emits_diagnostic_and_does_not_plan_execution() {
                     | ExecutionAction::CloseShort
                     | ExecutionAction::Noop
                     | ExecutionAction::RiskExit { .. }
+                    | ExecutionAction::UpdatePositionRisk { .. }
                     | ExecutionAction::ForceClose,
             }
     )));

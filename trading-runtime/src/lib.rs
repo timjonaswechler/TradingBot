@@ -9,8 +9,8 @@
 //! [`RuntimeStep`] return values.
 //!
 //! This slice intentionally does not include database persistence, live-daemon or
-//! backtester wiring, real broker execution, dynamic risk updates, or the full
-//! live/backtester migration.
+//! backtester wiring, real broker execution, Position Risk Update application /
+//! Rhai API / persistence projection, or the full live/backtester migration.
 //! The old `engine` crate remains only donor material for strategy-handling
 //! behavior; this crate must stay independent from it.
 
@@ -38,7 +38,8 @@ pub use anchored::{
     StructurePointRegistry, StructurePointSource,
 };
 pub use decision::{
-    validate_opening_quantity, InvalidOpeningQuantity, StrategyDecision, StrategyDecisionIntent,
+    validate_opening_quantity, InvalidOpeningQuantity, PositionRiskBoundaryChanges,
+    RiskBoundaryChange, StrategyDecision, StrategyDecisionIntent,
 };
 pub use domain::{ClosedPosition, Timeframe, TimeframeParseError, TimeframeUnit};
 pub use events::{

@@ -1,6 +1,6 @@
 //! Runtime execution action types and pure strategy-decision planning.
 
-use crate::{RiskExitKind, StrategyDecision, StrategyDecisionIntent};
+use crate::{PositionRiskBoundaryChanges, RiskExitKind, StrategyDecision, StrategyDecisionIntent};
 use domain::PositionSide;
 
 /// Runtime interpretation of a strategy decision or runtime-managed command.
@@ -23,6 +23,9 @@ pub enum ExecutionAction {
         side: PositionSide,
         selected: RiskExitKind,
         exit_price: f64,
+    },
+    UpdatePositionRisk {
+        changes: PositionRiskBoundaryChanges,
     },
     ForceClose,
 }
@@ -89,6 +92,11 @@ pub fn plan_execution(
             Some(PositionSide::Short) => PlannedExecution::action(ExecutionAction::CloseShort),
             _ => PlannedExecution::ignored(IgnoredDecisionReason::NoMatchingShortPosition),
         },
+        StrategyDecisionIntent::UpdatePositionRisk => {
+            PlannedExecution::action(ExecutionAction::UpdatePositionRisk {
+                changes: decision.position_risk_changes,
+            })
+        }
     }
 }
 
@@ -360,6 +368,21 @@ mod tests {
                 100.0,
             ),
             PlannedExecution::ignored(IgnoredDecisionReason::InvalidQuantity),
+        );
+    }
+
+    #[test]
+    fn position_risk_update_plans_update_action_without_position_side_or_id() {
+        let changes = crate::decision::PositionRiskBoundaryChanges::new()
+            .set_stop_loss(95.0)
+            .clear_take_profit();
+        let decision = StrategyDecision::update_position_risk().with_position_risk_changes(changes);
+        let expected = PlannedExecution::action(ExecutionAction::UpdatePositionRisk { changes });
+
+        assert_eq!(plan_execution(&decision, None, 100.0), expected);
+        assert_eq!(
+            plan_execution(&decision, Some(PositionSide::Long), 100.0),
+            expected
         );
     }
 }

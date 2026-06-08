@@ -333,6 +333,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             }
             ExecutionAction::Noop
             | ExecutionAction::RiskExit { .. }
+            | ExecutionAction::UpdatePositionRisk { .. }
             | ExecutionAction::ForceClose => {}
         }
 
