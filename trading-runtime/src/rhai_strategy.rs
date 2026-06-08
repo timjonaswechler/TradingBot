@@ -644,10 +644,17 @@ fn new_rhai_engine() -> RhaiEngine {
         Ok(StrategyDecision::open_short(quantity as f64))
     });
     decision_module.set_native_fn("close_short", || Ok(StrategyDecision::close_short()));
+    decision_module.set_native_fn("update_position_risk", || {
+        Ok(StrategyDecision::update_position_risk())
+    });
     engine.register_static_module("decision", Arc::new(decision_module));
 
     engine.register_fn("with_stop_loss", with_stop_loss);
     engine.register_fn("with_take_profit", with_take_profit);
+    engine.register_fn("set_stop_loss", set_stop_loss);
+    engine.register_fn("clear_stop_loss", clear_stop_loss);
+    engine.register_fn("set_take_profit", set_take_profit);
+    engine.register_fn("clear_take_profit", clear_take_profit);
     engine.register_fn("with_reason", with_reason);
 
     engine
@@ -1501,6 +1508,40 @@ fn with_take_profit(
     Ok(decision.with_entry_risk(stop_loss, Some(take_profit)))
 }
 
+fn set_stop_loss(
+    decision: StrategyDecision,
+    stop_loss: FLOAT,
+) -> Result<StrategyDecision, Box<EvalAltResult>> {
+    ensure_position_risk_update_decision(&decision, "set_stop_loss")?;
+    let changes = decision.position_risk_changes.set_stop_loss(stop_loss);
+
+    Ok(decision.with_position_risk_changes(changes))
+}
+
+fn clear_stop_loss(decision: StrategyDecision) -> Result<StrategyDecision, Box<EvalAltResult>> {
+    ensure_position_risk_update_decision(&decision, "clear_stop_loss")?;
+    let changes = decision.position_risk_changes.clear_stop_loss();
+
+    Ok(decision.with_position_risk_changes(changes))
+}
+
+fn set_take_profit(
+    decision: StrategyDecision,
+    take_profit: FLOAT,
+) -> Result<StrategyDecision, Box<EvalAltResult>> {
+    ensure_position_risk_update_decision(&decision, "set_take_profit")?;
+    let changes = decision.position_risk_changes.set_take_profit(take_profit);
+
+    Ok(decision.with_position_risk_changes(changes))
+}
+
+fn clear_take_profit(decision: StrategyDecision) -> Result<StrategyDecision, Box<EvalAltResult>> {
+    ensure_position_risk_update_decision(&decision, "clear_take_profit")?;
+    let changes = decision.position_risk_changes.clear_take_profit();
+
+    Ok(decision.with_position_risk_changes(changes))
+}
+
 fn with_reason(decision: StrategyDecision, reason: &str) -> StrategyDecision {
     decision.with_reason(reason)
 }
@@ -1514,6 +1555,24 @@ fn ensure_opening_decision(
     } else {
         Err(format!(
             "`{method}` is only valid on opening decisions; got {:?}",
+            decision.intent
+        )
+        .into())
+    }
+}
+
+fn ensure_position_risk_update_decision(
+    decision: &StrategyDecision,
+    method: &'static str,
+) -> Result<(), Box<EvalAltResult>> {
+    if matches!(
+        decision.intent,
+        crate::StrategyDecisionIntent::UpdatePositionRisk
+    ) {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{method}` is only valid on Position Risk Update decisions; got {:?}",
             decision.intent
         )
         .into())
@@ -1693,7 +1752,7 @@ mod tests {
     use super::*;
     use crate::{
         AnchoredEvaluatorSpec, ExecutionAction, IgnoredDecisionReason, MarketInput, PortfolioState,
-        RuntimeConfig, RuntimeEvent, StrategyDecisionIntent, TradingRuntime,
+        RiskBoundaryChange, RuntimeConfig, RuntimeEvent, StrategyDecisionIntent, TradingRuntime,
     };
     use domain::{Candle, Timeframe};
 
@@ -3297,6 +3356,10 @@ fn on_tick(market, context) {
                 StrategyDecision::open_short(3.0),
             ),
             ("decision::close_short()", StrategyDecision::close_short()),
+            (
+                "decision::update_position_risk()",
+                StrategyDecision::update_position_risk(),
+            ),
         ];
 
         for (expression, expected_decision) in cases {
@@ -3366,6 +3429,93 @@ fn on_tick(market, context) {
     }
 
     #[test]
+    fn fluent_position_risk_update_omitted_boundaries_remain_unchanged() {
+        let source = source_returning("decision::update_position_risk()");
+
+        let step = run_completed_tick(&source);
+        let decision = produced_decision(&step);
+
+        assert_eq!(decision.intent, StrategyDecisionIntent::UpdatePositionRisk);
+        assert_eq!(
+            decision.position_risk_changes.stop_loss,
+            RiskBoundaryChange::Unchanged
+        );
+        assert_eq!(
+            decision.position_risk_changes.take_profit,
+            RiskBoundaryChange::Unchanged
+        );
+    }
+
+    #[test]
+    fn fluent_position_risk_update_set_methods_map_to_boundary_changes() {
+        let source = source_returning(
+            r#"decision::update_position_risk()
+                .set_stop_loss(95.0)
+                .set_take_profit(120.0)"#,
+        );
+
+        let step = run_completed_tick(&source);
+        let decision = produced_decision(&step);
+
+        assert_eq!(decision.intent, StrategyDecisionIntent::UpdatePositionRisk);
+        assert_eq!(decision.stop_loss, None);
+        assert_eq!(decision.take_profit, None);
+        assert_eq!(
+            decision.position_risk_changes.stop_loss,
+            RiskBoundaryChange::Set(95.0)
+        );
+        assert_eq!(
+            decision.position_risk_changes.take_profit,
+            RiskBoundaryChange::Set(120.0)
+        );
+    }
+
+    #[test]
+    fn fluent_position_risk_update_clear_methods_map_to_boundary_changes() {
+        let source = source_returning(
+            r#"decision::update_position_risk()
+                .clear_stop_loss()
+                .clear_take_profit()"#,
+        );
+
+        let step = run_completed_tick(&source);
+        let decision = produced_decision(&step);
+
+        assert_eq!(decision.intent, StrategyDecisionIntent::UpdatePositionRisk);
+        assert_eq!(
+            decision.position_risk_changes.stop_loss,
+            RiskBoundaryChange::Clear
+        );
+        assert_eq!(
+            decision.position_risk_changes.take_profit,
+            RiskBoundaryChange::Clear
+        );
+    }
+
+    #[test]
+    fn fluent_position_risk_update_methods_use_last_write_wins_per_boundary() {
+        let source = source_returning(
+            r#"decision::update_position_risk()
+                .set_stop_loss(95.0)
+                .clear_stop_loss()
+                .clear_take_profit()
+                .set_take_profit(120.0)"#,
+        );
+
+        let step = run_completed_tick(&source);
+        let decision = produced_decision(&step);
+
+        assert_eq!(
+            decision.position_risk_changes.stop_loss,
+            RiskBoundaryChange::Clear
+        );
+        assert_eq!(
+            decision.position_risk_changes.take_profit,
+            RiskBoundaryChange::Set(120.0)
+        );
+    }
+
+    #[test]
     fn reason_is_diagnostic_only_and_allowed_on_non_opening_decisions() {
         let cases = [
             (
@@ -3379,6 +3529,10 @@ fn on_tick(market, context) {
             (
                 "decision::close_short().with_reason(\"covered\")",
                 StrategyDecisionIntent::CloseShort,
+            ),
+            (
+                "decision::update_position_risk().with_reason(\"trail stop\")",
+                StrategyDecisionIntent::UpdatePositionRisk,
             ),
         ];
 
@@ -3397,6 +3551,7 @@ fn on_tick(market, context) {
         for expression in [
             "decision::hold().with_stop_loss(95.0)",
             "decision::close_long().with_take_profit(120.0)",
+            "decision::update_position_risk().with_stop_loss(95.0)",
         ] {
             let source = source_returning(expression);
             let step = run_completed_tick(&source);
@@ -3405,6 +3560,31 @@ fn on_tick(market, context) {
                 event,
                 RuntimeEvent::StrategyError { error, .. }
                     if error.message.contains("only valid on opening decisions")
+            )));
+            assert!(!step.events.iter().any(|event| matches!(
+                event,
+                RuntimeEvent::StrategyDecisionProduced { .. }
+                    | RuntimeEvent::ExecutionActionPlanned { .. }
+            )));
+        }
+    }
+
+    #[test]
+    fn update_methods_on_non_update_decisions_are_strategy_errors_without_execution_planning() {
+        for expression in [
+            "decision::hold().set_stop_loss(95.0)",
+            "decision::open_long(1.0).clear_take_profit()",
+            "decision::close_short().set_take_profit(120.0)",
+        ] {
+            let source = source_returning(expression);
+            let step = run_completed_tick(&source);
+
+            assert!(step.events.iter().any(|event| matches!(
+                event,
+                RuntimeEvent::StrategyError { error, .. }
+                    if error
+                        .message
+                        .contains("only valid on Position Risk Update decisions")
             )));
             assert!(!step.events.iter().any(|event| matches!(
                 event,
