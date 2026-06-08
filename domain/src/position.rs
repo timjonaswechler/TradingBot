@@ -35,6 +35,12 @@ pub struct OpenPosition {
     pub quantity: f64,
     /// Unix ms timestamp of entry.
     pub entry_time: i64,
+    /// Current Position Risk Boundaries.
+    ///
+    /// `entry_risk` is accepted only as a transitional deserialization alias for
+    /// payloads produced before the #119 terminology cleanup. Serialization
+    /// continues to emit the canonical `risk_boundaries` field.
+    #[serde(alias = "entry_risk")]
     pub risk_boundaries: PositionRiskBoundaries,
 }
 
@@ -96,6 +102,27 @@ mod tests {
 
         assert!(value.get("risk_boundaries").is_some());
         assert!(value.get("entry_risk").is_none());
+    }
+
+    #[test]
+    fn open_position_deserializes_transitional_legacy_entry_risk_field() {
+        let payload = serde_json::json!({
+            "symbol": "AAPL",
+            "side": "long",
+            "entry_price": 100.0,
+            "quantity": 10.0,
+            "entry_time": 0,
+            "entry_risk": {
+                "stop_loss": 90.0,
+                "take_profit": null,
+            },
+        });
+
+        let position: OpenPosition =
+            serde_json::from_value(payload).expect("legacy entry_risk payload should deserialize");
+
+        assert_eq!(position.risk_boundaries.stop_loss, Some(90.0));
+        assert_eq!(position.risk_boundaries.take_profit, None);
     }
 
     #[test]
