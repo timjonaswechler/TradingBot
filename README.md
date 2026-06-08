@@ -12,3 +12,6 @@
 - `backtest_plan/plan.rhai` — baseline-only plan.
 - `backtest_plan/candle_permutation_monte_carlo.rhai` — Synthetic Market Data
   candle-permutation Monte Carlo plan.
+
+
+## Daten werden von https://marketparquet.com/ geholt also seeding
