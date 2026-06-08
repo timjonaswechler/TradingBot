@@ -13,8 +13,8 @@ The canonical trading state of a live or simulated trading session: realized cas
 _Avoid_: Strategy State, Context State, External Account Snapshot
 
 **Open Position**:
-An active long or short market exposure for one Runtime Asset, described by its side, entry price, quantity, entry time, and optional Entry Risk Parameters. An Open Position is part of Portfolio State; its profit/loss, equity impact, and lifecycle are Portfolio Transition semantics.
-_Avoid_: DB Position, Portfolio Snapshot, size when quantity is meant
+An active long or short market exposure for one Runtime Asset, described by its side, entry price, quantity, entry time, and optional Position Risk Boundaries. An Open Position is part of Portfolio State; its profit/loss, equity impact, and lifecycle are Portfolio Transition semantics.
+_Avoid_: DB Position, Portfolio Snapshot, Entry Risk Parameters when current open-position risk is meant, size when quantity is meant
 
 **Closed Position**:
 The record that an Open Position has been closed, including the closed exposure, exit price, exit time, and realized PnL produced by the Portfolio Transition. A Closed Position is distinct from a backtest report row, DB trade row, broker order, or broker fill.
@@ -78,7 +78,15 @@ _Avoid_: Trade Decision, BUY/SELL when the intended position transition is ambig
 
 **Entry Risk Parameters**:
 Optional stop-loss and take-profit prices attached to an opening Strategy Decision. They opt the resulting open position into runtime-managed hard exits; strategies that want to manage exits themselves can omit them.
-_Avoid_: Dynamic Risk Update, Position Patch, soft strategy exit
+_Avoid_: Dynamic Risk Update, Position Patch, Position Risk Boundaries, soft strategy exit
+
+**Position Risk Boundaries**:
+The current runtime-managed Stop-Loss and Take-Profit boundaries attached to an Open Position. They may originate from Entry Risk Parameters and may later be changed by explicit Position Risk Updates.
+_Avoid_: Entry Risk Parameters when referring to current open-position risk, Dynamic Risk Update, Position Patch
+
+**Position Risk Update**:
+An explicit Strategy Decision intent that changes the Position Risk Boundaries of an existing Open Position without changing its side, quantity, entry price, cash balance, or realized PnL.
+_Avoid_: HOLD with stop-loss fields, CLOSE with take-profit fields, Position Patch
 
 **Stop-Loss**:
 An Entry Risk Parameter that defines the hard protective price at which the runtime may close an open position to limit adverse movement.
@@ -109,8 +117,8 @@ A Live Runner Session that uses Simulated Execution instead of broker execution 
 _Avoid_: Backtest Session, historical replay
 
 **Portfolio Transition**:
-A change to Portfolio State, such as opening a position, closing a position, or applying a Risk Exit. Portfolio Transitions are owned by the Trading Runtime in both live and simulated runs.
-_Avoid_: DB update, backtest metric
+A change to Portfolio State, such as opening a position, closing a position, applying a Risk Exit, or applying a Position Risk Update. Portfolio Transitions are owned by the Trading Runtime in both live and simulated runs; a Position Risk Update changes Position Risk Boundaries without creating a fill, realized PnL, or completed trade.
+_Avoid_: DB update, backtest metric, broker fill
 
 **Warmup Requirement**:
 The amount of market history a Trading Runtime needs before Strategy Ticks are allowed. In multi-timeframe runs, Warmup Requirements are understood per configured timeframe; the first model may resolve the same requirement for every configured timeframe. The Trading Runtime determines the Warmup Requirement; runners are responsible for fetching and supplying the required market data.
