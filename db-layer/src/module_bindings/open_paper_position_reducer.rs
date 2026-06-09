@@ -17,6 +17,12 @@ pub(super) struct OpenPaperPositionArgs {
     pub stop_loss: Option<f64>,
     pub take_profit: Option<f64>,
     pub entry_metadata: Option<String>,
+    pub entry_base_price: Option<f64>,
+    pub entry_effective_fill_price: Option<f64>,
+    pub entry_spread_adjustment: Option<f64>,
+    pub entry_fixed_fee: Option<f64>,
+    pub entry_percent_fee: Option<f64>,
+    pub entry_total_cost: Option<f64>,
 }
 
 impl From<OpenPaperPositionArgs> for super::Reducer {
@@ -32,6 +38,12 @@ impl From<OpenPaperPositionArgs> for super::Reducer {
             stop_loss: args.stop_loss,
             take_profit: args.take_profit,
             entry_metadata: args.entry_metadata,
+            entry_base_price: args.entry_base_price,
+            entry_effective_fill_price: args.entry_effective_fill_price,
+            entry_spread_adjustment: args.entry_spread_adjustment,
+            entry_fixed_fee: args.entry_fixed_fee,
+            entry_percent_fee: args.entry_percent_fee,
+            entry_total_cost: args.entry_total_cost,
         }
     }
 }
@@ -63,6 +75,12 @@ pub trait open_paper_position {
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
         entry_metadata: Option<String>,
+        entry_base_price: Option<f64>,
+        entry_effective_fill_price: Option<f64>,
+        entry_spread_adjustment: Option<f64>,
+        entry_fixed_fee: Option<f64>,
+        entry_percent_fee: Option<f64>,
+        entry_total_cost: Option<f64>,
     ) -> __sdk::Result<()> {
         self.open_paper_position_then(
             projection_key,
@@ -75,6 +93,12 @@ pub trait open_paper_position {
             stop_loss,
             take_profit,
             entry_metadata,
+            entry_base_price,
+            entry_effective_fill_price,
+            entry_spread_adjustment,
+            entry_fixed_fee,
+            entry_percent_fee,
+            entry_total_cost,
             |_, _| {},
         )
     }
@@ -97,6 +121,12 @@ pub trait open_paper_position {
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
         entry_metadata: Option<String>,
+        entry_base_price: Option<f64>,
+        entry_effective_fill_price: Option<f64>,
+        entry_spread_adjustment: Option<f64>,
+        entry_fixed_fee: Option<f64>,
+        entry_percent_fee: Option<f64>,
+        entry_total_cost: Option<f64>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -117,6 +147,12 @@ impl open_paper_position for super::RemoteReducers {
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
         entry_metadata: Option<String>,
+        entry_base_price: Option<f64>,
+        entry_effective_fill_price: Option<f64>,
+        entry_spread_adjustment: Option<f64>,
+        entry_fixed_fee: Option<f64>,
+        entry_percent_fee: Option<f64>,
+        entry_total_cost: Option<f64>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -134,6 +170,12 @@ impl open_paper_position for super::RemoteReducers {
                 stop_loss,
                 take_profit,
                 entry_metadata,
+                entry_base_price,
+                entry_effective_fill_price,
+                entry_spread_adjustment,
+                entry_fixed_fee,
+                entry_percent_fee,
+                entry_total_cost,
             },
             callback,
         )

@@ -17,6 +17,12 @@ pub struct PaperOpenPosition {
     pub stop_loss: Option<f64>,
     pub take_profit: Option<f64>,
     pub entry_metadata: Option<String>,
+    pub entry_base_price: Option<f64>,
+    pub entry_effective_fill_price: Option<f64>,
+    pub entry_spread_adjustment: Option<f64>,
+    pub entry_fixed_fee: Option<f64>,
+    pub entry_percent_fee: Option<f64>,
+    pub entry_total_cost: Option<f64>,
 }
 
 impl __sdk::InModule for PaperOpenPosition {
@@ -37,6 +43,12 @@ pub struct PaperOpenPositionCols {
     pub stop_loss: __sdk::__query_builder::Col<PaperOpenPosition, Option<f64>>,
     pub take_profit: __sdk::__query_builder::Col<PaperOpenPosition, Option<f64>>,
     pub entry_metadata: __sdk::__query_builder::Col<PaperOpenPosition, Option<String>>,
+    pub entry_base_price: __sdk::__query_builder::Col<PaperOpenPosition, Option<f64>>,
+    pub entry_effective_fill_price: __sdk::__query_builder::Col<PaperOpenPosition, Option<f64>>,
+    pub entry_spread_adjustment: __sdk::__query_builder::Col<PaperOpenPosition, Option<f64>>,
+    pub entry_fixed_fee: __sdk::__query_builder::Col<PaperOpenPosition, Option<f64>>,
+    pub entry_percent_fee: __sdk::__query_builder::Col<PaperOpenPosition, Option<f64>>,
+    pub entry_total_cost: __sdk::__query_builder::Col<PaperOpenPosition, Option<f64>>,
 }
 
 impl __sdk::__query_builder::HasCols for PaperOpenPosition {
@@ -53,6 +65,18 @@ impl __sdk::__query_builder::HasCols for PaperOpenPosition {
             stop_loss: __sdk::__query_builder::Col::new(table_name, "stop_loss"),
             take_profit: __sdk::__query_builder::Col::new(table_name, "take_profit"),
             entry_metadata: __sdk::__query_builder::Col::new(table_name, "entry_metadata"),
+            entry_base_price: __sdk::__query_builder::Col::new(table_name, "entry_base_price"),
+            entry_effective_fill_price: __sdk::__query_builder::Col::new(
+                table_name,
+                "entry_effective_fill_price",
+            ),
+            entry_spread_adjustment: __sdk::__query_builder::Col::new(
+                table_name,
+                "entry_spread_adjustment",
+            ),
+            entry_fixed_fee: __sdk::__query_builder::Col::new(table_name, "entry_fixed_fee"),
+            entry_percent_fee: __sdk::__query_builder::Col::new(table_name, "entry_percent_fee"),
+            entry_total_cost: __sdk::__query_builder::Col::new(table_name, "entry_total_cost"),
         }
     }
 }

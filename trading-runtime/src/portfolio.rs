@@ -25,21 +25,33 @@ impl PortfolioState {
         }
     }
 
-    /// Construct from externally restored runtime-local state.
-    ///
-    /// A restored open position has no in-session entry fill cost basis. Costed
-    /// entries created by the current Runtime Session should use the cost-aware
-    /// open transition methods so entry fees are tracked until close.
+    /// Construct from externally restored runtime-local state with no open-entry cost basis.
     pub fn from_parts(
         realized_cash_balance: f64,
         open_position: Option<OpenPosition>,
         completed_trade_count: usize,
     ) -> Self {
+        Self::from_parts_with_open_entry_cost(
+            realized_cash_balance,
+            open_position,
+            completed_trade_count,
+            0.0,
+        )
+    }
+
+    /// Construct from externally restored runtime-local state and an optional
+    /// in-flight open-position entry fill cost basis.
+    pub fn from_parts_with_open_entry_cost(
+        realized_cash_balance: f64,
+        open_position: Option<OpenPosition>,
+        completed_trade_count: usize,
+        open_position_entry_cost: f64,
+    ) -> Self {
         Self {
             realized_cash_balance,
             open_position,
             completed_trade_count,
-            open_position_entry_cost: 0.0,
+            open_position_entry_cost,
         }
     }
 

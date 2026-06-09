@@ -899,6 +899,7 @@ fn on_tick(market, context) {
             ExitKind::StrategyExit,
         );
         trade.realized_pnl = 25.0;
+        trade.net_realized_pnl = Some(25.0);
         store.set_trades(vec![trade]);
         let mut restored_asset = asset();
         restored_asset.balance = 1_000.0;

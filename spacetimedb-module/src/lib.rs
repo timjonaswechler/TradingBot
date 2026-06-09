@@ -117,12 +117,25 @@ pub struct PaperOpenPosition {
     pub runtime_asset: String,
     /// `"long"` or `"short"`.
     pub side: String,
+    /// Effective runtime entry price kept under the historical field name.
     pub entry_price: f64,
     pub quantity: f64,
     pub entry_time: i64,
     pub stop_loss: Option<f64>,
     pub take_profit: Option<f64>,
     pub entry_metadata: Option<String>,
+    #[default(None::<f64>)]
+    pub entry_base_price: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_effective_fill_price: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_spread_adjustment: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_fixed_fee: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_percent_fee: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_total_cost: Option<f64>,
 }
 
 /// Completed Paper Trading position projected from Runtime Portfolio State.
@@ -139,9 +152,12 @@ pub struct PaperTrade {
     pub runtime_asset: String,
     /// `"long"` or `"short"`.
     pub side: String,
+    /// Effective runtime entry price kept under the historical field name.
     pub entry_price: f64,
+    /// Effective runtime exit price kept under the historical field name.
     pub exit_price: f64,
     pub quantity: f64,
+    /// Net realized PnL kept under the historical field name.
     pub realized_pnl: f64,
     pub entry_time: i64,
     pub exit_time: i64,
@@ -150,6 +166,36 @@ pub struct PaperTrade {
     pub exit_kind: PaperExitKind,
     pub entry_metadata: Option<String>,
     pub exit_metadata: Option<String>,
+    #[default(None::<f64>)]
+    pub entry_base_price: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_effective_fill_price: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_spread_adjustment: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_fixed_fee: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_percent_fee: Option<f64>,
+    #[default(None::<f64>)]
+    pub entry_total_cost: Option<f64>,
+    #[default(None::<f64>)]
+    pub exit_base_price: Option<f64>,
+    #[default(None::<f64>)]
+    pub exit_effective_fill_price: Option<f64>,
+    #[default(None::<f64>)]
+    pub exit_spread_adjustment: Option<f64>,
+    #[default(None::<f64>)]
+    pub exit_fixed_fee: Option<f64>,
+    #[default(None::<f64>)]
+    pub exit_percent_fee: Option<f64>,
+    #[default(None::<f64>)]
+    pub exit_total_cost: Option<f64>,
+    #[default(None::<f64>)]
+    pub gross_pnl: Option<f64>,
+    #[default(None::<f64>)]
+    pub total_costs: Option<f64>,
+    #[default(None::<f64>)]
+    pub net_realized_pnl: Option<f64>,
 }
 
 // ── Reducers ─────────────────────────────────────────────────────────────────
@@ -310,6 +356,12 @@ pub fn open_paper_position(
     stop_loss: Option<f64>,
     take_profit: Option<f64>,
     entry_metadata: Option<String>,
+    entry_base_price: Option<f64>,
+    entry_effective_fill_price: Option<f64>,
+    entry_spread_adjustment: Option<f64>,
+    entry_fixed_fee: Option<f64>,
+    entry_percent_fee: Option<f64>,
+    entry_total_cost: Option<f64>,
 ) -> Result<(), String> {
     if let Some(existing) = ctx
         .db
@@ -329,6 +381,12 @@ pub fn open_paper_position(
             &stop_loss,
             &take_profit,
             &entry_metadata,
+            entry_base_price,
+            entry_effective_fill_price,
+            entry_spread_adjustment,
+            entry_fixed_fee,
+            entry_percent_fee,
+            entry_total_cost,
         ) {
             return Ok(());
         }
@@ -358,6 +416,12 @@ pub fn open_paper_position(
         stop_loss,
         take_profit,
         entry_metadata,
+        entry_base_price,
+        entry_effective_fill_price,
+        entry_spread_adjustment,
+        entry_fixed_fee,
+        entry_percent_fee,
+        entry_total_cost,
     });
 
     Ok(())
@@ -435,6 +499,12 @@ pub fn update_paper_position_risk_boundaries(
         stop_loss,
         take_profit,
         entry_metadata: existing.entry_metadata,
+        entry_base_price: existing.entry_base_price,
+        entry_effective_fill_price: existing.entry_effective_fill_price,
+        entry_spread_adjustment: existing.entry_spread_adjustment,
+        entry_fixed_fee: existing.entry_fixed_fee,
+        entry_percent_fee: existing.entry_percent_fee,
+        entry_total_cost: existing.entry_total_cost,
     });
 
     Ok(())
@@ -464,6 +534,21 @@ pub fn record_paper_position_closed(
     exit_kind: PaperExitKind,
     entry_metadata: Option<String>,
     exit_metadata: Option<String>,
+    entry_base_price: Option<f64>,
+    entry_effective_fill_price: Option<f64>,
+    entry_spread_adjustment: Option<f64>,
+    entry_fixed_fee: Option<f64>,
+    entry_percent_fee: Option<f64>,
+    entry_total_cost: Option<f64>,
+    exit_base_price: Option<f64>,
+    exit_effective_fill_price: Option<f64>,
+    exit_spread_adjustment: Option<f64>,
+    exit_fixed_fee: Option<f64>,
+    exit_percent_fee: Option<f64>,
+    exit_total_cost: Option<f64>,
+    gross_pnl: Option<f64>,
+    total_costs: Option<f64>,
+    net_realized_pnl: Option<f64>,
 ) -> Result<(), String> {
     if let Some(existing_trade) = ctx
         .db
@@ -488,6 +573,21 @@ pub fn record_paper_position_closed(
             &exit_kind,
             &entry_metadata,
             &exit_metadata,
+            entry_base_price,
+            entry_effective_fill_price,
+            entry_spread_adjustment,
+            entry_fixed_fee,
+            entry_percent_fee,
+            entry_total_cost,
+            exit_base_price,
+            exit_effective_fill_price,
+            exit_spread_adjustment,
+            exit_fixed_fee,
+            exit_percent_fee,
+            exit_total_cost,
+            gross_pnl,
+            total_costs,
+            net_realized_pnl,
         ) {
             if let Some(open_position) = ctx
                 .db
@@ -507,6 +607,12 @@ pub fn record_paper_position_closed(
                     &stop_loss,
                     &take_profit,
                     &entry_metadata,
+                    entry_base_price,
+                    entry_effective_fill_price,
+                    entry_spread_adjustment,
+                    entry_fixed_fee,
+                    entry_percent_fee,
+                    entry_total_cost,
                 ) {
                     return Err(format!(
                         "paper persistence inconsistency: open paper position '{open_projection_key}' does not match existing completed paper trade '{trade_projection_key}'"
@@ -550,6 +656,12 @@ pub fn record_paper_position_closed(
         &stop_loss,
         &take_profit,
         &entry_metadata,
+        entry_base_price,
+        entry_effective_fill_price,
+        entry_spread_adjustment,
+        entry_fixed_fee,
+        entry_percent_fee,
+        entry_total_cost,
     ) {
         return Err(format!(
             "paper persistence inconsistency: open paper position '{open_projection_key}' does not match completed paper trade '{trade_projection_key}'"
@@ -576,6 +688,21 @@ pub fn record_paper_position_closed(
         exit_kind,
         entry_metadata,
         exit_metadata,
+        entry_base_price,
+        entry_effective_fill_price,
+        entry_spread_adjustment,
+        entry_fixed_fee,
+        entry_percent_fee,
+        entry_total_cost,
+        exit_base_price,
+        exit_effective_fill_price,
+        exit_spread_adjustment,
+        exit_fixed_fee,
+        exit_percent_fee,
+        exit_total_cost,
+        gross_pnl,
+        total_costs,
+        net_realized_pnl,
     });
 
     Ok(())
@@ -626,6 +753,12 @@ fn paper_open_position_matches(
     stop_loss: &Option<f64>,
     take_profit: &Option<f64>,
     entry_metadata: &Option<String>,
+    entry_base_price: Option<f64>,
+    entry_effective_fill_price: Option<f64>,
+    entry_spread_adjustment: Option<f64>,
+    entry_fixed_fee: Option<f64>,
+    entry_percent_fee: Option<f64>,
+    entry_total_cost: Option<f64>,
 ) -> bool {
     paper_open_position_identity_matches(
         position,
@@ -639,6 +772,12 @@ fn paper_open_position_matches(
     ) && &position.stop_loss == stop_loss
         && &position.take_profit == take_profit
         && &position.entry_metadata == entry_metadata
+        && position.entry_base_price == entry_base_price
+        && position.entry_effective_fill_price == entry_effective_fill_price
+        && position.entry_spread_adjustment == entry_spread_adjustment
+        && position.entry_fixed_fee == entry_fixed_fee
+        && position.entry_percent_fee == entry_percent_fee
+        && position.entry_total_cost == entry_total_cost
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -679,6 +818,21 @@ fn paper_trade_matches(
     exit_kind: &PaperExitKind,
     entry_metadata: &Option<String>,
     exit_metadata: &Option<String>,
+    entry_base_price: Option<f64>,
+    entry_effective_fill_price: Option<f64>,
+    entry_spread_adjustment: Option<f64>,
+    entry_fixed_fee: Option<f64>,
+    entry_percent_fee: Option<f64>,
+    entry_total_cost: Option<f64>,
+    exit_base_price: Option<f64>,
+    exit_effective_fill_price: Option<f64>,
+    exit_spread_adjustment: Option<f64>,
+    exit_fixed_fee: Option<f64>,
+    exit_percent_fee: Option<f64>,
+    exit_total_cost: Option<f64>,
+    gross_pnl: Option<f64>,
+    total_costs: Option<f64>,
+    net_realized_pnl: Option<f64>,
 ) -> bool {
     trade.projection_key == projection_key
         && trade.strategy_identity == strategy_identity
@@ -695,4 +849,19 @@ fn paper_trade_matches(
         && &trade.exit_kind == exit_kind
         && &trade.entry_metadata == entry_metadata
         && &trade.exit_metadata == exit_metadata
+        && trade.entry_base_price == entry_base_price
+        && trade.entry_effective_fill_price == entry_effective_fill_price
+        && trade.entry_spread_adjustment == entry_spread_adjustment
+        && trade.entry_fixed_fee == entry_fixed_fee
+        && trade.entry_percent_fee == entry_percent_fee
+        && trade.entry_total_cost == entry_total_cost
+        && trade.exit_base_price == exit_base_price
+        && trade.exit_effective_fill_price == exit_effective_fill_price
+        && trade.exit_spread_adjustment == exit_spread_adjustment
+        && trade.exit_fixed_fee == exit_fixed_fee
+        && trade.exit_percent_fee == exit_percent_fee
+        && trade.exit_total_cost == exit_total_cost
+        && trade.gross_pnl == gross_pnl
+        && trade.total_costs == total_costs
+        && trade.net_realized_pnl == net_realized_pnl
 }

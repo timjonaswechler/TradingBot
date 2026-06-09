@@ -223,12 +223,18 @@ fn paper_open_position(projection_key: &str) -> PaperOpenPosition {
         strategy_identity: STRAT.into(),
         runtime_asset: "__TEST_PAPER_ASSET__".into(),
         side: "long".into(),
-        entry_price: 100.0,
+        entry_price: 101.0,
         quantity: 2.0,
         entry_time: 1_700_000_000_000,
         stop_loss: Some(95.0),
         take_profit: None,
         entry_metadata: Some("paper entry".into()),
+        entry_base_price: Some(100.0),
+        entry_effective_fill_price: Some(101.0),
+        entry_spread_adjustment: Some(1.0),
+        entry_fixed_fee: Some(1.0),
+        entry_percent_fee: Some(2.02),
+        entry_total_cost: Some(3.02),
     }
 }
 
@@ -238,10 +244,10 @@ fn paper_trade(projection_key: &str) -> PaperTrade {
         strategy_identity: STRAT.into(),
         runtime_asset: "__TEST_PAPER_ASSET__".into(),
         side: "long".into(),
-        entry_price: 100.0,
-        exit_price: 110.0,
+        entry_price: 101.0,
+        exit_price: 114.0,
         quantity: 2.0,
-        realized_pnl: 20.0,
+        realized_pnl: 19.7,
         entry_time: 1_700_000_000_000,
         exit_time: 1_700_086_400_000,
         stop_loss: Some(95.0),
@@ -249,6 +255,21 @@ fn paper_trade(projection_key: &str) -> PaperTrade {
         exit_kind: PaperExitKind::StrategyExit,
         entry_metadata: Some("paper entry".into()),
         exit_metadata: Some("paper exit".into()),
+        entry_base_price: Some(100.0),
+        entry_effective_fill_price: Some(101.0),
+        entry_spread_adjustment: Some(1.0),
+        entry_fixed_fee: Some(1.0),
+        entry_percent_fee: Some(2.02),
+        entry_total_cost: Some(3.02),
+        exit_base_price: Some(115.0),
+        exit_effective_fill_price: Some(114.0),
+        exit_spread_adjustment: Some(-1.0),
+        exit_fixed_fee: Some(1.0),
+        exit_percent_fee: Some(2.28),
+        exit_total_cost: Some(3.28),
+        gross_pnl: Some(26.0),
+        total_costs: Some(6.3),
+        net_realized_pnl: Some(19.7),
     }
 }
 
@@ -272,6 +293,12 @@ fn test_paper_position_open_is_idempotent_and_rejects_conflict() {
     let restored = get_paper_open_position(conn, STRAT, &position.runtime_asset)
         .expect("paper open position should exist");
     assert_eq!(restored.projection_key, position.projection_key);
+    assert_eq!(restored.entry_base_price, Some(100.0));
+    assert_eq!(restored.entry_effective_fill_price, Some(101.0));
+    assert_eq!(restored.entry_spread_adjustment, Some(1.0));
+    assert_eq!(restored.entry_fixed_fee, Some(1.0));
+    assert_eq!(restored.entry_percent_fee, Some(2.02));
+    assert_eq!(restored.entry_total_cost, Some(3.02));
     assert_eq!(restored.stop_loss, Some(95.0));
     assert_eq!(restored.take_profit, None);
 
@@ -380,6 +407,21 @@ fn test_paper_close_is_atomic_idempotent_and_requires_matching_open() {
     assert_eq!(trades.len(), 1);
     assert_eq!(trades[0].projection_key, trade.projection_key);
     assert_eq!(trades[0].exit_kind, PaperExitKind::StrategyExit);
+    assert_eq!(trades[0].entry_base_price, Some(100.0));
+    assert_eq!(trades[0].entry_effective_fill_price, Some(101.0));
+    assert_eq!(trades[0].entry_spread_adjustment, Some(1.0));
+    assert_eq!(trades[0].entry_fixed_fee, Some(1.0));
+    assert_eq!(trades[0].entry_percent_fee, Some(2.02));
+    assert_eq!(trades[0].entry_total_cost, Some(3.02));
+    assert_eq!(trades[0].exit_base_price, Some(115.0));
+    assert_eq!(trades[0].exit_effective_fill_price, Some(114.0));
+    assert_eq!(trades[0].exit_spread_adjustment, Some(-1.0));
+    assert_eq!(trades[0].exit_fixed_fee, Some(1.0));
+    assert_eq!(trades[0].exit_percent_fee, Some(2.28));
+    assert_eq!(trades[0].exit_total_cost, Some(3.28));
+    assert_eq!(trades[0].gross_pnl, Some(26.0));
+    assert_eq!(trades[0].total_costs, Some(6.3));
+    assert_eq!(trades[0].net_realized_pnl, Some(19.7));
     assert_eq!(trades[0].take_profit, None);
 
     delete_paper_data_by_strategy_identity(conn, STRAT).unwrap();

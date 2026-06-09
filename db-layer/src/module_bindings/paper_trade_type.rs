@@ -24,6 +24,21 @@ pub struct PaperTrade {
     pub exit_kind: PaperExitKind,
     pub entry_metadata: Option<String>,
     pub exit_metadata: Option<String>,
+    pub entry_base_price: Option<f64>,
+    pub entry_effective_fill_price: Option<f64>,
+    pub entry_spread_adjustment: Option<f64>,
+    pub entry_fixed_fee: Option<f64>,
+    pub entry_percent_fee: Option<f64>,
+    pub entry_total_cost: Option<f64>,
+    pub exit_base_price: Option<f64>,
+    pub exit_effective_fill_price: Option<f64>,
+    pub exit_spread_adjustment: Option<f64>,
+    pub exit_fixed_fee: Option<f64>,
+    pub exit_percent_fee: Option<f64>,
+    pub exit_total_cost: Option<f64>,
+    pub gross_pnl: Option<f64>,
+    pub total_costs: Option<f64>,
+    pub net_realized_pnl: Option<f64>,
 }
 
 impl __sdk::InModule for PaperTrade {
@@ -49,6 +64,21 @@ pub struct PaperTradeCols {
     pub exit_kind: __sdk::__query_builder::Col<PaperTrade, PaperExitKind>,
     pub entry_metadata: __sdk::__query_builder::Col<PaperTrade, Option<String>>,
     pub exit_metadata: __sdk::__query_builder::Col<PaperTrade, Option<String>>,
+    pub entry_base_price: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub entry_effective_fill_price: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub entry_spread_adjustment: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub entry_fixed_fee: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub entry_percent_fee: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub entry_total_cost: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub exit_base_price: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub exit_effective_fill_price: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub exit_spread_adjustment: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub exit_fixed_fee: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub exit_percent_fee: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub exit_total_cost: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub gross_pnl: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub total_costs: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
+    pub net_realized_pnl: __sdk::__query_builder::Col<PaperTrade, Option<f64>>,
 }
 
 impl __sdk::__query_builder::HasCols for PaperTrade {
@@ -70,6 +100,33 @@ impl __sdk::__query_builder::HasCols for PaperTrade {
             exit_kind: __sdk::__query_builder::Col::new(table_name, "exit_kind"),
             entry_metadata: __sdk::__query_builder::Col::new(table_name, "entry_metadata"),
             exit_metadata: __sdk::__query_builder::Col::new(table_name, "exit_metadata"),
+            entry_base_price: __sdk::__query_builder::Col::new(table_name, "entry_base_price"),
+            entry_effective_fill_price: __sdk::__query_builder::Col::new(
+                table_name,
+                "entry_effective_fill_price",
+            ),
+            entry_spread_adjustment: __sdk::__query_builder::Col::new(
+                table_name,
+                "entry_spread_adjustment",
+            ),
+            entry_fixed_fee: __sdk::__query_builder::Col::new(table_name, "entry_fixed_fee"),
+            entry_percent_fee: __sdk::__query_builder::Col::new(table_name, "entry_percent_fee"),
+            entry_total_cost: __sdk::__query_builder::Col::new(table_name, "entry_total_cost"),
+            exit_base_price: __sdk::__query_builder::Col::new(table_name, "exit_base_price"),
+            exit_effective_fill_price: __sdk::__query_builder::Col::new(
+                table_name,
+                "exit_effective_fill_price",
+            ),
+            exit_spread_adjustment: __sdk::__query_builder::Col::new(
+                table_name,
+                "exit_spread_adjustment",
+            ),
+            exit_fixed_fee: __sdk::__query_builder::Col::new(table_name, "exit_fixed_fee"),
+            exit_percent_fee: __sdk::__query_builder::Col::new(table_name, "exit_percent_fee"),
+            exit_total_cost: __sdk::__query_builder::Col::new(table_name, "exit_total_cost"),
+            gross_pnl: __sdk::__query_builder::Col::new(table_name, "gross_pnl"),
+            total_costs: __sdk::__query_builder::Col::new(table_name, "total_costs"),
+            net_realized_pnl: __sdk::__query_builder::Col::new(table_name, "net_realized_pnl"),
         }
     }
 }

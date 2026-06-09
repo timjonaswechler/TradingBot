@@ -16,7 +16,8 @@ use db_layer::{
 use domain::{ClosedPosition, OpenPosition, PositionRiskBoundaries, PositionSide};
 use thiserror::Error;
 use trading_runtime::{
-    ExitKind, PortfolioState, PositionRiskUpdateResult, RiskExitKind, RuntimeEvent, RuntimeStep,
+    ExecutionFill, ExecutionFillSide, ExitKind, PortfolioState, PositionCloseAccounting,
+    PositionRiskUpdateResult, RiskExitKind, RuntimeEvent, RuntimeStep,
 };
 
 const OPEN_POSITION_KEY_PREFIX: &str = "paper-open-v1";
@@ -274,18 +275,27 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
             self.ensure_open_position_boundary(position)?;
         }
 
+        let open_position_entry_cost = open_position
+            .as_ref()
+            .map(|position| position.entry_total_cost.unwrap_or(0.0))
+            .unwrap_or(0.0);
         let realized_cash_balance = configured_starting_balance
-            + trades.iter().map(|trade| trade.realized_pnl).sum::<f64>();
+            + trades
+                .iter()
+                .map(|trade| trade.net_realized_pnl.unwrap_or(trade.realized_pnl))
+                .sum::<f64>()
+            - open_position_entry_cost;
         let completed_trade_count = trades.len();
         let open_position = open_position
             .as_ref()
             .map(paper_open_position_to_domain)
             .transpose()?;
 
-        Ok(PortfolioState::from_parts(
+        Ok(PortfolioState::from_parts_with_open_entry_cost(
             realized_cash_balance,
             open_position,
             completed_trade_count,
+            open_position_entry_cost,
         ))
     }
 
@@ -302,11 +312,12 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
 
         for event in &step.events {
             match event {
-                RuntimeEvent::PositionOpened { position, .. } => {
-                    let record = paper_open_position_from_runtime(
+                RuntimeEvent::PositionOpened { position, fill } => {
+                    let record = paper_open_position_from_runtime_fill(
                         &self.strategy_identity,
                         &self.runtime_asset,
                         position,
+                        fill,
                     );
                     self.store.open_position(&record)?;
                     report.persisted_transition_count += 1;
@@ -314,19 +325,21 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
                 RuntimeEvent::PositionClosed {
                     closed_position,
                     exit_kind,
-                    ..
+                    fill,
+                    accounting,
                 } => {
                     let open_projection_key = open_position_projection_key(
                         &self.strategy_identity,
                         &self.runtime_asset,
                         &closed_position.position,
                     );
-                    let trade = paper_trade_from_runtime(
-                        &self.strategy_identity,
-                        &self.runtime_asset,
+                    let trade = self.paper_trade_for_close_projection(
+                        &open_projection_key,
                         closed_position,
                         *exit_kind,
-                    );
+                        fill,
+                        *accounting,
+                    )?;
                     self.store
                         .record_position_closed(&open_projection_key, &trade)?;
                     report.persisted_transition_count += 1;
@@ -391,6 +404,78 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
             adapter_runtime_asset: self.runtime_asset.clone(),
         })
     }
+
+    fn paper_trade_for_close_projection(
+        &self,
+        open_projection_key: &str,
+        closed_position: &ClosedPosition,
+        exit_kind: ExitKind,
+        exit_fill: &ExecutionFill,
+        accounting: PositionCloseAccounting,
+    ) -> Result<PaperTrade, PaperTradingPersistenceError> {
+        if let Some(open_position) = self
+            .store
+            .load_open_position(&self.strategy_identity, &self.runtime_asset)?
+        {
+            self.ensure_open_position_boundary(&open_position)?;
+            if open_position.projection_key != open_projection_key {
+                return Err(PaperTradingPersistenceError::Store(format!(
+                    "paper persistence inconsistency: open paper position '{}' does not match runtime close projection key '{open_projection_key}'",
+                    open_position.projection_key
+                )));
+            }
+
+            return Ok(paper_trade_from_runtime_with_entry_record(
+                &self.strategy_identity,
+                &self.runtime_asset,
+                closed_position,
+                exit_kind,
+                &open_position,
+                exit_fill,
+                accounting,
+            ));
+        }
+
+        let projection_key = completed_trade_projection_key(
+            &self.strategy_identity,
+            &self.runtime_asset,
+            closed_position,
+            exit_kind,
+        );
+        if let Some(existing_trade) = self
+            .store
+            .load_trades(&self.strategy_identity, &self.runtime_asset)?
+            .into_iter()
+            .find(|trade| trade.projection_key == projection_key)
+        {
+            self.ensure_trade_boundary(&existing_trade)?;
+            let existing_entry =
+                paper_open_position_from_existing_trade_entry(open_projection_key, &existing_trade);
+            return Ok(paper_trade_from_runtime_with_entry_record(
+                &self.strategy_identity,
+                &self.runtime_asset,
+                closed_position,
+                exit_kind,
+                &existing_entry,
+                exit_fill,
+                accounting,
+            ));
+        }
+
+        Ok(paper_trade_from_runtime_with_entry_record(
+            &self.strategy_identity,
+            &self.runtime_asset,
+            closed_position,
+            exit_kind,
+            &paper_open_position_from_runtime(
+                &self.strategy_identity,
+                &self.runtime_asset,
+                &closed_position.position,
+            ),
+            exit_fill,
+            accounting,
+        ))
+    }
 }
 
 /// Deterministic key for a runtime-local open Paper Trading position.
@@ -442,6 +527,20 @@ pub fn paper_open_position_from_runtime(
     runtime_asset: &str,
     position: &OpenPosition,
 ) -> PaperOpenPosition {
+    let fill = ExecutionFill::simulated_no_cost(
+        ExecutionFillSide::for_opening_position(position.side),
+        position.quantity,
+        position.entry_price,
+    );
+    paper_open_position_from_runtime_fill(strategy_identity, runtime_asset, position, &fill)
+}
+
+pub fn paper_open_position_from_runtime_fill(
+    strategy_identity: &str,
+    runtime_asset: &str,
+    position: &OpenPosition,
+    fill: &ExecutionFill,
+) -> PaperOpenPosition {
     PaperOpenPosition {
         projection_key: open_position_projection_key(strategy_identity, runtime_asset, position),
         strategy_identity: strategy_identity.to_string(),
@@ -453,6 +552,12 @@ pub fn paper_open_position_from_runtime(
         stop_loss: position.risk_boundaries.stop_loss,
         take_profit: position.risk_boundaries.take_profit,
         entry_metadata: None,
+        entry_base_price: Some(fill.base_execution_price),
+        entry_effective_fill_price: Some(fill.effective_fill_price),
+        entry_spread_adjustment: Some(fill.price_adjustment),
+        entry_fixed_fee: Some(fill.costs.fixed_fee),
+        entry_percent_fee: Some(fill.costs.percent_fee),
+        entry_total_cost: Some(fill.costs.total_cost),
     }
 }
 
@@ -461,6 +566,65 @@ pub fn paper_trade_from_runtime(
     runtime_asset: &str,
     closed_position: &ClosedPosition,
     exit_kind: ExitKind,
+) -> PaperTrade {
+    let entry_record = paper_open_position_from_runtime(
+        strategy_identity,
+        runtime_asset,
+        &closed_position.position,
+    );
+    let exit_fill = ExecutionFill::simulated_no_cost(
+        ExecutionFillSide::for_closing_position(closed_position.position.side),
+        closed_position.position.quantity,
+        closed_position.exit_price,
+    );
+    let accounting = PositionCloseAccounting {
+        gross_pnl: closed_position.realized_pnl,
+        total_costs: 0.0,
+        net_realized_pnl: closed_position.realized_pnl,
+    };
+    paper_trade_from_runtime_with_entry_record(
+        strategy_identity,
+        runtime_asset,
+        closed_position,
+        exit_kind,
+        &entry_record,
+        &exit_fill,
+        accounting,
+    )
+}
+
+fn paper_open_position_from_existing_trade_entry(
+    open_projection_key: &str,
+    trade: &PaperTrade,
+) -> PaperOpenPosition {
+    PaperOpenPosition {
+        projection_key: open_projection_key.to_string(),
+        strategy_identity: trade.strategy_identity.clone(),
+        runtime_asset: trade.runtime_asset.clone(),
+        side: trade.side.clone(),
+        entry_price: trade.entry_price,
+        quantity: trade.quantity,
+        entry_time: trade.entry_time,
+        stop_loss: trade.stop_loss,
+        take_profit: trade.take_profit,
+        entry_metadata: trade.entry_metadata.clone(),
+        entry_base_price: trade.entry_base_price,
+        entry_effective_fill_price: trade.entry_effective_fill_price,
+        entry_spread_adjustment: trade.entry_spread_adjustment,
+        entry_fixed_fee: trade.entry_fixed_fee,
+        entry_percent_fee: trade.entry_percent_fee,
+        entry_total_cost: trade.entry_total_cost,
+    }
+}
+
+fn paper_trade_from_runtime_with_entry_record(
+    strategy_identity: &str,
+    runtime_asset: &str,
+    closed_position: &ClosedPosition,
+    exit_kind: ExitKind,
+    entry_record: &PaperOpenPosition,
+    exit_fill: &ExecutionFill,
+    accounting: PositionCloseAccounting,
 ) -> PaperTrade {
     PaperTrade {
         projection_key: completed_trade_projection_key(
@@ -475,14 +639,29 @@ pub fn paper_trade_from_runtime(
         entry_price: closed_position.position.entry_price,
         exit_price: closed_position.exit_price,
         quantity: closed_position.position.quantity,
-        realized_pnl: closed_position.realized_pnl,
+        realized_pnl: accounting.net_realized_pnl,
         entry_time: closed_position.position.entry_time,
         exit_time: closed_position.exit_time,
         stop_loss: closed_position.position.risk_boundaries.stop_loss,
         take_profit: closed_position.position.risk_boundaries.take_profit,
         exit_kind: paper_exit_kind(exit_kind),
-        entry_metadata: None,
+        entry_metadata: entry_record.entry_metadata.clone(),
         exit_metadata: None,
+        entry_base_price: entry_record.entry_base_price,
+        entry_effective_fill_price: entry_record.entry_effective_fill_price,
+        entry_spread_adjustment: entry_record.entry_spread_adjustment,
+        entry_fixed_fee: entry_record.entry_fixed_fee,
+        entry_percent_fee: entry_record.entry_percent_fee,
+        entry_total_cost: entry_record.entry_total_cost,
+        exit_base_price: Some(exit_fill.base_execution_price),
+        exit_effective_fill_price: Some(exit_fill.effective_fill_price),
+        exit_spread_adjustment: Some(exit_fill.price_adjustment),
+        exit_fixed_fee: Some(exit_fill.costs.fixed_fee),
+        exit_percent_fee: Some(exit_fill.costs.percent_fee),
+        exit_total_cost: Some(exit_fill.costs.total_cost),
+        gross_pnl: Some(accounting.gross_pnl),
+        total_costs: Some(accounting.total_costs),
+        net_realized_pnl: Some(accounting.net_realized_pnl),
     }
 }
 
@@ -492,7 +671,9 @@ fn paper_open_position_to_domain(
     Ok(OpenPosition {
         symbol: position.runtime_asset.clone(),
         side: paper_position_side(&position.side)?,
-        entry_price: position.entry_price,
+        entry_price: position
+            .entry_effective_fill_price
+            .unwrap_or(position.entry_price),
         quantity: position.quantity,
         entry_time: position.entry_time,
         risk_boundaries: PositionRiskBoundaries {
@@ -598,17 +779,24 @@ mod tests {
     use std::cell::RefCell;
 
     use trading_runtime::{
-        AppliedPositionRiskBoundaryChange, ExecutionFill, ExecutionFillSide,
-        PositionCloseAccounting, PositionRiskBoundaryChangeRejectionReason,
-        PositionRiskBoundaryChanges, PositionRiskBoundaryKind, PositionRiskUpdateResult,
-        RejectedPositionRiskBoundaryChange, RiskBoundaryChange, RuntimePortfolioSnapshot,
-        StrategyDecision,
+        AppliedPositionRiskBoundaryChange, ExecutionCostBreakdown, ExecutionFill,
+        ExecutionFillSide, ExecutionFillSource, PositionCloseAccounting,
+        PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
+        PositionRiskBoundaryKind, PositionRiskUpdateResult, RejectedPositionRiskBoundaryChange,
+        RiskBoundaryChange, RuntimePortfolioSnapshot, StrategyDecision,
     };
 
     use super::*;
 
     const STRATEGY_IDENTITY: &str = "mean-reversion-paper";
     const RUNTIME_ASSET: &str = "BTC-USD";
+
+    fn assert_approx_eq(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
 
     #[derive(Debug, Clone, PartialEq)]
     enum StoreCall {
@@ -845,6 +1033,30 @@ mod tests {
         )
     }
 
+    fn costed_fill(
+        side: ExecutionFillSide,
+        quantity: f64,
+        base_execution_price: f64,
+        effective_fill_price: f64,
+        price_adjustment: f64,
+        fixed_fee: f64,
+        percent_fee: f64,
+    ) -> ExecutionFill {
+        ExecutionFill {
+            side,
+            quantity,
+            base_execution_price,
+            effective_fill_price,
+            price_adjustment,
+            costs: ExecutionCostBreakdown {
+                fixed_fee,
+                percent_fee,
+                total_cost: fixed_fee + percent_fee,
+            },
+            source: ExecutionFillSource::Simulated,
+        }
+    }
+
     fn closing_fill(closed_position: &ClosedPosition) -> ExecutionFill {
         ExecutionFill::simulated_no_cost(
             ExecutionFillSide::for_closing_position(closed_position.position.side),
@@ -867,6 +1079,19 @@ mod tests {
             open_position,
             completed_trade_count: 0,
             current_equity: 1_000.0,
+        }
+    }
+
+    fn candle(timestamp: i64, close: f64) -> domain::Candle {
+        domain::Candle {
+            timestamp,
+            symbol: RUNTIME_ASSET.into(),
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume: 1_000.0,
+            timeframe: domain::Timeframe::minutes(1),
         }
     }
 
@@ -896,6 +1121,7 @@ mod tests {
             ExitKind::StrategyExit,
         );
         first_trade.realized_pnl = 12.5;
+        first_trade.net_realized_pnl = Some(12.5);
         let (second_close, _) =
             closed_position(runtime_position(PositionSide::Short), ExitKind::ForceClose);
         let mut second_trade = paper_trade_from_runtime(
@@ -905,6 +1131,7 @@ mod tests {
             ExitKind::ForceClose,
         );
         second_trade.realized_pnl = -2.5;
+        second_trade.net_realized_pnl = Some(-2.5);
         store.set_trades(vec![first_trade, second_trade]);
 
         let restored = adapter(&store)
@@ -922,6 +1149,155 @@ mod tests {
         assert_eq!(position.quantity, 2.0);
         assert_eq!(position.risk_boundaries.stop_loss, Some(95.0));
         assert_eq!(position.risk_boundaries.take_profit, Some(120.0));
+    }
+
+    #[test]
+    fn open_projection_persists_entry_fill_costs_and_restore_uses_cost_basis() {
+        let store = FakePaperStore::default();
+        let adapter = adapter(&store);
+        let mut position = runtime_position(PositionSide::Long);
+        position.entry_price = 101.0;
+        let fill = costed_fill(
+            ExecutionFillSide::Buy,
+            position.quantity,
+            100.0,
+            101.0,
+            1.0,
+            1.0,
+            2.02,
+        );
+
+        let report = adapter
+            .project_step(&step(vec![RuntimeEvent::PositionOpened {
+                position: position.clone(),
+                fill,
+            }]))
+            .expect("costed open projection should succeed");
+
+        assert_eq!(
+            report,
+            PaperProjectionReport {
+                persisted_transition_count: 1
+            }
+        );
+        let persisted = store
+            .open_position
+            .borrow()
+            .clone()
+            .expect("open position should be persisted");
+        assert_eq!(persisted.entry_price, 101.0);
+        assert_eq!(persisted.entry_base_price, Some(100.0));
+        assert_eq!(persisted.entry_effective_fill_price, Some(101.0));
+        assert_eq!(persisted.entry_spread_adjustment, Some(1.0));
+        assert_eq!(persisted.entry_fixed_fee, Some(1.0));
+        assert_eq!(persisted.entry_percent_fee, Some(2.02));
+        assert_eq!(persisted.entry_total_cost, Some(3.02));
+
+        let mut restored = adapter
+            .restore_portfolio_state(1_000.0)
+            .expect("restore should include persisted open entry cost basis");
+        assert_approx_eq(restored.realized_cash_balance, 996.98);
+        let restored_position = restored
+            .open_position
+            .as_ref()
+            .expect("costed open position should restore");
+        assert_eq!(restored_position.entry_price, 101.0);
+
+        let close = restored
+            .close_long_at_price_with_cost(&candle(1_700_000_060_000, 115.0), 114.0, 3.28)
+            .expect("restored position should close with entry cost basis");
+        assert_approx_eq(close.accounting.gross_pnl, 26.0);
+        assert_approx_eq(close.accounting.total_costs, 6.3);
+        assert_approx_eq(close.accounting.net_realized_pnl, 19.7);
+        assert_approx_eq(restored.realized_cash_balance, 1_019.7);
+    }
+
+    #[test]
+    fn close_projection_persists_entry_exit_cost_breakdowns_and_is_idempotent() {
+        let store = FakePaperStore::default();
+        let adapter = adapter(&store);
+        let mut position = runtime_position(PositionSide::Long);
+        position.entry_price = 101.0;
+        let entry_fill = costed_fill(
+            ExecutionFillSide::Buy,
+            position.quantity,
+            100.0,
+            101.0,
+            1.0,
+            1.0,
+            2.02,
+        );
+        adapter
+            .project_step(&step(vec![RuntimeEvent::PositionOpened {
+                position: position.clone(),
+                fill: entry_fill,
+            }]))
+            .expect("costed open projection should succeed");
+
+        let closed = ClosedPosition {
+            position: position.clone(),
+            exit_price: 114.0,
+            exit_time: 1_700_000_060_000,
+            realized_pnl: 19.7,
+        };
+        let exit_fill = costed_fill(
+            ExecutionFillSide::Sell,
+            position.quantity,
+            115.0,
+            114.0,
+            -1.0,
+            1.0,
+            2.28,
+        );
+        let accounting = PositionCloseAccounting {
+            gross_pnl: 26.0,
+            total_costs: 6.3,
+            net_realized_pnl: 19.7,
+        };
+        let close_step = step(vec![RuntimeEvent::PositionClosed {
+            closed_position: closed.clone(),
+            exit_kind: ExitKind::StrategyExit,
+            fill: exit_fill,
+            accounting,
+        }]);
+
+        adapter
+            .project_step(&close_step)
+            .expect("costed close projection should succeed");
+        adapter
+            .project_step(&close_step)
+            .expect("duplicate costed close projection should be idempotent");
+
+        assert!(store.open_position.borrow().is_none());
+        let trades = store.trades.borrow();
+        assert_eq!(trades.len(), 1);
+        let trade = &trades[0];
+        assert_eq!(trade.entry_price, 101.0);
+        assert_eq!(trade.exit_price, 114.0);
+        assert_eq!(trade.realized_pnl, 19.7);
+        assert_eq!(trade.entry_base_price, Some(100.0));
+        assert_eq!(trade.entry_effective_fill_price, Some(101.0));
+        assert_eq!(trade.entry_spread_adjustment, Some(1.0));
+        assert_eq!(trade.entry_fixed_fee, Some(1.0));
+        assert_eq!(trade.entry_percent_fee, Some(2.02));
+        assert_eq!(trade.entry_total_cost, Some(3.02));
+        assert_eq!(trade.exit_base_price, Some(115.0));
+        assert_eq!(trade.exit_effective_fill_price, Some(114.0));
+        assert_eq!(trade.exit_spread_adjustment, Some(-1.0));
+        assert_eq!(trade.exit_fixed_fee, Some(1.0));
+        assert_eq!(trade.exit_percent_fee, Some(2.28));
+        assert_eq!(trade.exit_total_cost, Some(3.28));
+        assert_eq!(trade.gross_pnl, Some(26.0));
+        assert_eq!(trade.total_costs, Some(6.3));
+        assert_eq!(trade.net_realized_pnl, Some(19.7));
+        assert!(matches!(
+            store.calls.borrow().as_slice(),
+            [
+                StoreCall::Open { .. },
+                StoreCall::Close { .. },
+                StoreCall::Close { .. }
+            ]
+        ));
     }
 
     #[test]
