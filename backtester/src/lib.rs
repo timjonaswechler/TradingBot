@@ -10,8 +10,9 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, bail, Result};
 use domain::{Candle, PositionSide, Timeframe};
 use trading_runtime::{
-    resolve_warmup_plan, ExitKind, MarketInput, PortfolioState, RhaiStrategy, RiskExitKind,
-    RuntimeConfig, RuntimeEvent, RuntimeStep, TradingRuntime, WarmupPlan,
+    resolve_warmup_plan, ExecutionCostModel, ExecutionFill, ExitKind, MarketInput, PortfolioState,
+    RhaiStrategy, RiskExitKind, RuntimeConfig, RuntimeEvent, RuntimeStep, TradingRuntime,
+    WarmupPlan,
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -23,7 +24,18 @@ pub struct Trade {
     pub entry_price: f64,
     pub exit_price: f64,
     pub size: f64,
+    /// Net realized PnL kept under the historical field name for compatibility.
     pub pnl: f64,
+    /// Gross PnL reported by the Trading Runtime before fill costs.
+    pub gross_pnl: f64,
+    /// Total entry-plus-exit fill costs reported by the Trading Runtime.
+    pub total_costs: f64,
+    /// Net realized PnL reported by the Trading Runtime after fill costs.
+    pub net_realized_pnl: f64,
+    /// Runtime fill that opened the reported position, when observed in this backtest run.
+    pub entry_fill: Option<ExecutionFill>,
+    /// Runtime fill that closed the reported position.
+    pub exit_fill: ExecutionFill,
     pub entry_time: i64,
     pub exit_time: i64,
     pub entry_reason: String,
@@ -44,7 +56,12 @@ pub struct BacktestMetrics {
     pub wins: usize,
     pub losses: usize,
     pub win_rate: f64,
+    /// Total net realized PnL from completed Runtime positions.
     pub total_pnl: f64,
+    /// Sum of Runtime-reported fill costs across completed trades.
+    pub total_costs: f64,
+    /// Average Runtime-reported fill cost per completed trade.
+    pub average_cost_per_trade: f64,
     pub max_drawdown: f64,
     pub max_drawdown_pct: f64,
     pub final_equity: f64,
@@ -80,6 +97,7 @@ pub struct RuntimeBacktestConfig {
     pub runtime_asset: String,
     pub initial_balance: f64,
     pub runtime_minimum_warmup: usize,
+    pub execution_cost_model: ExecutionCostModel,
 }
 
 impl RuntimeBacktestConfig {
@@ -88,11 +106,17 @@ impl RuntimeBacktestConfig {
             runtime_asset: runtime_asset.into(),
             initial_balance,
             runtime_minimum_warmup: 0,
+            execution_cost_model: ExecutionCostModel::default(),
         }
     }
 
     pub fn with_runtime_minimum_warmup(mut self, runtime_minimum_warmup: usize) -> Self {
         self.runtime_minimum_warmup = runtime_minimum_warmup;
+        self
+    }
+
+    pub fn with_execution_cost_model(mut self, execution_cost_model: ExecutionCostModel) -> Self {
+        self.execution_cost_model = execution_cost_model;
         self
     }
 }
@@ -240,7 +264,8 @@ pub fn run_runtime_backtest(
     let effective_config = RuntimeConfig::from_strategy_config(
         config.runtime_asset.clone(),
         strategy.strategy_config(),
-    )?;
+    )?
+    .with_execution_cost_model(config.execution_cost_model);
     let warmup_plan = resolve_warmup_plan(
         &effective_config,
         strategy.strategy_config(),
@@ -272,7 +297,8 @@ where
     let effective_config = RuntimeConfig::from_strategy_config(
         config.runtime_asset.clone(),
         strategy.strategy_config(),
-    )?;
+    )?
+    .with_execution_cost_model(config.execution_cost_model);
     let warmup_plan = resolve_warmup_plan(
         &effective_config,
         strategy.strategy_config(),
@@ -491,6 +517,7 @@ struct RuntimeBacktestRecorder {
     bars_in_position: usize,
     final_balance: f64,
     tradable_primary_candles: Vec<Candle>,
+    open_entry_fill: Option<ExecutionFill>,
 }
 
 impl RuntimeBacktestRecorder {
@@ -505,28 +532,40 @@ impl RuntimeBacktestRecorder {
             bars_in_position: 0,
             final_balance: initial_balance,
             tradable_primary_candles: Vec::new(),
+            open_entry_fill: None,
         }
     }
 
     fn record_tradable_step(&mut self, candle: &Candle, step: &RuntimeStep) {
         for event in &step.events {
-            if let RuntimeEvent::PositionClosed {
-                closed_position,
-                exit_kind,
-                ..
-            } = event
-            {
-                self.trades.push(Trade {
-                    side: closed_position.position.side,
-                    entry_price: closed_position.position.entry_price,
-                    exit_price: closed_position.exit_price,
-                    size: closed_position.position.quantity,
-                    pnl: closed_position.realized_pnl,
-                    entry_time: closed_position.position.entry_time,
-                    exit_time: closed_position.exit_time,
-                    entry_reason: String::new(),
-                    exit_reason: exit_reason(*exit_kind).to_string(),
-                });
+            match event {
+                RuntimeEvent::PositionOpened { fill, .. } => {
+                    self.open_entry_fill = Some(*fill);
+                }
+                RuntimeEvent::PositionClosed {
+                    closed_position,
+                    exit_kind,
+                    fill,
+                    accounting,
+                } => {
+                    self.trades.push(Trade {
+                        side: closed_position.position.side,
+                        entry_price: closed_position.position.entry_price,
+                        exit_price: closed_position.exit_price,
+                        size: closed_position.position.quantity,
+                        pnl: accounting.net_realized_pnl,
+                        gross_pnl: accounting.gross_pnl,
+                        total_costs: accounting.total_costs,
+                        net_realized_pnl: accounting.net_realized_pnl,
+                        entry_fill: self.open_entry_fill.take(),
+                        exit_fill: *fill,
+                        entry_time: closed_position.position.entry_time,
+                        exit_time: closed_position.exit_time,
+                        entry_reason: String::new(),
+                        exit_reason: exit_reason(*exit_kind).to_string(),
+                    });
+                }
+                _ => {}
             }
         }
 
@@ -567,7 +606,21 @@ impl RuntimeBacktestRecorder {
         let trade_count = self.trades.len();
         let wins = self.trades.iter().filter(|trade| trade.pnl > 0.0).count();
         let losses = self.trades.iter().filter(|trade| trade.pnl < 0.0).count();
-        let total_pnl = self.trades.iter().map(|trade| trade.pnl).sum::<f64>();
+        let total_pnl = self
+            .trades
+            .iter()
+            .map(|trade| trade.net_realized_pnl)
+            .sum::<f64>();
+        let total_costs = self
+            .trades
+            .iter()
+            .map(|trade| trade.total_costs)
+            .sum::<f64>();
+        let average_cost_per_trade = if trade_count == 0 {
+            0.0
+        } else {
+            total_costs / trade_count as f64
+        };
         let final_equity = self
             .equity_curve
             .last()
@@ -596,6 +649,8 @@ impl RuntimeBacktestRecorder {
             losses,
             win_rate,
             total_pnl,
+            total_costs,
+            average_cost_per_trade,
             max_drawdown: self.max_drawdown,
             max_drawdown_pct,
             final_equity,
@@ -627,7 +682,9 @@ fn exit_reason(exit_kind: ExitKind) -> &'static str {
 mod tests {
     use super::*;
     use domain::Timeframe;
-    use trading_runtime::{RuntimeEvent, StrategyDecisionIntent};
+    use trading_runtime::{
+        ExecutionCostModel, ExecutionFillSide, RuntimeEvent, StrategyDecisionIntent,
+    };
 
     fn candle_at(ts: i64, close: f64, timeframe: Timeframe) -> Candle {
         Candle {
@@ -640,6 +697,133 @@ mod tests {
             volume: 1000.0,
             timeframe,
         }
+    }
+
+    fn long_roundtrip_strategy() -> &'static str {
+        r#"
+fn strategy_config() {
+    strategy_config::new().with_primary(timeframe("1m"))
+}
+
+fn on_tick(market, context) {
+    if context.portfolio.is_flat() {
+        decision::open_long(2.0).with_reason("entry")
+    } else {
+        decision::close_long().with_reason("exit")
+    }
+}
+"#
+    }
+
+    fn long_roundtrip_market_data() -> HistoricalMarketData {
+        let primary = Timeframe::minutes(1);
+        HistoricalMarketData::single_timeframe(vec![
+            candle_at(60_000, 100.0, primary),
+            candle_at(120_000, 115.0, primary),
+        ])
+    }
+
+    fn assert_approx_eq(actual: f64, expected: f64) {
+        let tolerance = 1e-9;
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "expected {actual} to be within {tolerance} of {expected}"
+        );
+    }
+
+    #[test]
+    fn runtime_backtest_reports_zero_cost_breakdown_for_default_no_cost_run() {
+        let backtest = run_runtime_backtest(
+            long_roundtrip_strategy(),
+            long_roundtrip_market_data(),
+            RuntimeBacktestConfig::new("TEST", 10_000.0),
+        )
+        .unwrap();
+
+        let trade = backtest
+            .result
+            .trades
+            .first()
+            .expect("roundtrip should produce one completed trade");
+        assert_eq!(backtest.result.trades.len(), 1);
+        assert_eq!(trade.pnl, 30.0);
+        assert_eq!(trade.net_realized_pnl, 30.0);
+        assert_eq!(trade.gross_pnl, 30.0);
+        assert_eq!(trade.total_costs, 0.0);
+        assert_eq!(trade.entry_price, 100.0);
+        assert_eq!(trade.exit_price, 115.0);
+
+        let entry_fill = trade
+            .entry_fill
+            .expect("position-opened runtime output should provide entry fill");
+        assert_eq!(entry_fill.side, ExecutionFillSide::Buy);
+        assert_eq!(entry_fill.base_execution_price, 100.0);
+        assert_eq!(entry_fill.effective_fill_price, 100.0);
+        assert_eq!(entry_fill.price_adjustment, 0.0);
+        assert_eq!(entry_fill.costs.fixed_fee, 0.0);
+        assert_eq!(entry_fill.costs.percent_fee, 0.0);
+        assert_eq!(entry_fill.costs.total_cost, 0.0);
+
+        assert_eq!(trade.exit_fill.side, ExecutionFillSide::Sell);
+        assert_eq!(trade.exit_fill.base_execution_price, 115.0);
+        assert_eq!(trade.exit_fill.effective_fill_price, 115.0);
+        assert_eq!(trade.exit_fill.price_adjustment, 0.0);
+        assert_eq!(trade.exit_fill.costs.fixed_fee, 0.0);
+        assert_eq!(trade.exit_fill.costs.percent_fee, 0.0);
+        assert_eq!(trade.exit_fill.costs.total_cost, 0.0);
+
+        assert_eq!(backtest.result.metrics.total_pnl, 30.0);
+        assert_eq!(backtest.result.metrics.total_costs, 0.0);
+        assert_eq!(backtest.result.metrics.average_cost_per_trade, 0.0);
+        assert_eq!(backtest.result.final_balance, 10_030.0);
+    }
+
+    #[test]
+    fn runtime_backtest_reports_runtime_fee_and_spread_breakdown_for_configured_run() {
+        let backtest = run_runtime_backtest(
+            long_roundtrip_strategy(),
+            long_roundtrip_market_data(),
+            RuntimeBacktestConfig::new("TEST", 10_000.0)
+                .with_execution_cost_model(ExecutionCostModel::try_new(1.0, 0.01, 2.0).unwrap()),
+        )
+        .unwrap();
+
+        let trade = backtest
+            .result
+            .trades
+            .first()
+            .expect("roundtrip should produce one completed trade");
+        assert_eq!(backtest.result.trades.len(), 1);
+        assert_approx_eq(trade.gross_pnl, 26.0);
+        assert_approx_eq(trade.total_costs, 6.3);
+        assert_approx_eq(trade.net_realized_pnl, 19.7);
+        assert_approx_eq(trade.pnl, 19.7);
+        assert_approx_eq(trade.entry_price, 101.0);
+        assert_approx_eq(trade.exit_price, 114.0);
+
+        let entry_fill = trade
+            .entry_fill
+            .expect("position-opened runtime output should provide entry fill");
+        assert_eq!(entry_fill.side, ExecutionFillSide::Buy);
+        assert_approx_eq(entry_fill.base_execution_price, 100.0);
+        assert_approx_eq(entry_fill.effective_fill_price, 101.0);
+        assert_approx_eq(entry_fill.price_adjustment, 1.0);
+        assert_approx_eq(entry_fill.costs.fixed_fee, 1.0);
+        assert_approx_eq(entry_fill.costs.percent_fee, 2.02);
+        assert_approx_eq(entry_fill.costs.total_cost, 3.02);
+
+        assert_eq!(trade.exit_fill.side, ExecutionFillSide::Sell);
+        assert_approx_eq(trade.exit_fill.base_execution_price, 115.0);
+        assert_approx_eq(trade.exit_fill.effective_fill_price, 114.0);
+        assert_approx_eq(trade.exit_fill.price_adjustment, -1.0);
+        assert_approx_eq(trade.exit_fill.costs.fixed_fee, 1.0);
+        assert_approx_eq(trade.exit_fill.costs.percent_fee, 2.28);
+        assert_approx_eq(trade.exit_fill.costs.total_cost, 3.28);
+
+        assert_approx_eq(backtest.result.metrics.total_pnl, 19.7);
+        assert_approx_eq(backtest.result.metrics.total_costs, 6.3);
+        assert_approx_eq(backtest.result.metrics.average_cost_per_trade, 6.3);
+        assert_approx_eq(backtest.result.final_balance, 10_019.7);
     }
 
     #[test]

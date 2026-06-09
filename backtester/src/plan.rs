@@ -303,7 +303,8 @@ fn prepare_plan_runtime(
     let effective_config = RuntimeConfig::from_strategy_config(
         config.runtime_asset.clone(),
         strategy.strategy_config(),
-    )?;
+    )?
+    .with_execution_cost_model(config.execution_cost_model);
     let warmup_plan = resolve_warmup_plan(
         &effective_config,
         strategy.strategy_config(),
@@ -1986,6 +1987,12 @@ pub fn render_markdown(report: &PlanReport, strategy_label: &str) -> String {
             metrics.max_drawdown_pct * 100.0
         );
         let _ = writeln!(out, "- Trades: {}", metrics.trade_count);
+        let _ = writeln!(out, "- Total costs: {:.2}", metrics.total_costs);
+        let _ = writeln!(
+            out,
+            "- Average cost per trade: {:.2}",
+            metrics.average_cost_per_trade
+        );
 
         if let Some(synthetic) = &test.synthetic {
             render_synthetic_monte_carlo(&mut out, test, synthetic);
@@ -3271,6 +3278,8 @@ fn plan() {
                 losses: 0,
                 win_rate: 0.0,
                 total_pnl: final_equity - 10_000.0,
+                total_costs: 0.0,
+                average_cost_per_trade: 0.0,
                 max_drawdown,
                 max_drawdown_pct: max_drawdown / 10_000.0,
                 final_equity,

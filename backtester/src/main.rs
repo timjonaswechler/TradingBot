@@ -218,6 +218,8 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
     println!("  Wins / Losses   : {:>5} / {:>4}", m.wins, m.losses);
     println!("Win rate          : {:>11.1}%", m.win_rate * 100.0);
     println!("Total realised PnL: {:>12.2}", m.total_pnl);
+    println!("Total costs       : {:>12.2}", m.total_costs);
+    println!("Avg cost / trade  : {:>12.2}", m.average_cost_per_trade);
     let mar_strat = if m.max_drawdown_pct > 0.0 {
         m.cagr / m.max_drawdown_pct
     } else {
@@ -280,12 +282,17 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
     if cli.verbose && !result.trades.is_empty() {
         println!("─── Trades ───");
         println!(
-            "{:<4} {:<6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}  reason",
-            "#", "side", "entry_dt", "exit_dt", "entry", "exit", "size", "pnl"
+            "{:<4} {:<6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>9} {:>9}  reason",
+            "#", "side", "entry_dt", "exit_dt", "entry", "exit", "size", "gross", "costs", "net", "entry_adj", "exit_adj"
         );
         for (i, t) in result.trades.iter().enumerate() {
+            let entry_adjustment = t
+                .entry_fill
+                .as_ref()
+                .map(|fill| fill.price_adjustment)
+                .unwrap_or(0.0);
             println!(
-                "{:<4} {:<6} {:>10} {:>10} {:>10.2} {:>10.2} {:>10.4} {:>10.2}  {}",
+                "{:<4} {:<6} {:>10} {:>10} {:>10.2} {:>10.2} {:>10.4} {:>10.2} {:>10.2} {:>10.2} {:>9.2} {:>9.2}  {}",
                 i + 1,
                 format!("{}", t.side),
                 format_date(t.entry_time),
@@ -293,7 +300,11 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
                 t.entry_price,
                 t.exit_price,
                 t.size,
-                t.pnl,
+                t.gross_pnl,
+                t.total_costs,
+                t.net_realized_pnl,
+                entry_adjustment,
+                t.exit_fill.price_adjustment,
                 t.exit_reason,
             );
         }
