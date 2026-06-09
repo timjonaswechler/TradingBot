@@ -282,11 +282,11 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
             .map(paper_open_position_to_domain)
             .transpose()?;
 
-        Ok(PortfolioState {
+        Ok(PortfolioState::from_parts(
             realized_cash_balance,
             open_position,
             completed_trade_count,
-        })
+        ))
     }
 
     /// Project persistable runtime-local Paper Trading outputs in RuntimeStep
@@ -599,9 +599,10 @@ mod tests {
 
     use trading_runtime::{
         AppliedPositionRiskBoundaryChange, ExecutionFill, ExecutionFillSide,
-        PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
-        PositionRiskBoundaryKind, PositionRiskUpdateResult, RejectedPositionRiskBoundaryChange,
-        RiskBoundaryChange, RuntimePortfolioSnapshot, StrategyDecision,
+        PositionCloseAccounting, PositionRiskBoundaryChangeRejectionReason,
+        PositionRiskBoundaryChanges, PositionRiskBoundaryKind, PositionRiskUpdateResult,
+        RejectedPositionRiskBoundaryChange, RiskBoundaryChange, RuntimePortfolioSnapshot,
+        StrategyDecision,
     };
 
     use super::*;
@@ -852,6 +853,14 @@ mod tests {
         )
     }
 
+    fn closing_accounting(closed_position: &ClosedPosition) -> PositionCloseAccounting {
+        PositionCloseAccounting {
+            gross_pnl: closed_position.realized_pnl,
+            total_costs: 0.0,
+            net_realized_pnl: closed_position.realized_pnl,
+        }
+    }
+
     fn snapshot(open_position: Option<OpenPosition>) -> RuntimePortfolioSnapshot {
         RuntimePortfolioSnapshot {
             realized_cash_balance: 1_000.0,
@@ -995,6 +1004,7 @@ mod tests {
                 },
                 RuntimeEvent::PositionClosed {
                     fill: closing_fill(&closed),
+                    accounting: closing_accounting(&closed),
                     closed_position: closed,
                     exit_kind,
                 },
@@ -1311,6 +1321,7 @@ mod tests {
         let (closed, exit_kind) = closed_position(position, ExitKind::ForceClose);
         let close_step = step(vec![RuntimeEvent::PositionClosed {
             fill: closing_fill(&closed),
+            accounting: closing_accounting(&closed),
             closed_position: closed,
             exit_kind,
         }]);
@@ -1338,6 +1349,7 @@ mod tests {
                 },
                 RuntimeEvent::PositionClosed {
                     fill: closing_fill(&closed),
+                    accounting: closing_accounting(&closed),
                     closed_position: closed,
                     exit_kind,
                 },
@@ -1358,6 +1370,7 @@ mod tests {
         let error = adapter(&store)
             .project_step(&step(vec![RuntimeEvent::PositionClosed {
                 fill: closing_fill(&closed),
+                accounting: closing_accounting(&closed),
                 closed_position: closed,
                 exit_kind,
             }]))

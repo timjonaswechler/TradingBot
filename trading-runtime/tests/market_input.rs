@@ -2,10 +2,10 @@ use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     BlockedSecondaryContext, ClosedPosition, ExecutionAction, ExecutionFill, ExecutionFillSide,
-    ExitKind, MarketInput, PortfolioState, RiskExitKind, RiskExitTriggered, RuntimeConfig,
-    RuntimeEvent, RuntimeInputError, RuntimePortfolioSnapshot, SecondaryContextUnavailableReason,
-    SecondaryReadiness, SecondaryTimeframeConfig, StrategyDecision, StrategyHandler, Timeframe,
-    TradingRuntime,
+    ExitKind, MarketInput, PortfolioState, PositionCloseAccounting, RiskExitKind,
+    RiskExitTriggered, RuntimeConfig, RuntimeEvent, RuntimeInputError, RuntimePortfolioSnapshot,
+    SecondaryContextUnavailableReason, SecondaryReadiness, SecondaryTimeframeConfig,
+    StrategyDecision, StrategyHandler, Timeframe, TradingRuntime,
 };
 
 fn tf(raw: &str) -> Timeframe {
@@ -18,6 +18,14 @@ fn candle(timestamp: i64, timeframe: &str, close: f64) -> Candle {
 
 fn fill(side: ExecutionFillSide, quantity: f64, base_execution_price: f64) -> ExecutionFill {
     ExecutionFill::simulated_no_cost(side, quantity, base_execution_price)
+}
+
+fn accounting(gross_pnl: f64) -> PositionCloseAccounting {
+    PositionCloseAccounting {
+        gross_pnl,
+        total_costs: 0.0,
+        net_realized_pnl: gross_pnl,
+    }
 }
 
 fn ohlc_candle(
@@ -933,6 +941,7 @@ fn long_risk_exit_closes_before_missing_required_secondary_can_block_strategy_ti
                     selected: RiskExitKind::StopLoss,
                 },
                 fill: fill(ExecutionFillSide::Sell, 2.0, 90.0),
+                accounting: accounting(-20.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1022,6 +1031,7 @@ fn short_risk_exit_closes_before_missing_required_secondary_can_block_strategy_t
                     selected: RiskExitKind::TakeProfit,
                 },
                 fill: fill(ExecutionFillSide::Buy, 2.0, 80.0),
+                accounting: accounting(40.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),

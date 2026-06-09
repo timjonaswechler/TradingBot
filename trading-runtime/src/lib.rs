@@ -56,7 +56,10 @@ pub use market_input::{
     MarketInput, RuntimeConfig, RuntimeInputError, SecondaryReadiness, SecondaryTimeframeConfig,
 };
 pub use market_state::MarketState;
-pub use portfolio::{PortfolioState, PortfolioTransitionError, RuntimePortfolioSnapshot};
+pub use portfolio::{
+    PortfolioClose, PortfolioState, PortfolioTransitionError, PositionCloseAccounting,
+    RuntimePortfolioSnapshot,
+};
 pub use rhai_strategy::{RhaiStrategy, RhaiStrategyHooks, RhaiStrategyLoadError};
 pub use risk_exit::{evaluate_risk_exit, RiskExitKind, RiskExitTriggered};
 pub use runtime::TradingRuntime;

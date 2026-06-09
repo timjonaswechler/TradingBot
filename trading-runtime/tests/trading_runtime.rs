@@ -3,11 +3,11 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
     AppliedPositionRiskBoundaryChange, ClosedPosition, ExecutionAction, ExecutionFill,
     ExecutionFillSide, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason, MarketInput,
-    PortfolioState, PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
-    PositionRiskBoundaryKind, PositionRiskUpdateResult, PredeterminedStrategyHandler,
-    RejectedPositionRiskBoundaryChange, RiskBoundaryChange, RiskExitKind, RiskExitTriggered,
-    RuntimeEvent, RuntimePortfolioSnapshot, StrategyDecision, StrategyDecisionIntent,
-    StrategyHandler, TradingRuntime,
+    PortfolioState, PositionCloseAccounting, PositionRiskBoundaryChangeRejectionReason,
+    PositionRiskBoundaryChanges, PositionRiskBoundaryKind, PositionRiskUpdateResult,
+    PredeterminedStrategyHandler, RejectedPositionRiskBoundaryChange, RiskBoundaryChange,
+    RiskExitKind, RiskExitTriggered, RuntimeEvent, RuntimePortfolioSnapshot, StrategyDecision,
+    StrategyDecisionIntent, StrategyHandler, TradingRuntime,
 };
 
 fn candle(timestamp: i64, close: f64) -> Candle {
@@ -16,6 +16,14 @@ fn candle(timestamp: i64, close: f64) -> Candle {
 
 fn fill(side: ExecutionFillSide, quantity: f64, base_execution_price: f64) -> ExecutionFill {
     ExecutionFill::simulated_no_cost(side, quantity, base_execution_price)
+}
+
+fn accounting(gross_pnl: f64) -> PositionCloseAccounting {
+    PositionCloseAccounting {
+        gross_pnl,
+        total_costs: 0.0,
+        net_realized_pnl: gross_pnl,
+    }
 }
 
 fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
@@ -193,6 +201,7 @@ fn assert_risk_exit_step(
                     open_position.quantity,
                     risk_exit.exit_price,
                 ),
+                accounting: accounting(expected_realized_pnl),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1335,6 +1344,7 @@ fn tradable_candle_closes_long_position_and_realizes_pnl() {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::StrategyExit,
                 fill: fill(ExecutionFillSide::Sell, 2.0, exit_candle.close),
+                accounting: accounting(30.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1573,6 +1583,7 @@ fn tradable_candle_closes_short_position_and_realizes_pnl() {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::StrategyExit,
                 fill: fill(ExecutionFillSide::Buy, 2.0, exit_candle.close),
+                accounting: accounting(30.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1633,6 +1644,7 @@ fn force_close_closes_open_long_position_with_ordered_events() {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::ForceClose,
                 fill: fill(ExecutionFillSide::Sell, 2.0, mark_candle.close),
+                accounting: accounting(30.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1692,6 +1704,7 @@ fn force_close_closes_open_short_position_with_ordered_events() {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::ForceClose,
                 fill: fill(ExecutionFillSide::Buy, 2.0, mark_candle.close),
+                accounting: accounting(30.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1800,6 +1813,7 @@ fn force_close_works_while_runtime_is_still_in_warmup() {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::ForceClose,
                 fill: fill(ExecutionFillSide::Sell, 2.0, mark_candle.close),
+                accounting: accounting(30.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),

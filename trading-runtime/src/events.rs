@@ -1,7 +1,7 @@
 //! Ordered, runner-neutral events emitted by the trading runtime.
 
 use crate::{
-    ClosedPosition, ExecutionAction, ExecutionFill, IgnoredDecisionReason,
+    ClosedPosition, ExecutionAction, ExecutionFill, IgnoredDecisionReason, PositionCloseAccounting,
     PositionRiskBoundaryChanges, RiskBoundaryChange, RiskExitKind, RiskExitTriggered,
     RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision, StrategyError,
 };
@@ -145,6 +145,7 @@ pub enum RuntimeEvent {
         closed_position: ClosedPosition,
         exit_kind: ExitKind,
         fill: ExecutionFill,
+        accounting: PositionCloseAccounting,
     },
     PositionRiskUpdateEvaluated {
         requested_changes: PositionRiskBoundaryChanges,

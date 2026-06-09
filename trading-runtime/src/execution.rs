@@ -6,9 +6,9 @@ use domain::PositionSide;
 /// Runtime-owned simulated execution cost assumptions for one Runtime Session.
 ///
 /// This type is broker-neutral and DB-free. Runners may construct and attach it
-/// to [`crate::RuntimeConfig`], while strategies cannot configure it. The #125
-/// slice introduces the shape and default no-cost fill output; non-zero fee and
-/// spread application is implemented by the follow-up #126/#127 slices.
+/// to [`crate::RuntimeConfig`], while strategies cannot configure it. Fixed and
+/// percent fees are applied by this runtime-owned simulated fill accounting;
+/// fixed spread application remains a follow-up slice.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExecutionCostModel {
     fixed_fee_per_fill: f64,
@@ -65,8 +65,23 @@ impl ExecutionCostModel {
         quantity: f64,
         base_execution_price: f64,
     ) -> ExecutionFill {
-        let _ = self;
-        ExecutionFill::simulated_no_cost(side, quantity, base_execution_price)
+        let effective_fill_price = base_execution_price;
+        let fixed_fee = self.fixed_fee_per_fill;
+        let percent_fee = (quantity * effective_fill_price).abs() * self.percent_fee_rate;
+
+        ExecutionFill {
+            side,
+            quantity,
+            base_execution_price,
+            effective_fill_price,
+            price_adjustment: 0.0,
+            costs: ExecutionCostBreakdown {
+                fixed_fee,
+                percent_fee,
+                total_cost: fixed_fee + percent_fee,
+            },
+            source: ExecutionFillSource::Simulated,
+        }
     }
 }
 

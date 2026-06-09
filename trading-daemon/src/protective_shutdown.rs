@@ -134,8 +134,8 @@ mod tests {
     use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
     use trading_runtime::{
         BlockedSecondaryContext, ExecutionFill, ExecutionFillSide, ExitKind, PortfolioState,
-        RuntimeEvent, RuntimePortfolioSnapshot, RuntimeStep, SecondaryContextUnavailableReason,
-        SecondaryReadiness,
+        PositionCloseAccounting, RuntimeEvent, RuntimePortfolioSnapshot, RuntimeStep,
+        SecondaryContextUnavailableReason, SecondaryReadiness,
     };
 
     fn config(enabled: bool, threshold: u32) -> ProtectiveShutdownConfig {
@@ -170,6 +170,14 @@ mod tests {
 
     fn fill(side: ExecutionFillSide, quantity: f64, base_execution_price: f64) -> ExecutionFill {
         ExecutionFill::simulated_no_cost(side, quantity, base_execution_price)
+    }
+
+    fn accounting(gross_pnl: f64) -> PositionCloseAccounting {
+        PositionCloseAccounting {
+            gross_pnl,
+            total_costs: 0.0,
+            net_realized_pnl: gross_pnl,
+        }
     }
 
     fn blocked_step(timeframes: &[Timeframe]) -> RuntimeStep {
@@ -375,6 +383,7 @@ mod tests {
                         selected: trading_runtime::RiskExitKind::StopLoss,
                     },
                     fill: fill(ExecutionFillSide::Sell, 1.0, 90.0),
+                    accounting: accounting(-10.0),
                 },
                 RuntimeEvent::TradableCandleCompleted,
             ],

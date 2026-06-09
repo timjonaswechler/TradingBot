@@ -12,6 +12,7 @@ pub struct PortfolioState {
     pub realized_cash_balance: f64,
     pub open_position: Option<OpenPosition>,
     pub completed_trade_count: usize,
+    open_position_entry_cost: f64,
 }
 
 impl PortfolioState {
@@ -20,6 +21,25 @@ impl PortfolioState {
             realized_cash_balance,
             open_position: None,
             completed_trade_count: 0,
+            open_position_entry_cost: 0.0,
+        }
+    }
+
+    /// Construct from externally restored runtime-local state.
+    ///
+    /// A restored open position has no in-session entry fill cost basis. Costed
+    /// entries created by the current Runtime Session should use the cost-aware
+    /// open transition methods so entry fees are tracked until close.
+    pub fn from_parts(
+        realized_cash_balance: f64,
+        open_position: Option<OpenPosition>,
+        completed_trade_count: usize,
+    ) -> Self {
+        Self {
+            realized_cash_balance,
+            open_position,
+            completed_trade_count,
+            open_position_entry_cost: 0.0,
         }
     }
 
@@ -45,11 +65,31 @@ impl PortfolioState {
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
     ) -> Result<(), PortfolioTransitionError> {
+        self.open_long_from_flat_at_price_with_cost(
+            candle,
+            quantity,
+            entry_price,
+            0.0,
+            stop_loss,
+            take_profit,
+        )
+    }
+
+    pub fn open_long_from_flat_at_price_with_cost(
+        &mut self,
+        candle: &Candle,
+        quantity: f64,
+        entry_price: f64,
+        entry_cost: f64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+    ) -> Result<(), PortfolioTransitionError> {
         self.open_from_flat(
             PositionSide::Long,
             candle,
             quantity,
             entry_price,
+            entry_cost,
             stop_loss,
             take_profit,
         )
@@ -67,7 +107,17 @@ impl PortfolioState {
         candle: &Candle,
         exit_price: f64,
     ) -> Result<ClosedPosition, PortfolioTransitionError> {
-        self.close_matching_side(PositionSide::Long, candle, exit_price)
+        self.close_long_at_price_with_cost(candle, exit_price, 0.0)
+            .map(|closed| closed.closed_position)
+    }
+
+    pub fn close_long_at_price_with_cost(
+        &mut self,
+        candle: &Candle,
+        exit_price: f64,
+        exit_cost: f64,
+    ) -> Result<PortfolioClose, PortfolioTransitionError> {
+        self.close_matching_side(PositionSide::Long, candle, exit_price, exit_cost)
     }
 
     pub fn open_short_from_flat(
@@ -88,11 +138,31 @@ impl PortfolioState {
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
     ) -> Result<(), PortfolioTransitionError> {
+        self.open_short_from_flat_at_price_with_cost(
+            candle,
+            quantity,
+            entry_price,
+            0.0,
+            stop_loss,
+            take_profit,
+        )
+    }
+
+    pub fn open_short_from_flat_at_price_with_cost(
+        &mut self,
+        candle: &Candle,
+        quantity: f64,
+        entry_price: f64,
+        entry_cost: f64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+    ) -> Result<(), PortfolioTransitionError> {
         self.open_from_flat(
             PositionSide::Short,
             candle,
             quantity,
             entry_price,
+            entry_cost,
             stop_loss,
             take_profit,
         )
@@ -110,7 +180,17 @@ impl PortfolioState {
         candle: &Candle,
         exit_price: f64,
     ) -> Result<ClosedPosition, PortfolioTransitionError> {
-        self.close_matching_side(PositionSide::Short, candle, exit_price)
+        self.close_short_at_price_with_cost(candle, exit_price, 0.0)
+            .map(|closed| closed.closed_position)
+    }
+
+    pub fn close_short_at_price_with_cost(
+        &mut self,
+        candle: &Candle,
+        exit_price: f64,
+        exit_cost: f64,
+    ) -> Result<PortfolioClose, PortfolioTransitionError> {
+        self.close_matching_side(PositionSide::Short, candle, exit_price, exit_cost)
     }
 
     fn open_from_flat(
@@ -119,6 +199,7 @@ impl PortfolioState {
         candle: &Candle,
         quantity: f64,
         entry_price: f64,
+        entry_cost: f64,
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
     ) -> Result<(), PortfolioTransitionError> {
@@ -137,6 +218,8 @@ impl PortfolioState {
                 take_profit,
             },
         });
+        self.open_position_entry_cost = entry_cost;
+        self.realized_cash_balance -= entry_cost;
 
         Ok(())
     }
@@ -146,7 +229,8 @@ impl PortfolioState {
         expected_side: PositionSide,
         candle: &Candle,
         exit_price: f64,
-    ) -> Result<ClosedPosition, PortfolioTransitionError> {
+        exit_cost: f64,
+    ) -> Result<PortfolioClose, PortfolioTransitionError> {
         let position = self
             .open_position
             .take()
@@ -157,17 +241,42 @@ impl PortfolioState {
             return Err(PortfolioTransitionError::PositionSideMismatch);
         }
 
-        let pnl = realized_pnl_for_close(&position, exit_price);
-        self.realized_cash_balance += pnl;
+        let gross_pnl = realized_pnl_for_close(&position, exit_price);
+        let total_costs = self.open_position_entry_cost + exit_cost;
+        let net_realized_pnl = gross_pnl - total_costs;
+        self.realized_cash_balance += gross_pnl - exit_cost;
         self.completed_trade_count += 1;
+        self.open_position_entry_cost = 0.0;
 
-        Ok(ClosedPosition {
-            position,
-            exit_price,
-            exit_time: candle.timestamp,
-            realized_pnl: pnl,
+        Ok(PortfolioClose {
+            closed_position: ClosedPosition {
+                position,
+                exit_price,
+                exit_time: candle.timestamp,
+                realized_pnl: net_realized_pnl,
+            },
+            accounting: PositionCloseAccounting {
+                gross_pnl,
+                total_costs,
+                net_realized_pnl,
+            },
         })
     }
+}
+
+/// Per-position close accounting emitted with a runtime close transition.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PositionCloseAccounting {
+    pub gross_pnl: f64,
+    pub total_costs: f64,
+    pub net_realized_pnl: f64,
+}
+
+/// Result of a cost-aware portfolio close transition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortfolioClose {
+    pub closed_position: ClosedPosition,
+    pub accounting: PositionCloseAccounting,
 }
 
 fn realized_pnl_for_close(position: &OpenPosition, exit_price: f64) -> f64 {
