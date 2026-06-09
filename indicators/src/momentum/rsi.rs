@@ -66,6 +66,6 @@ mod tests {
             45.15, 43.61, 44.33,
         ];
         let r = rsi(&c, 14).unwrap();
-        assert!(r >= 0.0 && r <= 100.0);
+        assert!((0.0..=100.0).contains(&r));
     }
 }

@@ -78,6 +78,6 @@ mod tests {
         .map(|(i, &p)| candle(p + 0.5, p - 0.5, p, (i + 1) as f64 * 100.0))
         .collect();
         let r = mfi(&c, 14).unwrap();
-        assert!(r >= 0.0 && r <= 100.0);
+        assert!((0.0..=100.0).contains(&r));
     }
 }

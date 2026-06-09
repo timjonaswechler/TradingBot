@@ -121,11 +121,11 @@ pub trait Invalidator {
 }
 
 /// Helper: slice a candle buffer by absolute bar range.
-pub(crate) fn slice_by_bars<'a>(
-    candles: &'a [Candle],
+pub(crate) fn slice_by_bars(
+    candles: &[Candle],
     buffer_origin_bar: u64,
     seg: Segment,
-) -> Option<&'a [Candle]> {
+) -> Option<&[Candle]> {
     if seg.is_empty() {
         return None;
     }

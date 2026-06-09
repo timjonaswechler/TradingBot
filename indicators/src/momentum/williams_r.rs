@@ -74,6 +74,6 @@ mod tests {
             .map(|i| candle(i as f64 + 0.5, i as f64 - 0.5, i as f64))
             .collect();
         let r = williams_r(&c, 14).unwrap();
-        assert!(r >= -100.0 && r <= 0.0);
+        assert!((-100.0..=0.0).contains(&r));
     }
 }

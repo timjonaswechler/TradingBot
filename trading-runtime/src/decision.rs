@@ -29,8 +29,9 @@ pub enum InvalidOpeningQuantity {
 }
 
 /// Requested change for one current Position Risk Boundary.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum RiskBoundaryChange {
+    #[default]
     Unchanged,
     Set(f64),
     Clear,
@@ -66,12 +67,6 @@ impl PositionRiskBoundaryChanges {
     pub fn clear_take_profit(mut self) -> Self {
         self.take_profit = RiskBoundaryChange::Clear;
         self
-    }
-}
-
-impl Default for RiskBoundaryChange {
-    fn default() -> Self {
-        Self::Unchanged
     }
 }
 

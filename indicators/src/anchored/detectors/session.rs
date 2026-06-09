@@ -123,11 +123,11 @@ mod tests {
     fn fires_open_and_close_once() {
         // Window 09:00-10:00 UTC. Bars at 08:00, 09:30, 10:30.
         let mut d = SessionDetector::new(540, 600, SessionId::London);
-        let t = |h: i64, m: i64| h * 3600_000 + m * 60_000;
+        let t = |h: i64, m: i64| h * 3_600_000 + m * 60_000;
         let e1 = d.on_candle(&candle_at(t(8, 0)), 0);
         let e2 = d.on_candle(&candle_at(t(9, 30)), 1);
         let e3 = d.on_candle(&candle_at(t(10, 30)), 2);
-        assert!(matches!(e1, None));
+        assert!(e1.is_none());
         assert!(matches!(e2, Some(AnchorEvent::SessionOpen { bar: 1, .. })));
         assert!(matches!(e3, Some(AnchorEvent::SessionClose { bar: 2, .. })));
     }

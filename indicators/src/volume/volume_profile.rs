@@ -44,8 +44,8 @@ pub fn volume_profile(candles: &[Candle], num_buckets: usize) -> Option<Vec<Volu
 
         let span = (c_high_idx - c_low_idx + 1) as f64;
         let vol_per_bucket = c.volume / span;
-        for b in c_low_idx..=c_high_idx {
-            buckets[b] += vol_per_bucket;
+        for bucket in &mut buckets[c_low_idx..=c_high_idx] {
+            *bucket += vol_per_bucket;
         }
     }
 

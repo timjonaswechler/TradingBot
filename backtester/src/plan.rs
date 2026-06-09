@@ -1936,7 +1936,7 @@ where
 }
 
 fn sort_and_validate_identity(
-    candles: &mut Vec<Candle>,
+    candles: &mut [Candle],
     symbol: &str,
     timeframe: Timeframe,
     role: &str,

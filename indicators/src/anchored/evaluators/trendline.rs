@@ -99,8 +99,8 @@ impl TrendlineEvaluator {
 
                 // 1) Intermediate pivots (strictly between i and j) must not pierce the line.
                 let mut ok = true;
-                for k in (i + 1)..j {
-                    let (xk, yk) = (pts[k].0 as f64, pts[k].1);
+                for &(bar, yk) in pts.iter().take(j).skip(i + 1) {
+                    let xk = bar as f64;
                     let line_y = slope * xk + intercept;
                     let tol_abs = yk.abs() * self.tolerance;
                     let pierces = match self.side {
@@ -200,10 +200,11 @@ impl TrendlineEvaluator {
             return true;
         }
 
-        for idx in first_idx..=last_idx {
+        for (offset, candle) in candles[first_idx..=last_idx].iter().enumerate() {
+            let idx = first_idx + offset;
             let bar = buffer_origin_bar + idx as u64;
             let line_y = slope * bar as f64 + intercept;
-            let close = candles[idx].close;
+            let close = candle.close;
             match self.side {
                 TrendlineSide::Resistance => {
                     if close > line_y {

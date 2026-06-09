@@ -353,7 +353,7 @@ impl RhaiStrategy {
             .map(|(hook, config)| {
                 AnchoredRuntime::from_config(config).map_err(|error| {
                     RhaiStrategyLoadError::HookEvaluation {
-                        hook: *hook,
+                        hook,
                         message: error.to_string(),
                     }
                 })
@@ -2759,7 +2759,7 @@ fn on_tick(market, context) {
     }
 }
 "#;
-        let strategy = RhaiStrategy::load(&source).expect("strategy should load");
+        let strategy = RhaiStrategy::load(source).expect("strategy should load");
         let mut runtime = TradingRuntime::with_config(
             RuntimeConfig::with_secondary_configs(
                 "BTC-USD",

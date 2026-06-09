@@ -147,8 +147,8 @@ async fn seed_one(
     // already have in the cache. This lets us backfill older history when
     // the user passes a `--from` earlier than our oldest stored bar.
     let canonical_interval = yahoo::interval_timeframe(interval)?.to_string();
-    let existing = count_candles(&*conn, symbol, &canonical_interval);
-    let existing_ts = get_candle_timestamps(&*conn, symbol, &canonical_interval);
+    let existing = count_candles(&conn, symbol, &canonical_interval);
+    let existing_ts = get_candle_timestamps(&conn, symbol, &canonical_interval);
 
     info!(
         symbol,
@@ -178,7 +178,7 @@ async fn seed_one(
     let inserted = tokio::task::spawn_blocking(move || {
         let mut count = 0usize;
         for candle in &new_candles {
-            match insert_candle(&*conn, candle, "yahoo") {
+            match insert_candle(&conn, candle, "yahoo") {
                 Ok(_) => count += 1,
                 Err(e) => warn!(
                     symbol = symbol_s,

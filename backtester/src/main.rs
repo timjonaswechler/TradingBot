@@ -303,31 +303,8 @@ fn run_direct_mode(cli: &Cli, strategy_src: &str, symbol: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plan_mode_allows_omitting_symbol() {
-        let cli = Cli::try_parse_from(["backtester", "--strategy", "s.rhai", "--plan", "p.rhai"])
-            .unwrap();
-
-        assert!(matches!(cli.run_mode().unwrap(), RunMode::Plan { .. }));
-    }
-
-    #[test]
-    fn direct_mode_requires_symbol_when_no_plan_is_given() {
-        let cli = Cli::try_parse_from(["backtester", "--strategy", "s.rhai"]).unwrap();
-        let err = cli.run_mode().unwrap_err();
-
-        assert!(err.to_string().contains("--symbol"));
-        assert!(err.to_string().contains("--plan"));
-    }
-}
-
 /// Qualitative rating helpers. Thresholds reflect common practitioner rules of
 /// thumb for long-horizon equity strategies (not investment advice).
-
 fn rate_cagr(c: f64) -> &'static str {
     let p = c * 100.0;
     if p < 0.0 {
@@ -423,4 +400,26 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_mode_allows_omitting_symbol() {
+        let cli = Cli::try_parse_from(["backtester", "--strategy", "s.rhai", "--plan", "p.rhai"])
+            .unwrap();
+
+        assert!(matches!(cli.run_mode().unwrap(), RunMode::Plan { .. }));
+    }
+
+    #[test]
+    fn direct_mode_requires_symbol_when_no_plan_is_given() {
+        let cli = Cli::try_parse_from(["backtester", "--strategy", "s.rhai"]).unwrap();
+        let err = cli.run_mode().unwrap_err();
+
+        assert!(err.to_string().contains("--symbol"));
+        assert!(err.to_string().contains("--plan"));
+    }
 }
