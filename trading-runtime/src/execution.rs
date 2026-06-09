@@ -8,7 +8,7 @@ use domain::PositionSide;
 /// This type is broker-neutral and DB-free. Runners may construct and attach it
 /// to [`crate::RuntimeConfig`], while strategies cannot configure it. Fixed and
 /// percent fees are applied by this runtime-owned simulated fill accounting;
-/// fixed spread application remains a follow-up slice.
+/// fixed absolute spread is applied as a half-spread price adjustment by fill side.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExecutionCostModel {
     fixed_fee_per_fill: f64,
@@ -65,7 +65,12 @@ impl ExecutionCostModel {
         quantity: f64,
         base_execution_price: f64,
     ) -> ExecutionFill {
-        let effective_fill_price = base_execution_price;
+        let half_spread = self.fixed_spread / 2.0;
+        let price_adjustment = match side {
+            ExecutionFillSide::Buy => half_spread,
+            ExecutionFillSide::Sell => -half_spread,
+        };
+        let effective_fill_price = base_execution_price + price_adjustment;
         let fixed_fee = self.fixed_fee_per_fill;
         let percent_fee = (quantity * effective_fill_price).abs() * self.percent_fee_rate;
 
@@ -74,7 +79,7 @@ impl ExecutionCostModel {
             quantity,
             base_execution_price,
             effective_fill_price,
-            price_adjustment: 0.0,
+            price_adjustment,
             costs: ExecutionCostBreakdown {
                 fixed_fee,
                 percent_fee,

@@ -1,9 +1,9 @@
 use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
 use trading_runtime::{
-    ClosedPosition, ExecutionCostModel, ExecutionCostModelError, ExecutionCostModelField,
-    ExecutionFill, ExecutionFillSide, ExecutionFillSource, MarketInput, PortfolioState,
-    PositionCloseAccounting, PredeterminedStrategyHandler, RiskExitKind, RuntimeConfig,
-    RuntimeEvent, StrategyDecision, TradingRuntime,
+    ClosedPosition, ExecutionCostBreakdown, ExecutionCostModel, ExecutionCostModelError,
+    ExecutionCostModelField, ExecutionFill, ExecutionFillSide, ExecutionFillSource, MarketInput,
+    PortfolioState, PositionCloseAccounting, PredeterminedStrategyHandler, RiskExitKind,
+    RuntimeConfig, RuntimeEvent, StrategyDecision, TradingRuntime,
 };
 
 fn candle(timestamp: i64, close: f64) -> Candle {
@@ -86,6 +86,29 @@ fn no_cost_fill(
     ExecutionFill::simulated_no_cost(side, quantity, base_execution_price)
 }
 
+fn fixed_spread_fill(
+    side: ExecutionFillSide,
+    quantity: f64,
+    base_execution_price: f64,
+    fixed_spread: f64,
+) -> ExecutionFill {
+    let half_spread = fixed_spread / 2.0;
+    let price_adjustment = match side {
+        ExecutionFillSide::Buy => half_spread,
+        ExecutionFillSide::Sell => -half_spread,
+    };
+
+    ExecutionFill {
+        side,
+        quantity,
+        base_execution_price,
+        effective_fill_price: base_execution_price + price_adjustment,
+        price_adjustment,
+        costs: ExecutionCostBreakdown::zero(),
+        source: ExecutionFillSource::Simulated,
+    }
+}
+
 fn configured_runtime(
     cost_model: ExecutionCostModel,
     decisions: impl IntoIterator<Item = StrategyDecision>,
@@ -159,6 +182,119 @@ fn invalid_cost_model_values_are_rejected_before_runtime_events_exist() {
     }
 
     assert!(ExecutionCostModel::try_new(1.0, 0.0025, 0.5).is_ok());
+}
+
+#[test]
+fn fixed_spread_adjusts_buy_and_sell_effective_fill_prices_without_fee_costs() {
+    let model = ExecutionCostModel::try_new(0.0, 0.0, 2.0).unwrap();
+
+    let buy_fill = model.simulated_fill(ExecutionFillSide::Buy, 2.0, 100.0);
+    assert_eq!(
+        buy_fill,
+        fixed_spread_fill(ExecutionFillSide::Buy, 2.0, 100.0, 2.0)
+    );
+    assert_eq!(buy_fill.price_adjustment, 1.0);
+    assert_eq!(buy_fill.effective_fill_price, 101.0);
+    assert_eq!(buy_fill.costs.total_cost, 0.0);
+
+    let sell_fill = model.simulated_fill(ExecutionFillSide::Sell, 2.0, 100.0);
+    assert_eq!(
+        sell_fill,
+        fixed_spread_fill(ExecutionFillSide::Sell, 2.0, 100.0, 2.0)
+    );
+    assert_eq!(sell_fill.price_adjustment, -1.0);
+    assert_eq!(sell_fill.effective_fill_price, 99.0);
+    assert_eq!(sell_fill.costs.total_cost, 0.0);
+}
+
+#[test]
+fn fixed_spread_applies_to_long_open_and_strategy_exit_effective_prices() {
+    let entry_candle = candle(1, 100.0);
+    let exit_candle = candle(2, 115.0);
+    let mut runtime = configured_runtime(
+        ExecutionCostModel::try_new(0.0, 0.0, 2.0).unwrap(),
+        [
+            StrategyDecision::open_long(2.0),
+            StrategyDecision::close_long(),
+        ],
+    );
+
+    let open_step = completed_primary_step(&mut runtime, entry_candle.clone());
+    let close_step = completed_primary_step(&mut runtime, exit_candle.clone());
+
+    assert_eq!(
+        opened_fill(&open_step),
+        fixed_spread_fill(ExecutionFillSide::Buy, 2.0, entry_candle.close, 2.0)
+    );
+    assert_eq!(open_step.portfolio_snapshot.realized_cash_balance, 1_000.0);
+    assert_eq!(
+        open_step
+            .portfolio_snapshot
+            .open_position
+            .as_ref()
+            .map(|position| position.entry_price),
+        Some(101.0)
+    );
+
+    let (closed_position, close_fill, accounting) = closed_event(&close_step);
+    assert_eq!(
+        close_fill,
+        fixed_spread_fill(ExecutionFillSide::Sell, 2.0, exit_candle.close, 2.0)
+    );
+    assert_eq!(closed_position.exit_price, 114.0);
+    assert_eq!(accounting.gross_pnl, 26.0);
+    assert_eq!(accounting.total_costs, 0.0);
+    assert_eq!(accounting.net_realized_pnl, 26.0);
+    assert_eq!(closed_position.realized_pnl, 26.0);
+    assert_eq!(close_step.portfolio_snapshot.realized_cash_balance, 1_026.0);
+    assert_eq!(close_step.portfolio_snapshot.current_equity, 1_026.0);
+    assert_eq!(close_step.portfolio_snapshot.completed_trade_count, 1);
+    assert!(close_step.portfolio_snapshot.open_position.is_none());
+}
+
+#[test]
+fn fixed_spread_applies_to_short_open_and_strategy_exit_effective_prices() {
+    let entry_candle = candle(1, 100.0);
+    let exit_candle = candle(2, 85.0);
+    let mut runtime = configured_runtime(
+        ExecutionCostModel::try_new(0.0, 0.0, 2.0).unwrap(),
+        [
+            StrategyDecision::open_short(2.0),
+            StrategyDecision::close_short(),
+        ],
+    );
+
+    let open_step = completed_primary_step(&mut runtime, entry_candle.clone());
+    let close_step = completed_primary_step(&mut runtime, exit_candle.clone());
+
+    assert_eq!(
+        opened_fill(&open_step),
+        fixed_spread_fill(ExecutionFillSide::Sell, 2.0, entry_candle.close, 2.0)
+    );
+    assert_eq!(open_step.portfolio_snapshot.realized_cash_balance, 1_000.0);
+    assert_eq!(
+        open_step
+            .portfolio_snapshot
+            .open_position
+            .as_ref()
+            .map(|position| position.entry_price),
+        Some(99.0)
+    );
+
+    let (closed_position, close_fill, accounting) = closed_event(&close_step);
+    assert_eq!(
+        close_fill,
+        fixed_spread_fill(ExecutionFillSide::Buy, 2.0, exit_candle.close, 2.0)
+    );
+    assert_eq!(closed_position.exit_price, 86.0);
+    assert_eq!(accounting.gross_pnl, 26.0);
+    assert_eq!(accounting.total_costs, 0.0);
+    assert_eq!(accounting.net_realized_pnl, 26.0);
+    assert_eq!(closed_position.realized_pnl, 26.0);
+    assert_eq!(close_step.portfolio_snapshot.realized_cash_balance, 1_026.0);
+    assert_eq!(close_step.portfolio_snapshot.current_equity, 1_026.0);
+    assert_eq!(close_step.portfolio_snapshot.completed_trade_count, 1);
+    assert!(close_step.portfolio_snapshot.open_position.is_none());
 }
 
 #[test]
@@ -400,6 +536,41 @@ fn risk_exit_applies_fees_and_reports_gross_and_net_accounting() {
 }
 
 #[test]
+fn fixed_spread_applies_to_risk_exit_closing_fill_effective_price() {
+    let entry_candle = candle(1, 100.0);
+    let exit_candle = ohlc_candle(2, 100.0, 105.0, 90.0, 99.0);
+    let mut runtime = configured_runtime(
+        ExecutionCostModel::try_new(0.0, 0.0, 2.0).unwrap(),
+        [StrategyDecision::open_long(2.0).with_entry_risk(Some(90.0), None)],
+    );
+    completed_primary_step(&mut runtime, entry_candle);
+
+    let step = completed_primary_step(&mut runtime, exit_candle);
+
+    let (closed_position, fill, accounting) = closed_event(&step);
+    assert_eq!(
+        fill,
+        fixed_spread_fill(ExecutionFillSide::Sell, 2.0, 90.0, 2.0)
+    );
+    assert_eq!(closed_position.exit_price, 89.0);
+    assert_eq!(accounting.gross_pnl, -24.0);
+    assert_eq!(accounting.total_costs, 0.0);
+    assert_eq!(accounting.net_realized_pnl, -24.0);
+    assert_eq!(closed_position.realized_pnl, -24.0);
+    assert_eq!(step.portfolio_snapshot.realized_cash_balance, 976.0);
+    assert_eq!(step.portfolio_snapshot.completed_trade_count, 1);
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::PositionClosed {
+            exit_kind: trading_runtime::ExitKind::RiskExit {
+                selected: RiskExitKind::StopLoss,
+            },
+            ..
+        }
+    )));
+}
+
+#[test]
 fn default_no_cost_risk_exit_exposes_simulated_closing_fill_without_changing_accounting() {
     let exit_candle = ohlc_candle(2, 100.0, 105.0, 90.0, 99.0);
     let position = open_position(PositionSide::Long, 100.0, Some(90.0), None);
@@ -454,6 +625,41 @@ fn force_close_applies_fees_and_preserves_completed_trade_count_behavior() {
     assert_approx_eq(accounting.net_realized_pnl, 25.85);
     assert_approx_eq(closed_position.realized_pnl, 25.85);
     assert_approx_eq(step.portfolio_snapshot.realized_cash_balance, 1_025.85);
+    assert_eq!(step.portfolio_snapshot.completed_trade_count, 1);
+    assert!(step.portfolio_snapshot.open_position.is_none());
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::PositionClosed {
+            exit_kind: trading_runtime::ExitKind::ForceClose,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn fixed_spread_applies_to_force_close_closing_fill_effective_price() {
+    let entry_candle = candle(1, 100.0);
+    let mark_candle = candle(2, 85.0);
+    let mut runtime = configured_runtime(
+        ExecutionCostModel::try_new(0.0, 0.0, 2.0).unwrap(),
+        [StrategyDecision::open_short(2.0)],
+    );
+    completed_primary_step(&mut runtime, entry_candle);
+
+    let step = runtime.force_close(mark_candle.clone(), "shutdown liquidation");
+
+    let (closed_position, fill, accounting) = closed_event(&step);
+    assert_eq!(
+        fill,
+        fixed_spread_fill(ExecutionFillSide::Buy, 2.0, mark_candle.close, 2.0)
+    );
+    assert_eq!(closed_position.exit_price, 86.0);
+    assert_eq!(accounting.gross_pnl, 26.0);
+    assert_eq!(accounting.total_costs, 0.0);
+    assert_eq!(accounting.net_realized_pnl, 26.0);
+    assert_eq!(closed_position.realized_pnl, 26.0);
+    assert_eq!(step.portfolio_snapshot.realized_cash_balance, 1_026.0);
+    assert_eq!(step.portfolio_snapshot.current_equity, 1_026.0);
     assert_eq!(step.portfolio_snapshot.completed_trade_count, 1);
     assert!(step.portfolio_snapshot.open_position.is_none());
     assert!(step.events.iter().any(|event| matches!(
