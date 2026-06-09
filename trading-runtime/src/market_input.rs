@@ -1,6 +1,9 @@
 //! Runtime market-input boundary types.
 
-use crate::strategy_config::{StrategyConfiguration, StrategyConfigurationError};
+use crate::{
+    strategy_config::{StrategyConfiguration, StrategyConfigurationError},
+    ExecutionCostModel,
+};
 use domain::{Candle, Timeframe};
 
 /// Whether a configured Secondary Timeframe is required for Strategy Ticks.
@@ -42,11 +45,12 @@ impl SecondaryTimeframeConfig {
 /// plus a validated [`StrategyConfiguration`] via [`RuntimeConfig::from_strategy_config`].
 /// Direct constructors remain low-level conveniences for runtime internals,
 /// tests, and fixtures that intentionally bypass Rhai strategy loading.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeConfig {
     pub runtime_asset: String,
     pub primary_timeframe: Timeframe,
     pub secondary_timeframes: Vec<SecondaryTimeframeConfig>,
+    execution_cost_model: ExecutionCostModel,
 }
 
 impl RuntimeConfig {
@@ -87,6 +91,7 @@ impl RuntimeConfig {
             runtime_asset: runtime_asset.into(),
             primary_timeframe,
             secondary_timeframes: secondary_timeframes.into_iter().collect(),
+            execution_cost_model: ExecutionCostModel::default(),
         }
     }
 
@@ -102,6 +107,15 @@ impl RuntimeConfig {
             primary_timeframe,
             std::iter::empty::<SecondaryTimeframeConfig>(),
         )
+    }
+
+    pub fn with_execution_cost_model(mut self, execution_cost_model: ExecutionCostModel) -> Self {
+        self.execution_cost_model = execution_cost_model;
+        self
+    }
+
+    pub fn execution_cost_model(&self) -> &ExecutionCostModel {
+        &self.execution_cost_model
     }
 
     pub(crate) fn classify_timeframe(

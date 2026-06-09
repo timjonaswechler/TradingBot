@@ -1,9 +1,9 @@
 use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide, Timeframe};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
-    AppliedPositionRiskBoundaryChange, ClosedPosition, ExecutionAction, ExitKind,
-    ForceCloseIgnoredReason, IgnoredDecisionReason, MarketInput, PortfolioState,
-    PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
+    AppliedPositionRiskBoundaryChange, ClosedPosition, ExecutionAction, ExecutionFill,
+    ExecutionFillSide, ExitKind, ForceCloseIgnoredReason, IgnoredDecisionReason, MarketInput,
+    PortfolioState, PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
     PositionRiskBoundaryKind, PositionRiskUpdateResult, PredeterminedStrategyHandler,
     RejectedPositionRiskBoundaryChange, RiskBoundaryChange, RiskExitKind, RiskExitTriggered,
     RuntimeEvent, RuntimePortfolioSnapshot, StrategyDecision, StrategyDecisionIntent,
@@ -12,6 +12,10 @@ use trading_runtime::{
 
 fn candle(timestamp: i64, close: f64) -> Candle {
     ohlc_candle(timestamp, close, close, close, close)
+}
+
+fn fill(side: ExecutionFillSide, quantity: f64, base_execution_price: f64) -> ExecutionFill {
+    ExecutionFill::simulated_no_cost(side, quantity, base_execution_price)
 }
 
 fn ohlc_candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
@@ -144,7 +148,7 @@ fn assert_risk_exit_step(
         current_equity: expected_realized_cash_balance,
     };
     let mut portfolio = PortfolioState::new(1_000.0);
-    portfolio.open_position = Some(open_position);
+    portfolio.open_position = Some(open_position.clone());
     let strategy_calls = Rc::new(RefCell::new(0));
     let mut runtime = TradingRuntime::new(
         portfolio,
@@ -184,6 +188,11 @@ fn assert_risk_exit_step(
                 exit_kind: ExitKind::RiskExit {
                     selected: risk_exit.selected,
                 },
+                fill: fill(
+                    ExecutionFillSide::for_closing_position(risk_exit.side),
+                    open_position.quantity,
+                    risk_exit.exit_price,
+                ),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -412,6 +421,7 @@ fn warmup_input_advances_market_progress_without_calling_strategy_until_complete
                     first_tradable.close,
                     2.0,
                 ),
+                fill: fill(ExecutionFillSide::Buy, 2.0, first_tradable.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: tradable_step.portfolio_snapshot.clone(),
@@ -536,6 +546,7 @@ fn tradable_candle_opens_long_from_flat_and_updates_portfolio_snapshot() {
             },
             RuntimeEvent::PositionOpened {
                 position: expected_position,
+                fill: fill(ExecutionFillSide::Buy, 2.0, candle.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -596,6 +607,7 @@ fn tradable_candle_opens_short_from_flat_and_updates_portfolio_snapshot() {
             },
             RuntimeEvent::PositionOpened {
                 position: expected_position,
+                fill: fill(ExecutionFillSide::Sell, 2.0, candle.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -645,6 +657,7 @@ fn tradable_candle_opens_long_with_valid_entry_risk_parameters() {
     }));
     assert!(step.events.contains(&RuntimeEvent::PositionOpened {
         position: expected_position.clone(),
+        fill: fill(ExecutionFillSide::Buy, 2.0, candle.close),
     }));
     assert_eq!(
         step.portfolio_snapshot.open_position,
@@ -681,6 +694,7 @@ fn tradable_candle_opens_short_with_valid_entry_risk_parameters() {
     }));
     assert!(step.events.contains(&RuntimeEvent::PositionOpened {
         position: expected_position.clone(),
+        fill: fill(ExecutionFillSide::Sell, 2.0, candle.close),
     }));
     assert_eq!(
         step.portfolio_snapshot.open_position,
@@ -1320,6 +1334,7 @@ fn tradable_candle_closes_long_position_and_realizes_pnl() {
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::StrategyExit,
+                fill: fill(ExecutionFillSide::Sell, 2.0, exit_candle.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1557,6 +1572,7 @@ fn tradable_candle_closes_short_position_and_realizes_pnl() {
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::StrategyExit,
+                fill: fill(ExecutionFillSide::Buy, 2.0, exit_candle.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1616,6 +1632,7 @@ fn force_close_closes_open_long_position_with_ordered_events() {
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::ForceClose,
+                fill: fill(ExecutionFillSide::Sell, 2.0, mark_candle.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1674,6 +1691,7 @@ fn force_close_closes_open_short_position_with_ordered_events() {
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::ForceClose,
+                fill: fill(ExecutionFillSide::Buy, 2.0, mark_candle.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1781,6 +1799,7 @@ fn force_close_works_while_runtime_is_still_in_warmup() {
             RuntimeEvent::PositionClosed {
                 closed_position: expected_closed,
                 exit_kind: ExitKind::ForceClose,
+                fill: fill(ExecutionFillSide::Sell, 2.0, mark_candle.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),

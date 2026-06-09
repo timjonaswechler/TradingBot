@@ -34,7 +34,25 @@ impl PortfolioState {
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
     ) -> Result<(), PortfolioTransitionError> {
-        self.open_from_flat(PositionSide::Long, candle, quantity, stop_loss, take_profit)
+        self.open_long_from_flat_at_price(candle, quantity, candle.close, stop_loss, take_profit)
+    }
+
+    pub fn open_long_from_flat_at_price(
+        &mut self,
+        candle: &Candle,
+        quantity: f64,
+        entry_price: f64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+    ) -> Result<(), PortfolioTransitionError> {
+        self.open_from_flat(
+            PositionSide::Long,
+            candle,
+            quantity,
+            entry_price,
+            stop_loss,
+            take_profit,
+        )
     }
 
     pub fn close_long(
@@ -59,10 +77,22 @@ impl PortfolioState {
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
     ) -> Result<(), PortfolioTransitionError> {
+        self.open_short_from_flat_at_price(candle, quantity, candle.close, stop_loss, take_profit)
+    }
+
+    pub fn open_short_from_flat_at_price(
+        &mut self,
+        candle: &Candle,
+        quantity: f64,
+        entry_price: f64,
+        stop_loss: Option<f64>,
+        take_profit: Option<f64>,
+    ) -> Result<(), PortfolioTransitionError> {
         self.open_from_flat(
             PositionSide::Short,
             candle,
             quantity,
+            entry_price,
             stop_loss,
             take_profit,
         )
@@ -88,6 +118,7 @@ impl PortfolioState {
         side: PositionSide,
         candle: &Candle,
         quantity: f64,
+        entry_price: f64,
         stop_loss: Option<f64>,
         take_profit: Option<f64>,
     ) -> Result<(), PortfolioTransitionError> {
@@ -98,7 +129,7 @@ impl PortfolioState {
         self.open_position = Some(OpenPosition {
             symbol: candle.symbol.clone(),
             side,
-            entry_price: candle.close,
+            entry_price,
             quantity,
             entry_time: candle.timestamp,
             risk_boundaries: PositionRiskBoundaries {

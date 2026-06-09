@@ -97,6 +97,7 @@ fn closed_position_event(step: &RuntimeStep) -> (&ClosedPosition, ExitKind) {
             RuntimeEvent::PositionClosed {
                 closed_position,
                 exit_kind,
+                ..
             } => Some((closed_position, *exit_kind)),
             _ => None,
         })

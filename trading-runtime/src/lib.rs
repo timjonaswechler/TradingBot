@@ -47,7 +47,11 @@ pub use events::{
     PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryKind, PositionRiskUpdateResult,
     RejectedPositionRiskBoundaryChange, RuntimeEvent, SecondaryContextUnavailableReason,
 };
-pub use execution::{plan_execution, ExecutionAction, IgnoredDecisionReason, PlannedExecution};
+pub use execution::{
+    plan_execution, ExecutionAction, ExecutionCostBreakdown, ExecutionCostModel,
+    ExecutionCostModelError, ExecutionCostModelField, ExecutionFill, ExecutionFillSide,
+    ExecutionFillSource, IgnoredDecisionReason, PlannedExecution,
+};
 pub use market_input::{
     MarketInput, RuntimeConfig, RuntimeInputError, SecondaryReadiness, SecondaryTimeframeConfig,
 };

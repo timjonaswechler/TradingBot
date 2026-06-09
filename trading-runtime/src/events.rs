@@ -1,9 +1,9 @@
 //! Ordered, runner-neutral events emitted by the trading runtime.
 
 use crate::{
-    ClosedPosition, ExecutionAction, IgnoredDecisionReason, PositionRiskBoundaryChanges,
-    RiskBoundaryChange, RiskExitKind, RiskExitTriggered, RuntimePortfolioSnapshot,
-    SecondaryReadiness, StrategyDecision, StrategyError,
+    ClosedPosition, ExecutionAction, ExecutionFill, IgnoredDecisionReason,
+    PositionRiskBoundaryChanges, RiskBoundaryChange, RiskExitKind, RiskExitTriggered,
+    RuntimePortfolioSnapshot, SecondaryReadiness, StrategyDecision, StrategyError,
 };
 use domain::{Candle, OpenPosition, Timeframe};
 
@@ -134,6 +134,7 @@ pub enum RuntimeEvent {
     /// reconcile broker/provider truth separately.
     PositionOpened {
         position: OpenPosition,
+        fill: ExecutionFill,
     },
     /// Runtime-local Portfolio Transition that produced a Closed Position.
     ///
@@ -143,6 +144,7 @@ pub enum RuntimeEvent {
     PositionClosed {
         closed_position: ClosedPosition,
         exit_kind: ExitKind,
+        fill: ExecutionFill,
     },
     PositionRiskUpdateEvaluated {
         requested_changes: PositionRiskBoundaryChanges,

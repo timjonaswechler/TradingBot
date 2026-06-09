@@ -513,6 +513,7 @@ impl RuntimeBacktestRecorder {
             if let RuntimeEvent::PositionClosed {
                 closed_position,
                 exit_kind,
+                ..
             } = event
             {
                 self.trades.push(Trade {

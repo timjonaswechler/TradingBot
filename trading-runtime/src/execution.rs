@@ -3,6 +3,175 @@
 use crate::{PositionRiskBoundaryChanges, RiskExitKind, StrategyDecision, StrategyDecisionIntent};
 use domain::PositionSide;
 
+/// Runtime-owned simulated execution cost assumptions for one Runtime Session.
+///
+/// This type is broker-neutral and DB-free. Runners may construct and attach it
+/// to [`crate::RuntimeConfig`], while strategies cannot configure it. The #125
+/// slice introduces the shape and default no-cost fill output; non-zero fee and
+/// spread application is implemented by the follow-up #126/#127 slices.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExecutionCostModel {
+    fixed_fee_per_fill: f64,
+    percent_fee_rate: f64,
+    fixed_spread: f64,
+}
+
+impl Default for ExecutionCostModel {
+    fn default() -> Self {
+        Self::no_cost()
+    }
+}
+
+impl ExecutionCostModel {
+    pub fn no_cost() -> Self {
+        Self {
+            fixed_fee_per_fill: 0.0,
+            percent_fee_rate: 0.0,
+            fixed_spread: 0.0,
+        }
+    }
+
+    pub fn try_new(
+        fixed_fee_per_fill: f64,
+        percent_fee_rate: f64,
+        fixed_spread: f64,
+    ) -> Result<Self, ExecutionCostModelError> {
+        validate_cost_model_value(ExecutionCostModelField::FixedFeePerFill, fixed_fee_per_fill)?;
+        validate_cost_model_value(ExecutionCostModelField::PercentFeeRate, percent_fee_rate)?;
+        validate_cost_model_value(ExecutionCostModelField::FixedSpread, fixed_spread)?;
+
+        Ok(Self {
+            fixed_fee_per_fill,
+            percent_fee_rate,
+            fixed_spread,
+        })
+    }
+
+    pub fn fixed_fee_per_fill(&self) -> f64 {
+        self.fixed_fee_per_fill
+    }
+
+    pub fn percent_fee_rate(&self) -> f64 {
+        self.percent_fee_rate
+    }
+
+    pub fn fixed_spread(&self) -> f64 {
+        self.fixed_spread
+    }
+
+    pub fn simulated_fill(
+        &self,
+        side: ExecutionFillSide,
+        quantity: f64,
+        base_execution_price: f64,
+    ) -> ExecutionFill {
+        let _ = self;
+        ExecutionFill::simulated_no_cost(side, quantity, base_execution_price)
+    }
+}
+
+fn validate_cost_model_value(
+    field: ExecutionCostModelField,
+    value: f64,
+) -> Result<(), ExecutionCostModelError> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(())
+    } else {
+        Err(ExecutionCostModelError::InvalidValue { field })
+    }
+}
+
+/// Execution Cost Model configuration field names used in validation errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionCostModelField {
+    FixedFeePerFill,
+    PercentFeeRate,
+    FixedSpread,
+}
+
+/// Technical Runtime/Session configuration error for invalid cost assumptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionCostModelError {
+    InvalidValue { field: ExecutionCostModelField },
+}
+
+/// Simulated fill side from the Runtime's point of view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionFillSide {
+    Buy,
+    Sell,
+}
+
+impl ExecutionFillSide {
+    pub fn for_opening_position(side: PositionSide) -> Self {
+        match side {
+            PositionSide::Long => Self::Buy,
+            PositionSide::Short => Self::Sell,
+        }
+    }
+
+    pub fn for_closing_position(side: PositionSide) -> Self {
+        match side {
+            PositionSide::Long => Self::Sell,
+            PositionSide::Short => Self::Buy,
+        }
+    }
+}
+
+/// V1 fill source. Broker-reported fills are out of scope for simulated V1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionFillSource {
+    Simulated,
+}
+
+/// Per-fill cost components emitted by the Runtime.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExecutionCostBreakdown {
+    pub fixed_fee: f64,
+    pub percent_fee: f64,
+    pub total_cost: f64,
+}
+
+impl ExecutionCostBreakdown {
+    pub fn zero() -> Self {
+        Self {
+            fixed_fee: 0.0,
+            percent_fee: 0.0,
+            total_cost: 0.0,
+        }
+    }
+}
+
+/// Runtime-visible result of a simulated portfolio-transition fill.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExecutionFill {
+    pub side: ExecutionFillSide,
+    pub quantity: f64,
+    pub base_execution_price: f64,
+    pub effective_fill_price: f64,
+    pub price_adjustment: f64,
+    pub costs: ExecutionCostBreakdown,
+    pub source: ExecutionFillSource,
+}
+
+impl ExecutionFill {
+    pub fn simulated_no_cost(
+        side: ExecutionFillSide,
+        quantity: f64,
+        base_execution_price: f64,
+    ) -> Self {
+        Self {
+            side,
+            quantity,
+            base_execution_price,
+            effective_fill_price: base_execution_price,
+            price_adjustment: 0.0,
+            costs: ExecutionCostBreakdown::zero(),
+            source: ExecutionFillSource::Simulated,
+        }
+    }
+}
+
 /// Runtime interpretation of a strategy decision or runtime-managed command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExecutionAction {

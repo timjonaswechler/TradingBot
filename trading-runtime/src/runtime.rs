@@ -4,8 +4,9 @@ use crate::market_input::MarketInputTimeframeRole;
 use crate::secondary_context::secondary_context_unavailable_reason;
 use crate::{
     evaluate_risk_exit, plan_execution, AppliedPositionRiskBoundaryChange, BlockedSecondaryContext,
-    ExecutionAction, ExitKind, ForceCloseIgnoredReason, MarketInput, MarketState, MarketView,
-    PortfolioState, PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
+    ExecutionAction, ExecutionFill, ExecutionFillSide, ExitKind, ForceCloseIgnoredReason,
+    MarketInput, MarketState, MarketView, PortfolioState,
+    PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
     PositionRiskBoundaryKind, PositionRiskUpdateResult, RejectedPositionRiskBoundaryChange,
     RiskBoundaryChange, RuntimeConfig, RuntimeEvent, RuntimeInputError, RuntimeStep,
     SecondaryReadiness, StrategyContext, StrategyHandler, StrategyState, StrategyTickInput,
@@ -187,14 +188,25 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                 },
             });
 
+            let quantity = self
+                .portfolio
+                .open_position
+                .as_ref()
+                .expect("planned risk exit should have an open position")
+                .quantity;
+            let fill = self.simulated_fill(
+                ExecutionFillSide::for_closing_position(risk_exit.side),
+                quantity,
+                risk_exit.exit_price,
+            );
             let closed_position = match risk_exit.side {
                 PositionSide::Long => self
                     .portfolio
-                    .close_long_at_price(&candle, risk_exit.exit_price)
+                    .close_long_at_price(&candle, fill.effective_fill_price)
                     .expect("planned long risk exit should be executable"),
                 PositionSide::Short => self
                     .portfolio
-                    .close_short_at_price(&candle, risk_exit.exit_price)
+                    .close_short_at_price(&candle, fill.effective_fill_price)
                     .expect("planned short risk exit should be executable"),
             };
             events.push(RuntimeEvent::PositionClosed {
@@ -202,6 +214,7 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                 exit_kind: ExitKind::RiskExit {
                     selected: risk_exit.selected,
                 },
+                fill,
             });
             events.push(RuntimeEvent::PortfolioUpdated {
                 snapshot: self.portfolio.snapshot(candle.close),
@@ -277,27 +290,36 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                 stop_loss,
                 take_profit,
             } => {
+                let fill = self.simulated_fill(ExecutionFillSide::Buy, quantity, candle.close);
                 self.portfolio
-                    .open_long_from_flat(&candle, quantity, stop_loss, take_profit)
+                    .open_long_from_flat_at_price(
+                        &candle,
+                        quantity,
+                        fill.effective_fill_price,
+                        stop_loss,
+                        take_profit,
+                    )
                     .expect("planned open long should be executable");
                 let position = self
                     .portfolio
                     .open_position
                     .clone()
                     .expect("opened long position should exist");
-                events.push(RuntimeEvent::PositionOpened { position });
+                events.push(RuntimeEvent::PositionOpened { position, fill });
                 events.push(RuntimeEvent::PortfolioUpdated {
                     snapshot: self.portfolio.snapshot(candle.close),
                 });
             }
             ExecutionAction::CloseLong => {
+                let fill = self.closing_fill(PositionSide::Long, candle.close);
                 let closed_position = self
                     .portfolio
-                    .close_long(&candle)
+                    .close_long_at_price(&candle, fill.effective_fill_price)
                     .expect("planned close long should be executable");
                 events.push(RuntimeEvent::PositionClosed {
                     closed_position,
                     exit_kind: ExitKind::StrategyExit,
+                    fill,
                 });
                 events.push(RuntimeEvent::PortfolioUpdated {
                     snapshot: self.portfolio.snapshot(candle.close),
@@ -308,27 +330,36 @@ impl<S: StrategyHandler> TradingRuntime<S> {
                 stop_loss,
                 take_profit,
             } => {
+                let fill = self.simulated_fill(ExecutionFillSide::Sell, quantity, candle.close);
                 self.portfolio
-                    .open_short_from_flat(&candle, quantity, stop_loss, take_profit)
+                    .open_short_from_flat_at_price(
+                        &candle,
+                        quantity,
+                        fill.effective_fill_price,
+                        stop_loss,
+                        take_profit,
+                    )
                     .expect("planned open short should be executable");
                 let position = self
                     .portfolio
                     .open_position
                     .clone()
                     .expect("opened short position should exist");
-                events.push(RuntimeEvent::PositionOpened { position });
+                events.push(RuntimeEvent::PositionOpened { position, fill });
                 events.push(RuntimeEvent::PortfolioUpdated {
                     snapshot: self.portfolio.snapshot(candle.close),
                 });
             }
             ExecutionAction::CloseShort => {
+                let fill = self.closing_fill(PositionSide::Short, candle.close);
                 let closed_position = self
                     .portfolio
-                    .close_short(&candle)
+                    .close_short_at_price(&candle, fill.effective_fill_price)
                     .expect("planned close short should be executable");
                 events.push(RuntimeEvent::PositionClosed {
                     closed_position,
                     exit_kind: ExitKind::StrategyExit,
+                    fill,
                 });
                 events.push(RuntimeEvent::PortfolioUpdated {
                     snapshot: self.portfolio.snapshot(candle.close),
@@ -356,6 +387,31 @@ impl<S: StrategyHandler> TradingRuntime<S> {
         events.push(RuntimeEvent::TradableCandleCompleted);
 
         RuntimeStep::new(events, self.portfolio.snapshot(candle.close))
+    }
+
+    fn simulated_fill(
+        &self,
+        side: ExecutionFillSide,
+        quantity: f64,
+        base_execution_price: f64,
+    ) -> ExecutionFill {
+        self.config
+            .execution_cost_model()
+            .simulated_fill(side, quantity, base_execution_price)
+    }
+
+    fn closing_fill(&self, side: PositionSide, base_execution_price: f64) -> ExecutionFill {
+        let quantity = self
+            .portfolio
+            .open_position
+            .as_ref()
+            .expect("planned close should have an open position")
+            .quantity;
+        self.simulated_fill(
+            ExecutionFillSide::for_closing_position(side),
+            quantity,
+            base_execution_price,
+        )
     }
 
     fn apply_position_risk_update(
@@ -498,32 +554,42 @@ impl<S: StrategyHandler> TradingRuntime<S> {
             reason: reason.into(),
         }];
 
-        let closed_position = match self
+        let closed_position_and_fill = match self
             .portfolio
             .open_position
             .as_ref()
-            .map(|position| position.side)
+            .map(|position| (position.side, position.quantity))
         {
-            Some(PositionSide::Long) => Some(
-                self.portfolio
-                    .close_long(&mark_candle)
-                    .expect("open long position should be force-closeable"),
-            ),
-            Some(PositionSide::Short) => Some(
-                self.portfolio
-                    .close_short(&mark_candle)
-                    .expect("open short position should be force-closeable"),
-            ),
+            Some((PositionSide::Long, quantity)) => {
+                let fill =
+                    self.simulated_fill(ExecutionFillSide::Sell, quantity, mark_candle.close);
+                Some((
+                    self.portfolio
+                        .close_long_at_price(&mark_candle, fill.effective_fill_price)
+                        .expect("open long position should be force-closeable"),
+                    fill,
+                ))
+            }
+            Some((PositionSide::Short, quantity)) => {
+                let fill = self.simulated_fill(ExecutionFillSide::Buy, quantity, mark_candle.close);
+                Some((
+                    self.portfolio
+                        .close_short_at_price(&mark_candle, fill.effective_fill_price)
+                        .expect("open short position should be force-closeable"),
+                    fill,
+                ))
+            }
             None => None,
         };
 
-        if let Some(closed_position) = closed_position {
+        if let Some((closed_position, fill)) = closed_position_and_fill {
             events.push(RuntimeEvent::ExecutionActionPlanned {
                 action: ExecutionAction::ForceClose,
             });
             events.push(RuntimeEvent::PositionClosed {
                 closed_position,
                 exit_kind: ExitKind::ForceClose,
+                fill,
             });
             events.push(RuntimeEvent::PortfolioUpdated {
                 snapshot: self.portfolio.snapshot(mark_candle.close),

@@ -302,7 +302,7 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
 
         for event in &step.events {
             match event {
-                RuntimeEvent::PositionOpened { position } => {
+                RuntimeEvent::PositionOpened { position, .. } => {
                     let record = paper_open_position_from_runtime(
                         &self.strategy_identity,
                         &self.runtime_asset,
@@ -314,6 +314,7 @@ impl<S: PaperTradingPersistenceStore> PaperTradingPersistenceAdapter<S> {
                 RuntimeEvent::PositionClosed {
                     closed_position,
                     exit_kind,
+                    ..
                 } => {
                     let open_projection_key = open_position_projection_key(
                         &self.strategy_identity,
@@ -597,10 +598,10 @@ mod tests {
     use std::cell::RefCell;
 
     use trading_runtime::{
-        AppliedPositionRiskBoundaryChange, PositionRiskBoundaryChangeRejectionReason,
-        PositionRiskBoundaryChanges, PositionRiskBoundaryKind, PositionRiskUpdateResult,
-        RejectedPositionRiskBoundaryChange, RiskBoundaryChange, RuntimePortfolioSnapshot,
-        StrategyDecision,
+        AppliedPositionRiskBoundaryChange, ExecutionFill, ExecutionFillSide,
+        PositionRiskBoundaryChangeRejectionReason, PositionRiskBoundaryChanges,
+        PositionRiskBoundaryKind, PositionRiskUpdateResult, RejectedPositionRiskBoundaryChange,
+        RiskBoundaryChange, RuntimePortfolioSnapshot, StrategyDecision,
     };
 
     use super::*;
@@ -835,6 +836,22 @@ mod tests {
         )
     }
 
+    fn opening_fill(position: &OpenPosition) -> ExecutionFill {
+        ExecutionFill::simulated_no_cost(
+            ExecutionFillSide::for_opening_position(position.side),
+            position.quantity,
+            position.entry_price,
+        )
+    }
+
+    fn closing_fill(closed_position: &ClosedPosition) -> ExecutionFill {
+        ExecutionFill::simulated_no_cost(
+            ExecutionFillSide::for_closing_position(closed_position.position.side),
+            closed_position.position.quantity,
+            closed_position.exit_price,
+        )
+    }
+
     fn snapshot(open_position: Option<OpenPosition>) -> RuntimePortfolioSnapshot {
         RuntimePortfolioSnapshot {
             realized_cash_balance: 1_000.0,
@@ -974,8 +991,10 @@ mod tests {
                 },
                 RuntimeEvent::PositionOpened {
                     position: position.clone(),
+                    fill: opening_fill(&position),
                 },
                 RuntimeEvent::PositionClosed {
+                    fill: closing_fill(&closed),
                     closed_position: closed,
                     exit_kind,
                 },
@@ -1273,6 +1292,7 @@ mod tests {
         let position = runtime_position(PositionSide::Long);
         let open_step = step(vec![RuntimeEvent::PositionOpened {
             position: position.clone(),
+            fill: opening_fill(&position),
         }]);
 
         adapter.project_step(&open_step).unwrap();
@@ -1290,6 +1310,7 @@ mod tests {
 
         let (closed, exit_kind) = closed_position(position, ExitKind::ForceClose);
         let close_step = step(vec![RuntimeEvent::PositionClosed {
+            fill: closing_fill(&closed),
             closed_position: closed,
             exit_kind,
         }]);
@@ -1311,8 +1332,12 @@ mod tests {
 
         let error = adapter
             .project_step(&step(vec![
-                RuntimeEvent::PositionOpened { position },
+                RuntimeEvent::PositionOpened {
+                    fill: opening_fill(&position),
+                    position,
+                },
                 RuntimeEvent::PositionClosed {
+                    fill: closing_fill(&closed),
                     closed_position: closed,
                     exit_kind,
                 },
@@ -1332,6 +1357,7 @@ mod tests {
 
         let error = adapter(&store)
             .project_step(&step(vec![RuntimeEvent::PositionClosed {
+                fill: closing_fill(&closed),
                 closed_position: closed,
                 exit_kind,
             }]))

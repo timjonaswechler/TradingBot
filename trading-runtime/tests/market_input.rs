@@ -1,9 +1,9 @@
 use domain::{Candle, OpenPosition, PositionRiskBoundaries, PositionSide};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use trading_runtime::{
-    BlockedSecondaryContext, ClosedPosition, ExecutionAction, ExitKind, MarketInput,
-    PortfolioState, RiskExitKind, RiskExitTriggered, RuntimeConfig, RuntimeEvent,
-    RuntimeInputError, RuntimePortfolioSnapshot, SecondaryContextUnavailableReason,
+    BlockedSecondaryContext, ClosedPosition, ExecutionAction, ExecutionFill, ExecutionFillSide,
+    ExitKind, MarketInput, PortfolioState, RiskExitKind, RiskExitTriggered, RuntimeConfig,
+    RuntimeEvent, RuntimeInputError, RuntimePortfolioSnapshot, SecondaryContextUnavailableReason,
     SecondaryReadiness, SecondaryTimeframeConfig, StrategyDecision, StrategyHandler, Timeframe,
     TradingRuntime,
 };
@@ -14,6 +14,10 @@ fn tf(raw: &str) -> Timeframe {
 
 fn candle(timestamp: i64, timeframe: &str, close: f64) -> Candle {
     ohlc_candle(timestamp, timeframe, close, close, close, close)
+}
+
+fn fill(side: ExecutionFillSide, quantity: f64, base_execution_price: f64) -> ExecutionFill {
+    ExecutionFill::simulated_no_cost(side, quantity, base_execution_price)
 }
 
 fn ohlc_candle(
@@ -145,6 +149,7 @@ fn completed_primary_market_input_emits_tradable_candle_and_strategy_tick_events
             },
             RuntimeEvent::PositionOpened {
                 position: step.portfolio_snapshot.open_position.clone().unwrap(),
+                fill: fill(ExecutionFillSide::Buy, 2.0, primary.close),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: step.portfolio_snapshot.clone(),
@@ -927,6 +932,7 @@ fn long_risk_exit_closes_before_missing_required_secondary_can_block_strategy_ti
                 exit_kind: ExitKind::RiskExit {
                     selected: RiskExitKind::StopLoss,
                 },
+                fill: fill(ExecutionFillSide::Sell, 2.0, 90.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
@@ -1015,6 +1021,7 @@ fn short_risk_exit_closes_before_missing_required_secondary_can_block_strategy_t
                 exit_kind: ExitKind::RiskExit {
                     selected: RiskExitKind::TakeProfit,
                 },
+                fill: fill(ExecutionFillSide::Buy, 2.0, 80.0),
             },
             RuntimeEvent::PortfolioUpdated {
                 snapshot: expected_snapshot.clone(),
