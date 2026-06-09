@@ -108,6 +108,18 @@ _Avoid_: Risk Exit, hard stop, hard target
 The runtime interpretation step that maps a Strategy Decision and the current Portfolio State to an execution action or an ignored decision. Execution Planning does not by itself change Portfolio State.
 _Avoid_: Execution State Machine when no pending/fill states are meant
 
+**Execution Fill**:
+The runtime-visible result of opening or closing market exposure, including side, quantity, base execution price, effective fill price, and execution costs. In Simulated Execution it is a runtime assumption; in future Real-Money execution it may be broker-reported.
+_Avoid_: Broker Fill when simulated execution is meant, Order, Trade
+
+**Execution Cost Model**:
+A runtime-owned set of assumptions that adjusts simulated Execution Fills through spread and per-fill fees. It affects runtime-local Portfolio State and reporting, but is distinct from External Account Snapshot, broker fee schedules, buying power, margin, and account reconciliation.
+_Avoid_: Broker Fee Schedule, Account Balance, Backtest Metric
+
+**Effective Fill Price**:
+The price used by the Trading Runtime for a Portfolio Transition after execution price adjustments such as spread are applied to the base execution price. Effective Fill Price is distinct from the candle close, Risk Exit price, or mark price that served as the base execution price.
+_Avoid_: Candle Close when an adjusted fill is meant, Broker Quote
+
 **Simulated Execution**:
 Runtime-owned execution that applies Execution Planning and Portfolio Transitions without sending broker orders. Simulated Execution can be used by historical Backtest Sessions and live Paper Trading sessions.
 _Avoid_: Backtester execution, daemon paper executor, fake strategy
