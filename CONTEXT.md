@@ -28,6 +28,10 @@ _Avoid_: External Account Snapshot, Account Balance
 A point-in-time view of account resources outside one Trading Runtime, such as available cash, buying power, margin, broker-visible positions, open orders, or external exposure reported by a broker/trading provider or account adapter. An External Account Snapshot may inform live strategy execution, but it is not the runtime-local Portfolio State.
 _Avoid_: Portfolio State, Strategy State, Provider State
 
+**Portfolio Coordinator**:
+A live-trading coordinator that allocates external account resources across multiple Runtime Sessions or strategies. A Portfolio Coordinator may translate External Account Snapshot data into per-runtime budgets or allocations and prevent multi-strategy over-allocation; it is distinct from a single Runtime Session's Portfolio State.
+_Avoid_: Portfolio State, Trading Runtime when only one runtime-local session is meant, External Account Snapshot when only raw account data is meant
+
 **Strategy Engine**:
 The component that executes a strategy and turns market context into a trading decision. Strategy Engine is a role inside the architecture, not necessarily a separate crate; Rhai strategy execution is one implementation of this role.
 _Avoid_: Trading Engine when only script execution is meant
@@ -107,6 +111,10 @@ _Avoid_: Risk Exit, hard stop, hard target
 **Execution Planning**:
 The runtime interpretation step that maps a Strategy Decision and the current Portfolio State to an execution action or an ignored decision. Execution Planning does not by itself change Portfolio State.
 _Avoid_: Execution State Machine when no pending/fill states are meant
+
+**Broker Order Gate**:
+A live-trading safety decision before submitting a proposed broker order. A Broker Order Gate may use External Account Snapshot data, broker capabilities, operator limits, and kill-switch state to allow or reject broker submission; it is distinct from Strategy Decision, Execution Planning, and Portfolio Transition.
+_Avoid_: Execution Planning, Strategy Decision, Portfolio Transition, External Account Snapshot when only account data is meant
 
 **Execution Fill**:
 The runtime-visible result of opening or closing market exposure, including side, quantity, base execution price, effective fill price, and execution costs. In Simulated Execution it is a runtime assumption; in future Real-Money execution it may be broker-reported.
